@@ -175,7 +175,9 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 		Database:  dbPath,
 		TokenFile: tokenPath,
 		Polling: config.PollingConfig{
-			ActiveInterval:         2 * time.Millisecond,
+			DrivingInterval:        2 * time.Millisecond,
+			ChargingInterval:       2 * time.Millisecond,
+			OnlineInterval:         2 * time.Millisecond,
 			IdleTimeout:            40 * time.Millisecond,
 			SuspendedCheckInterval: 2 * time.Millisecond,
 		},

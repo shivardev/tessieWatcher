@@ -20,7 +20,7 @@ func openTestStore(t *testing.T) *Store {
 func TestUpsertVehicle(t *testing.T) {
 	s := openTestStore(t)
 
-	id1, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "My Model 3", Model: "model3", TrimBadging: "LR AWD"})
+	id1, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "My Model 3", Model: "3", TrimBadging: "74D", MarketingName: "LR AWD"})
 	if err != nil {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
@@ -30,12 +30,20 @@ func TestUpsertVehicle(t *testing.T) {
 
 	// Upserting again with the same VIN should return the same id, and
 	// update the mutable fields.
-	id2, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "Renamed", Model: "model3", TrimBadging: "LR AWD"})
+	id2, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "Renamed", Model: "3", TrimBadging: "74D", MarketingName: "LR AWD"})
 	if err != nil {
 		t.Fatalf("re-upsert vehicle: %v", err)
 	}
 	if id1 != id2 {
 		t.Fatalf("expected same id on upsert, got %d and %d", id1, id2)
+	}
+
+	var marketingName string
+	if err := s.db.QueryRow(`SELECT marketing_name FROM vehicles WHERE id = ?`, id1).Scan(&marketingName); err != nil {
+		t.Fatalf("query marketing_name: %v", err)
+	}
+	if marketingName != "LR AWD" {
+		t.Fatalf("expected marketing_name %q, got %q", "LR AWD", marketingName)
 	}
 
 	var name string

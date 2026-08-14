@@ -15,7 +15,10 @@ token_file = "tokens.json"
 vin = ""
 
 [polling]
-active_interval           = "30s"
+# Match TeslaMate's own default polling cadence per state.
+driving_interval          = "2.5s"
+charging_interval         = "5s"
+online_interval           = "15s"
 idle_timeout              = "3m"
 suspended_check_interval  = "15m"
 

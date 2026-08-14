@@ -28,8 +28,13 @@ CREATE TABLE IF NOT EXISTS vehicles (
 	vin            TEXT NOT NULL UNIQUE,
 	tesla_id       TEXT,
 	display_name   TEXT,
+	-- model/trim_badging/marketing_name are derived from vehicle_config's
+	-- car_type+trim_badging+VIN via the same lookup table TeslaMate uses
+	-- (see internal/tesla.IdentifyVehicle) - they are NOT raw API
+	-- passthrough, same as in TeslaMate's own cars table.
 	model          TEXT,
 	trim_badging   TEXT,
+	marketing_name TEXT,
 	exterior_color TEXT,
 	wheel_type     TEXT,
 	spoiler_type   TEXT,

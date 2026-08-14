@@ -6,7 +6,9 @@
 //
 //	ASLEEP / SUSPENDED -> only ListVehicles (never wakes the car),
 //	                      checked every SuspendedCheckInterval.
-//	otherwise          -> vehicle_data, checked every ActiveInterval.
+//	DRIVING            -> vehicle_data every Polling.DrivingInterval.
+//	CHARGING           -> vehicle_data every Polling.ChargingInterval.
+//	ONLINE / IDLE      -> vehicle_data every Polling.OnlineInterval.
 //
 // wake_up is never called from this loop.
 package runner
@@ -141,7 +143,21 @@ func (l *loopState) run(ctx context.Context) error {
 			}
 			l.manageStream(ctx)
 			l.drainStream()
-			sleepFor = l.cfg.Polling.ActiveInterval
+			// Per-state cadence matching TeslaMate's own defaults: much
+			// tighter while driving/charging than while just sitting
+			// online-idle (see PollingConfig's doc comment for what's
+			// deliberately simplified vs TeslaMate's full adaptive
+			// scheduler). l.machine.State() reflects the state *after*
+			// the poll just above, so a drive/charge that just ended
+			// this iteration already sleeps at the slower online cadence.
+			switch l.machine.State() {
+			case vehicle.StateDriving:
+				sleepFor = l.cfg.Polling.DrivingInterval
+			case vehicle.StateCharging:
+				sleepFor = l.cfg.Polling.ChargingInterval
+			default: // StateOnline, StateIdle
+				sleepFor = l.cfg.Polling.OnlineInterval
+			}
 		}
 
 		select {
@@ -185,7 +201,7 @@ func (l *loopState) pollVehicleData(ctx context.Context) error {
 	if meta.Model != "" || meta.DisplayName != "" {
 		_, err := l.store.UpsertVehicle(storage.VehicleMeta{
 			VIN: meta.VIN, TeslaID: fmt.Sprint(l.vehicleID), DisplayName: meta.DisplayName,
-			Model: meta.Model, TrimBadging: meta.TrimBadging,
+			Model: meta.Model, TrimBadging: meta.TrimBadging, MarketingName: meta.MarketingName,
 			ExteriorColor: meta.ExteriorColor, WheelType: meta.WheelType, SpoilerType: meta.SpoilerType,
 		})
 		if err != nil {

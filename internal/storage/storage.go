@@ -90,11 +90,16 @@ func boolToInt(b bool) int {
 // VehicleMeta is the API-derived (not user-configured) vehicle identity
 // fields upserted whenever we see them.
 type VehicleMeta struct {
-	VIN           string
-	TeslaID       string
-	DisplayName   string
+	VIN         string
+	TeslaID     string
+	DisplayName string
+	// Model, TrimBadging and MarketingName should already be the
+	// normalized/derived values from internal/tesla.IdentifyVehicle
+	// (matching TeslaMate's own cars table), not raw car_type/
+	// trim_badging API strings.
 	Model         string
 	TrimBadging   string
+	MarketingName string
 	ExteriorColor string
 	WheelType     string
 	SpoilerType   string
@@ -103,17 +108,18 @@ type VehicleMeta struct {
 // UpsertVehicle ensures a vehicle row exists for vin and returns its id.
 func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 	_, err := s.db.Exec(`
-		INSERT INTO vehicles (vin, tesla_id, display_name, model, trim_badging, exterior_color, wheel_type, spoiler_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO vehicles (vin, tesla_id, display_name, model, trim_badging, marketing_name, exterior_color, wheel_type, spoiler_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(vin) DO UPDATE SET
 			tesla_id = excluded.tesla_id,
 			display_name = excluded.display_name,
 			model = excluded.model,
 			trim_badging = excluded.trim_badging,
+			marketing_name = excluded.marketing_name,
 			exterior_color = excluded.exterior_color,
 			wheel_type = excluded.wheel_type,
 			spoiler_type = excluded.spoiler_type
-	`, v.VIN, v.TeslaID, v.DisplayName, v.Model, v.TrimBadging, v.ExteriorColor, v.WheelType, v.SpoilerType)
+	`, v.VIN, v.TeslaID, v.DisplayName, v.Model, v.TrimBadging, v.MarketingName, v.ExteriorColor, v.WheelType, v.SpoilerType)
 	if err != nil {
 		return 0, fmt.Errorf("upsert vehicle: %w", err)
 	}

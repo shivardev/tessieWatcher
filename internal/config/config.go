@@ -55,9 +55,28 @@ type ChargingConfig struct {
 }
 
 type PollingConfig struct {
-	// ActiveInterval is how often we call vehicle_data while the car is
-	// ONLINE, DRIVING, CHARGING or IDLE (i.e. NOT suspended/asleep).
-	ActiveInterval time.Duration
+	// DrivingInterval, ChargingInterval and OnlineInterval are how often
+	// we call vehicle_data in each of those three "awake" states. These
+	// default to TeslaMate's own published defaults (Vehicle.driving_interval/
+	// charging_interval/default_interval in lib/teslamate/vehicles/vehicle.ex:
+	// 2.5s / 5s / 15s) rather than one flat interval, so drive tracks in
+	// particular have TeslaMate-comparable position density.
+	//
+	// NOT reproduced: TeslaMate additionally (a) backs its REST poll
+	// rate off to the slower default_interval even while driving when
+	// its streaming connection is actively delivering telemetry (since
+	// the stream itself supplies fine-grained position data in that
+	// case), (b) adaptively tightens/loosens the charging interval via
+	// a formula based on sample count, and (c) applies exponential
+	// backoff on repeated fetch errors. teslalog's own streaming client
+	// supplements REST-derived positions the same way, but the REST
+	// poll cadence itself is a fixed, configurable interval rather than
+	// that full adaptive/backoff state machine - simpler and safer to
+	// reason about for a single-vehicle logger, at the cost of not
+	// being a byte-for-byte scheduler port.
+	DrivingInterval  time.Duration
+	ChargingInterval time.Duration
+	OnlineInterval   time.Duration
 	// IdleTimeout is how long the vehicle can sit IDLE (online, parked,
 	// not charging) before we stop polling and let it sleep.
 	IdleTimeout time.Duration
@@ -94,7 +113,9 @@ type rawConfig struct {
 	VIN       string `toml:"vin"`
 
 	Polling struct {
-		ActiveInterval         string `toml:"active_interval"`
+		DrivingInterval        string `toml:"driving_interval"`
+		ChargingInterval       string `toml:"charging_interval"`
+		OnlineInterval         string `toml:"online_interval"`
 		IdleTimeout            string `toml:"idle_timeout"`
 		SuspendedCheckInterval string `toml:"suspended_check_interval"`
 	} `toml:"polling"`
@@ -140,7 +161,11 @@ func Default() Config {
 		Database:  "/var/lib/teslalog/tesla.db",
 		TokenFile: "/var/lib/teslalog/tokens.json",
 		Polling: PollingConfig{
-			ActiveInterval:         30 * time.Second,
+			// TeslaMate's own published defaults (Vehicle.driving_interval/
+			// charging_interval/default_interval).
+			DrivingInterval:        2500 * time.Millisecond,
+			ChargingInterval:       5 * time.Second,
+			OnlineInterval:         15 * time.Second,
 			IdleTimeout:            3 * time.Minute,
 			SuspendedCheckInterval: 15 * time.Minute,
 		},
@@ -192,10 +217,20 @@ func Load(path string) (Config, error) {
 	}
 	cfg.VIN = raw.VIN
 
-	if d, err := parseDurationOr(raw.Polling.ActiveInterval, cfg.Polling.ActiveInterval); err != nil {
-		return cfg, fmt.Errorf("polling.active_interval: %w", err)
+	if d, err := parseDurationOr(raw.Polling.DrivingInterval, cfg.Polling.DrivingInterval); err != nil {
+		return cfg, fmt.Errorf("polling.driving_interval: %w", err)
 	} else {
-		cfg.Polling.ActiveInterval = d
+		cfg.Polling.DrivingInterval = d
+	}
+	if d, err := parseDurationOr(raw.Polling.ChargingInterval, cfg.Polling.ChargingInterval); err != nil {
+		return cfg, fmt.Errorf("polling.charging_interval: %w", err)
+	} else {
+		cfg.Polling.ChargingInterval = d
+	}
+	if d, err := parseDurationOr(raw.Polling.OnlineInterval, cfg.Polling.OnlineInterval); err != nil {
+		return cfg, fmt.Errorf("polling.online_interval: %w", err)
+	} else {
+		cfg.Polling.OnlineInterval = d
 	}
 	if d, err := parseDurationOr(raw.Polling.IdleTimeout, cfg.Polling.IdleTimeout); err != nil {
 		return cfg, fmt.Errorf("polling.idle_timeout: %w", err)

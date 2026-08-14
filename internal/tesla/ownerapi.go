@@ -290,10 +290,18 @@ type rawVehicleData struct {
 // VehicleMeta is static-ish vehicle identity info parsed alongside a
 // vehicle_data snapshot.
 type VehicleMeta struct {
-	VIN           string
-	DisplayName   string
+	VIN         string
+	DisplayName string
+	// Model, TrimBadging and MarketingName are NOT raw API fields -
+	// vehicle_config only reports car_type/trim_badging (e.g. "model3",
+	// "74D"). TeslaMate derives the normalized single-letter model code
+	// ("3") and the human marketing name ("LR AWD") from those via a
+	// hardcoded lookup table (Vehicle.identify/1); IdentifyVehicle
+	// reproduces that exact derivation, so these three match TeslaMate's
+	// `cars` table rather than just echoing the raw API strings.
 	Model         string
 	TrimBadging   string
+	MarketingName string
 	ExteriorColor string
 	WheelType     string
 	SpoilerType   string
@@ -371,11 +379,18 @@ func (c *Client) VehicleData(ctx context.Context, vehicleID int64) (vehicle.Snap
 		UpdateVersion: vs.SoftwareUpdate.Version,
 	}
 
+	model, trimBadging, marketingName := IdentifyVehicle(
+		rv.Response.VehicleConfig.CarType,
+		rv.Response.VehicleConfig.TrimBadging,
+		rv.Response.VIN,
+	)
+
 	meta := VehicleMeta{
 		VIN:           rv.Response.VIN,
 		DisplayName:   rv.Response.DisplayName,
-		Model:         rv.Response.VehicleConfig.CarType,
-		TrimBadging:   rv.Response.VehicleConfig.TrimBadging,
+		Model:         model,
+		TrimBadging:   trimBadging,
+		MarketingName: marketingName,
 		ExteriorColor: rv.Response.VehicleConfig.ExteriorColor,
 		WheelType:     rv.Response.VehicleConfig.WheelType,
 		SpoilerType:   rv.Response.VehicleConfig.SpoilerType,

@@ -10,9 +10,14 @@ token_file = "/var/lib/teslalog/tokens.json"
 vin = ""
 
 [polling]
-# How often we call vehicle_data while the car is online, driving,
-# charging, or idle (NOT asleep/suspended).
-active_interval = "30s"
+# How often we call vehicle_data in each "awake" state. Defaults match
+# TeslaMate's own published defaults (driving_interval/charging_interval/
+# default_interval in vehicle.ex) so drive tracks have comparable
+# position density - TeslaMate itself polls much faster while driving
+# than while just sitting online idle.
+driving_interval  = "2.5s"
+charging_interval = "5s"
+online_interval   = "15s"
 
 # How long the car can sit online-but-idle (parked, not charging)
 # before we stop polling and let it sleep. This is the single most

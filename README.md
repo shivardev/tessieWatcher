@@ -77,9 +77,14 @@ ASLEEP / SUSPENDED  ->  only the cheap GET /api/1/vehicles check
                         (never wakes the car), every suspended_check_interval
                         (default 15m)
 
-ONLINE / DRIVING /
-CHARGING / IDLE      ->  full vehicle_data poll every active_interval
-                        (default 30s)
+DRIVING              ->  full vehicle_data poll every driving_interval
+                        (default 2.5s, matches TeslaMate's own default)
+
+CHARGING             ->  full vehicle_data poll every charging_interval
+                        (default 5s, matches TeslaMate's own default)
+
+ONLINE / IDLE        ->  full vehicle_data poll every online_interval
+                        (default 15s, matches TeslaMate's own default)
 
 IDLE for >= idle_timeout (default 3m)  ->  transition to SUSPENDED,
                         stop calling vehicle_data, let the car sleep
@@ -152,11 +157,35 @@ checked against TeslaMate's real source rather than approximate. Per table:
   online/offline/asleep; teslalog's is a superset, additionally
   recording driving/charging/idle/suspended (TeslaMate keeps that finer
   state only in memory).
-- **vehicles**: VIN, model, trim, exterior color, wheel type, spoiler
-  type (all from the API) plus an optional user-supplied `efficiency_wh_km`
-  (config-only, like TeslaMate's — not derived, just stored for whatever
-  reads the DB to use).
+- **vehicles**: VIN, exterior color, wheel type, spoiler type straight
+  from the API, plus `model`/`trim_badging`/`marketing_name`. Those
+  three are **not** raw API fields even in TeslaMate — the Owner API
+  only reports `car_type`/`trim_badging` codes (e.g. `"model3"`,
+  `"74D"`); TeslaMate derives the normalized model letter (`"3"`) and
+  human trim name (`"LR AWD"`) via a hardcoded lookup table
+  (`Vehicle.identify/1`, including a VIN-model-year check to
+  disambiguate the Model 3 base trim). `internal/tesla/identity.go`
+  ports that exact table (unit-tested against the same cases), so this
+  is genuinely the same derived value, not just the same raw string.
+  Also carries the optional user-supplied `efficiency_wh_km`
+  (config-only, like TeslaMate's — not derived, just stored for
+  whatever reads the DB to use).
 - **software_updates**: start/end/version, same as TeslaMate.
+
+**Polling cadence**: `driving_interval`/`charging_interval`/
+`online_interval` (2.5s/5s/15s) match TeslaMate's own published
+defaults (`Vehicle.driving_interval`/`charging_interval`/
+`default_interval`), so drive tracks in particular have comparable
+position density instead of one flat 30s rate. Deliberately **not**
+reproduced: TeslaMate additionally backs its REST poll rate off further
+while its streaming connection is actively delivering telemetry,
+adaptively tightens/loosens the charging interval via a sample-count
+formula, and applies exponential backoff on repeated fetch errors. That
+full scheduler is intricate, undocumented outside its source, and tuned
+for TeslaMate's own streaming/REST arbitration; teslalog's own streaming
+client already supplements REST-derived positions the same way TeslaMate's
+does, but the REST cadence itself is a fixed, configurable interval per
+state rather than that adaptive state machine.
 
 **Deliberately not ported** (per the original design and your steer that
 Grafana/dashboards aren't teslalog's job): TeslaMate's `geofences` and
@@ -280,7 +309,9 @@ See `config.example.toml` for every field with inline docs. Key ones:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `polling.active_interval` | `30s` | `vehicle_data` poll rate while awake |
+| `polling.driving_interval` | `2.5s` | `vehicle_data` poll rate while driving (matches TeslaMate's default) |
+| `polling.charging_interval` | `5s` | `vehicle_data` poll rate while charging (matches TeslaMate's default) |
+| `polling.online_interval` | `15s` | `vehicle_data` poll rate while online-idle (matches TeslaMate's default) |
 | `polling.idle_timeout` | `3m` | how long idle-online before we suspend polling |
 | `polling.suspended_check_interval` | `15m` | how often we check "is it awake yet" while asleep |
 | `backup.retention_days` | `30` | days of nightly backups to keep |
