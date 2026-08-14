@@ -100,12 +100,16 @@ type rawConfig struct {
 	} `toml:"polling"`
 
 	Streaming struct {
-		Enabled bool   `toml:"enabled"`
+		// *bool (not bool) so we can tell "not set in the file" (nil,
+		// keep the default) apart from an explicit "enabled = false"
+		// (must actually turn it off) - a plain bool can't distinguish
+		// those and would silently ignore an explicit false.
+		Enabled *bool  `toml:"enabled"`
 		URL     string `toml:"url"`
 	} `toml:"streaming"`
 
 	Backup struct {
-		Enabled       bool   `toml:"enabled"`
+		Enabled       *bool  `toml:"enabled"`
 		Dir           string `toml:"dir"`
 		RetentionDays int    `toml:"retention_days"`
 		Interval      string `toml:"interval"`
@@ -204,8 +208,8 @@ func Load(path string) (Config, error) {
 		cfg.Polling.SuspendedCheckInterval = d
 	}
 
-	if raw.Streaming.URL != "" || raw.Streaming.Enabled {
-		cfg.Streaming.Enabled = raw.Streaming.Enabled
+	if raw.Streaming.Enabled != nil {
+		cfg.Streaming.Enabled = *raw.Streaming.Enabled
 	}
 	if raw.Streaming.URL != "" {
 		cfg.Streaming.URL = raw.Streaming.URL
@@ -222,7 +226,9 @@ func Load(path string) (Config, error) {
 	} else {
 		cfg.Backup.Interval = d
 	}
-	cfg.Backup.Enabled = raw.Backup.Enabled || cfg.Backup.Enabled
+	if raw.Backup.Enabled != nil {
+		cfg.Backup.Enabled = *raw.Backup.Enabled
+	}
 
 	if raw.API.OwnerAPIBaseURL != "" {
 		cfg.API.OwnerAPIBaseURL = raw.API.OwnerAPIBaseURL

@@ -6,3 +6,4 @@
 *.db-shm
 *.db.gz
 tokens.json
+/teslalog-windows-amd64.exe

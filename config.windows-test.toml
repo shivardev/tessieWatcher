@@ -1,0 +1,43 @@
+# Ready-to-use config for testing teslalog-windows-amd64.exe on this
+# machine, side-by-side with your existing TeslaMate. Relative paths so
+# everything lands next to the .exe - no admin rights, no /var/lib/...
+# needed. Rename to config.toml (or pass -config config.windows-test.toml
+# explicitly) and run:
+#
+#   .\teslalog-windows-amd64.exe auth  -config config.windows-test.toml
+#   .\teslalog-windows-amd64.exe run   -config config.windows-test.toml
+
+database   = "tesla.db"
+token_file = "tokens.json"
+
+# Leave blank to use the first vehicle on the account; set this if you
+# have more than one Tesla and want to log a specific one.
+vin = ""
+
+[polling]
+active_interval           = "30s"
+idle_timeout              = "3m"
+suspended_check_interval  = "15m"
+
+[streaming]
+enabled = true
+url     = "wss://streaming.vn.teslamotors.com/streaming/"
+
+[backup]
+# Off for this test run - turn on and set a real dir once you're happy
+# and want it running unattended (see systemd/Docker sections of the
+# README).
+enabled = false
+
+[api]
+owner_api_base_url = "https://owner-api.teslamotors.com"
+sso_base_url        = "https://auth.tesla.com"
+client_id            = "ownerapi"
+user_agent           = "teslalog/0.1"
+
+[vehicle]
+efficiency_wh_km = 0
+
+[charging]
+efficiency = 0
+price_per_kwh = 0
