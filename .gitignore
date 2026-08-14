@@ -1,0 +1,8 @@
+/teslalog-linux-arm64
+/teslalog-linux-amd64
+/teslalog
+*.db
+*.db-wal
+*.db-shm
+*.db.gz
+tokens.json

@@ -1,0 +1,44 @@
+# TeslaLog Mini configuration.
+# Copy to /etc/teslalog/config.toml and adjust as needed.
+# Any field left out uses the built-in default shown here.
+
+database   = "/var/lib/teslalog/tesla.db"
+token_file = "/var/lib/teslalog/tokens.json"
+
+# Optional: pin to one vehicle's VIN if your account has more than one.
+# Leave blank to use the first vehicle returned by the account.
+vin = ""
+
+[polling]
+# How often we call vehicle_data while the car is online, driving,
+# charging, or idle (NOT asleep/suspended).
+active_interval = "30s"
+
+# How long the car can sit online-but-idle (parked, not charging)
+# before we stop polling and let it sleep. This is the single most
+# important setting for not keeping the car awake — TeslaMate itself
+# defaults to a similar ~3 minute idle window.
+idle_timeout = "3m"
+
+# How often we perform the cheap "is it awake yet" check
+# (GET /api/1/vehicles, which never wakes the car) while
+# asleep/suspended.
+suspended_check_interval = "15m"
+
+[streaming]
+enabled = true
+url     = "wss://streaming.vn.teslamotors.com/streaming/"
+
+[backup]
+enabled        = true
+dir            = "/var/lib/teslalog/backups"
+retention_days = 30
+interval       = "24h"
+
+[api]
+# These defaults are correct for the standard Tesla Owner API/SSO
+# endpoints; only override for testing against a mock server.
+owner_api_base_url = "https://owner-api.teslamotors.com"
+sso_base_url        = "https://auth.tesla.com"
+client_id            = "ownerapi"
+user_agent           = "teslalog/0.1"

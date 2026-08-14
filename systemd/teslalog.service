@@ -1,0 +1,26 @@
+[Unit]
+Description=TeslaLog Mini - lightweight Tesla vehicle logger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=teslalog
+Group=teslalog
+ExecStart=/usr/local/bin/teslalog run -config /etc/teslalog/config.toml
+Restart=always
+RestartSec=10
+# Give the daemon time to close SQLite cleanly (fsync WAL etc.) on stop/restart.
+TimeoutStopSec=15
+
+# --- Hardening (safe defaults for a single-purpose logger daemon) ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/teslalog
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
