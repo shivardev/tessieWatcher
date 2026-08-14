@@ -42,3 +42,22 @@ owner_api_base_url = "https://owner-api.teslamotors.com"
 sso_base_url        = "https://auth.tesla.com"
 client_id            = "ownerapi"
 user_agent           = "teslalog/0.1"
+
+[vehicle]
+# Wh/km consumption estimate, purely informational (stored on the
+# vehicle row for whatever reads the DB - e.g. Grafana - to use in its
+# own range projections). Not reported by the API. Leave 0 to skip.
+efficiency_wh_km = 0
+
+[charging]
+# The Owner API only reports energy ADDED to the battery, not energy
+# drawn from the wall. TeslaMate estimates the latter with a
+# configurable efficiency factor; set one here to do the same
+# (charge_energy_used_kwh = charge_energy_added_kwh / efficiency).
+# Leave 0 to skip recording an estimate (column stays NULL).
+efficiency = 0
+
+# If set, charging_sessions.cost = charge_energy_added_kwh * price_per_kwh.
+# Leave 0 for no cost tracking (teslalog doesn't do TeslaMate's
+# geofence-based variable pricing - this is one flat rate).
+price_per_kwh = 0

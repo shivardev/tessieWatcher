@@ -26,7 +26,7 @@ func containsKind(events []Event, k EventKind) bool {
 
 func TestInitialSummaryAwake(t *testing.T) {
 	m := New(3 * time.Minute)
-	events := m.OnSummary(t0(), true)
+	events := m.OnSummary(t0(), "online")
 	if m.State() != StateOnline {
 		t.Fatalf("expected StateOnline, got %s", m.State())
 	}
@@ -37,7 +37,7 @@ func TestInitialSummaryAwake(t *testing.T) {
 
 func TestInitialSummaryAsleep(t *testing.T) {
 	m := New(3 * time.Minute)
-	events := m.OnSummary(t0(), false)
+	events := m.OnSummary(t0(), "asleep")
 	if m.State() != StateAsleep {
 		t.Fatalf("expected StateAsleep, got %s", m.State())
 	}
@@ -48,8 +48,8 @@ func TestInitialSummaryAsleep(t *testing.T) {
 
 func TestSummaryNoOpWhenAlreadyAsleep(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), false)
-	events := m.OnSummary(t0().Add(time.Minute), false)
+	m.OnSummary(t0(), "asleep")
+	events := m.OnSummary(t0().Add(time.Minute), "asleep")
 	if events != nil {
 		t.Fatalf("expected no events for repeated asleep check, got %+v", events)
 	}
@@ -57,7 +57,7 @@ func TestSummaryNoOpWhenAlreadyAsleep(t *testing.T) {
 
 func TestDriveLifecycle(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true) // -> online
+	m.OnSummary(t0(), "online") // -> online
 
 	start := Snapshot{Time: t0().Add(time.Second), ShiftState: "D", OdometerKm: 1000, BatteryLevel: 76, RangeKm: 300, Lat: 40.0, Lng: -74.0}
 	events := m.OnVehicleData(start)
@@ -92,7 +92,7 @@ func TestDriveLifecycle(t *testing.T) {
 
 func TestChargeLifecycle(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 
 	start := Snapshot{Time: t0(), ChargingState: "Charging", BatteryLevel: 20, RangeKm: 80}
 	events := m.OnVehicleData(start)
@@ -121,7 +121,7 @@ func TestChargeLifecycle(t *testing.T) {
 
 func TestIdleTimeoutAndSuspend(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 
 	idleSnap := Snapshot{Time: t0(), ShiftState: "", ChargingState: "Disconnected", BatteryLevel: 80, RangeKm: 320}
 	m.OnVehicleData(idleSnap)
@@ -146,7 +146,7 @@ func TestIdleTimeoutAndSuspend(t *testing.T) {
 
 	// Idle timer resets after a fresh idle period begins (post-drive).
 	m2 := New(3 * time.Minute)
-	m2.OnSummary(t0(), true)
+	m2.OnSummary(t0(), "online")
 	m2.OnVehicleData(Snapshot{Time: t0(), ShiftState: "D", OdometerKm: 0})
 	m2.OnVehicleData(Snapshot{Time: t0().Add(10 * time.Minute), ShiftState: "", OdometerKm: 5})
 	if m2.IdleTimedOut(t0().Add(11 * time.Minute)) {
@@ -156,7 +156,7 @@ func TestIdleTimeoutAndSuspend(t *testing.T) {
 
 func TestNoSuspendWhileDrivingOrCharging(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 	m.OnVehicleData(Snapshot{Time: t0(), ShiftState: "D"})
 	if events := m.Suspend(t0().Add(time.Hour)); events != nil {
 		t.Fatalf("Suspend should be a no-op while driving, got %+v", events)
@@ -168,14 +168,14 @@ func TestNoSuspendWhileDrivingOrCharging(t *testing.T) {
 
 func TestResumeFromSuspendedOnSummary(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 	m.OnVehicleData(Snapshot{Time: t0(), ShiftState: ""})
 	m.Suspend(t0().Add(5 * time.Minute))
 	if m.State() != StateSuspended {
 		t.Fatalf("expected StateSuspended, got %s", m.State())
 	}
 
-	events := m.OnSummary(t0().Add(time.Hour), true)
+	events := m.OnSummary(t0().Add(time.Hour), "online")
 	if m.State() != StateOnline {
 		t.Fatalf("expected StateOnline after resuming, got %s", m.State())
 	}
@@ -186,7 +186,7 @@ func TestResumeFromSuspendedOnSummary(t *testing.T) {
 
 func TestSoftwareUpdateLifecycle(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 
 	events := m.OnVehicleData(Snapshot{Time: t0(), UpdateStatus: "installing", UpdateVersion: "2026.20.1"})
 	if !containsKind(events, EvSoftwareUpdateBeg) {
@@ -206,7 +206,7 @@ func TestSoftwareUpdateLifecycle(t *testing.T) {
 
 func TestDrivingWhileChargingClosesChargeFirst(t *testing.T) {
 	m := New(3 * time.Minute)
-	m.OnSummary(t0(), true)
+	m.OnSummary(t0(), "online")
 	m.OnVehicleData(Snapshot{Time: t0(), ChargingState: "Charging", BatteryLevel: 40})
 
 	events := m.OnVehicleData(Snapshot{Time: t0().Add(time.Minute), ShiftState: "D", ChargingState: "Disconnected"})

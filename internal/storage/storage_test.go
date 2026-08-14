@@ -20,7 +20,7 @@ func openTestStore(t *testing.T) *Store {
 func TestUpsertVehicle(t *testing.T) {
 	s := openTestStore(t)
 
-	id1, err := s.UpsertVehicle("5YJ3E1EA1PF000001", "123", "My Model 3", "model3", "LR AWD")
+	id1, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "My Model 3", Model: "model3", TrimBadging: "LR AWD"})
 	if err != nil {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestUpsertVehicle(t *testing.T) {
 
 	// Upserting again with the same VIN should return the same id, and
 	// update the mutable fields.
-	id2, err := s.UpsertVehicle("5YJ3E1EA1PF000001", "123", "Renamed", "model3", "LR AWD")
+	id2, err := s.UpsertVehicle(VehicleMeta{VIN: "5YJ3E1EA1PF000001", TeslaID: "123", DisplayName: "Renamed", Model: "model3", TrimBadging: "LR AWD"})
 	if err != nil {
 		t.Fatalf("re-upsert vehicle: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestUpsertVehicle(t *testing.T) {
 
 func TestDriveRoundTrip(t *testing.T) {
 	s := openTestStore(t)
-	vehicleID, _ := s.UpsertVehicle("VIN1", "1", "Car", "model3", "")
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN1", TeslaID: "1", DisplayName: "Car", Model: "model3", TrimBadging: ""})
 
 	start := time.Date(2026, 8, 14, 10, 42, 0, 0, time.UTC)
 	driveID, err := s.OpenDrive(DriveStart{
@@ -113,7 +113,7 @@ func TestDriveRoundTrip(t *testing.T) {
 
 func TestChargingRoundTrip(t *testing.T) {
 	s := openTestStore(t)
-	vehicleID, _ := s.UpsertVehicle("VIN2", "2", "Car", "model3", "")
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN2", TeslaID: "2", DisplayName: "Car", Model: "model3", TrimBadging: ""})
 
 	start := time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC)
 	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 21, RangeKm: 84})
@@ -161,7 +161,7 @@ func TestChargingRoundTrip(t *testing.T) {
 
 func TestStateHistory(t *testing.T) {
 	s := openTestStore(t)
-	vehicleID, _ := s.UpsertVehicle("VIN3", "3", "Car", "model3", "")
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN3", TeslaID: "3", DisplayName: "Car", Model: "model3", TrimBadging: ""})
 
 	t0 := time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC)
 	if _, err := s.OpenState(vehicleID, "online", t0); err != nil {
@@ -192,7 +192,7 @@ func TestStateHistory(t *testing.T) {
 
 func TestBatterySamplesAndSoftwareUpdates(t *testing.T) {
 	s := openTestStore(t)
-	vehicleID, _ := s.UpsertVehicle("VIN4", "4", "Car", "model3", "")
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN4", TeslaID: "4", DisplayName: "Car", Model: "model3", TrimBadging: ""})
 
 	now := time.Now().UTC()
 	if err := s.InsertBatterySample(vehicleID, now, 80, 320, 340, "poll"); err != nil {

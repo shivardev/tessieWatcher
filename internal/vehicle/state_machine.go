@@ -27,6 +27,7 @@ type State string
 const (
 	StateUnknown   State = "unknown"
 	StateAsleep    State = "asleep"
+	StateOffline   State = "offline"
 	StateOnline    State = "online"
 	StateDriving   State = "driving"
 	StateCharging  State = "charging"
@@ -35,6 +36,9 @@ const (
 )
 
 // Snapshot is one vehicle_data poll (or streaming-derived equivalent).
+// Field set mirrors TeslaMate's positions/charges tables (see
+// TeslaMate's lib/teslamate/log/{position,charge}.ex) plus a few extras
+// (Heading, ShiftState) TeslaMate derives differently.
 type Snapshot struct {
 	Time time.Time
 
@@ -46,20 +50,51 @@ type Snapshot struct {
 	// "Starting", "Complete", "Stopped", "Disconnected", "NoPower", ...
 	ChargingState string
 
-	OdometerKm   float64
-	BatteryLevel int
-	RangeKm      float64
-	IdealRangeKm float64
-	Lat, Lng     float64
-	SpeedKmh     float64
-	Heading      float64
-	ElevationM   float64
-	PowerKw      float64
+	OdometerKm float64
+	Lat, Lng   float64
+	SpeedKmh   float64
+	Heading    float64
+	ElevationM float64
+	PowerKw    float64
 
+	// Battery/range: TeslaMate keeps ideal, estimated, and rated range
+	// as three separate figures (they diverge, especially on packs
+	// where "ideal" range is deprecated/frozen) plus raw vs. usable
+	// battery percentage.
+	BatteryLevel         int
+	UsableBatteryLevel   int
+	RangeKm              float64 // rated_battery_range_km
+	IdealRangeKm         float64
+	EstRangeKm           float64
+	BatteryHeater        bool
+	BatteryHeaterOn      bool
+	BatteryHeaterNoPower bool
+
+	// Charging-specific.
 	ChargeEnergyAddedKwh float64
 	ChargerPowerKw       float64
 	ChargerVoltage       float64
 	ChargerActualCurrent float64
+	ChargerPilotCurrent  int
+	ChargerPhases        int
+	ConnChargeCable      string
+	FastChargerPresent   bool
+	FastChargerBrand     string
+	FastChargerType      string
+	NotEnoughPowerToHeat bool
+
+	// Climate.
+	OutsideTempC          float64
+	InsideTempC           float64
+	FanStatus             int
+	DriverTempSettingC    float64
+	PassengerTempSettingC float64
+	IsClimateOn           bool
+	IsRearDefrosterOn     bool
+	IsFrontDefrosterOn    bool
+
+	// Tire pressures (bar), from vehicle_state.tpms_pressure_*.
+	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR float64
 
 	// Optional software-update tracking.
 	UpdateStatus  string // "", "available", "downloading", "installing"
@@ -182,20 +217,34 @@ func (m *Machine) transition(now time.Time, to State) []Event {
 
 // OnSummary processes a cheap "is the vehicle awake" check (the Owner
 // API vehicle list endpoint, which does NOT wake the car). Call this
-// while ASLEEP/SUSPENDED (or before the first observation) at the
-// configured SuspendedCheckInterval. It never calls vehicle_data itself
-// and never issues a wake command.
-func (m *Machine) OnSummary(now time.Time, awake bool) []Event {
-	if awake {
-		if m.state == StateAsleep || m.state == StateSuspended || m.state == StateUnknown {
+// while ASLEEP/OFFLINE/SUSPENDED (or before the first observation) at
+// the configured SuspendedCheckInterval. It never calls vehicle_data
+// itself and never issues a wake command.
+//
+// rawState is the Owner API's own vehicle summary state string
+// ("online", "asleep", or "offline" — matching TeslaMate's `states`
+// enum exactly; "offline" means the car hasn't phoned home at all,
+// distinct from a normal sleep).
+func (m *Machine) OnSummary(now time.Time, rawState string) []Event {
+	var target State
+	switch rawState {
+	case "online":
+		target = StateOnline
+	case "offline":
+		target = StateOffline
+	default:
+		target = StateAsleep // "asleep", or anything unrecognized
+	}
+
+	if target == StateOnline {
+		if m.state == StateAsleep || m.state == StateOffline || m.state == StateSuspended || m.state == StateUnknown {
 			return m.transition(now, StateOnline)
 		}
 		return nil
 	}
 
-	// Not awake: only meaningful if we thought it might be awake.
-	if m.state != StateAsleep {
-		return m.transition(now, StateAsleep)
+	if m.state != target {
+		return m.transition(now, target)
 	}
 	return nil
 }
@@ -220,7 +269,7 @@ func (m *Machine) OnVehicleData(snap Snapshot) []Event {
 
 	// A successful vehicle_data response means the car is awake, no
 	// matter what state we thought it was in.
-	if m.state == StateAsleep || m.state == StateSuspended || m.state == StateUnknown {
+	if m.state == StateAsleep || m.state == StateOffline || m.state == StateSuspended || m.state == StateUnknown {
 		events = append(events, m.transition(now, StateOnline)...)
 	}
 

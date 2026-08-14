@@ -78,28 +78,60 @@ func fmtTime(t time.Time) string {
 	return t.UTC().Format(timeLayout)
 }
 
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // ---- vehicles ----
 
+// VehicleMeta is the API-derived (not user-configured) vehicle identity
+// fields upserted whenever we see them.
+type VehicleMeta struct {
+	VIN           string
+	TeslaID       string
+	DisplayName   string
+	Model         string
+	TrimBadging   string
+	ExteriorColor string
+	WheelType     string
+	SpoilerType   string
+}
+
 // UpsertVehicle ensures a vehicle row exists for vin and returns its id.
-func (s *Store) UpsertVehicle(vin, teslaID, displayName, model, trim string) (int64, error) {
+func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 	_, err := s.db.Exec(`
-		INSERT INTO vehicles (vin, tesla_id, display_name, model, trim_badging)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO vehicles (vin, tesla_id, display_name, model, trim_badging, exterior_color, wheel_type, spoiler_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(vin) DO UPDATE SET
 			tesla_id = excluded.tesla_id,
 			display_name = excluded.display_name,
 			model = excluded.model,
-			trim_badging = excluded.trim_badging
-	`, vin, teslaID, displayName, model, trim)
+			trim_badging = excluded.trim_badging,
+			exterior_color = excluded.exterior_color,
+			wheel_type = excluded.wheel_type,
+			spoiler_type = excluded.spoiler_type
+	`, v.VIN, v.TeslaID, v.DisplayName, v.Model, v.TrimBadging, v.ExteriorColor, v.WheelType, v.SpoilerType)
 	if err != nil {
 		return 0, fmt.Errorf("upsert vehicle: %w", err)
 	}
 
 	var id int64
-	if err := s.db.QueryRow(`SELECT id FROM vehicles WHERE vin = ?`, vin).Scan(&id); err != nil {
+	if err := s.db.QueryRow(`SELECT id FROM vehicles WHERE vin = ?`, v.VIN).Scan(&id); err != nil {
 		return 0, fmt.Errorf("lookup vehicle id: %w", err)
 	}
 	return id, nil
+}
+
+// SetVehicleEfficiency stores a user-configured Wh/km efficiency
+// estimate (config.toml's [vehicle].efficiency_wh_km) — not reported by
+// the API, used the same way TeslaMate uses it: to project range from
+// battery percentage.
+func (s *Store) SetVehicleEfficiency(vehicleID int64, whPerKm float64) error {
+	_, err := s.db.Exec(`UPDATE vehicles SET efficiency_wh_km = ? WHERE id = ?`, whPerKm, vehicleID)
+	return err
 }
 
 // ---- state machine history ----
@@ -158,6 +190,7 @@ type DriveStart struct {
 	OdometerKm   float64
 	BatteryLevel int
 	RangeKm      float64
+	IdealRangeKm float64
 	Lat, Lng     float64
 }
 
@@ -166,28 +199,47 @@ func (s *Store) OpenDrive(d DriveStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO drives (
 			vehicle_id, start_time, start_odometer_km, start_battery_level,
-			start_range_km, start_lat, start_lng, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
-	`, d.VehicleID, fmtTime(d.Time), d.OdometerKm, d.BatteryLevel, d.RangeKm, d.Lat, d.Lng)
+			start_range_km, start_ideal_range_km, start_lat, start_lng, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
+	`, d.VehicleID, fmtTime(d.Time), d.OdometerKm, d.BatteryLevel, d.RangeKm, d.IdealRangeKm, d.Lat, d.Lng)
 	if err != nil {
 		return 0, fmt.Errorf("open drive: %w", err)
 	}
 	return res.LastInsertId()
 }
 
+// PositionSample is one GPS/telemetry sample. Field set mirrors
+// TeslaMate's positions table (lib/teslamate/log/position.ex).
 type PositionSample struct {
-	DriveID      int64
-	VehicleID    int64
-	Time         time.Time
-	Lat, Lng     float64
-	SpeedKmh     float64
-	Heading      float64
-	ElevationM   float64
-	PowerKw      float64
-	OdometerKm   float64
-	BatteryLevel int
-	RangeKm      float64
-	ShiftState   string
+	DriveID    int64
+	VehicleID  int64
+	Time       time.Time
+	Lat, Lng   float64
+	SpeedKmh   float64
+	Heading    float64
+	ElevationM float64
+	PowerKw    float64
+	OdometerKm float64
+
+	BatteryLevel       int
+	UsableBatteryLevel int
+	RangeKm            float64
+	IdealRangeKm       float64
+	EstRangeKm         float64
+	BatteryHeaterOn    bool
+
+	OutsideTempC          float64
+	InsideTempC           float64
+	FanStatus             int
+	DriverTempSettingC    float64
+	PassengerTempSettingC float64
+	IsClimateOn           bool
+	IsRearDefrosterOn     bool
+	IsFrontDefrosterOn    bool
+
+	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR float64
+
+	ShiftState string
 }
 
 // AppendPosition records one GPS/telemetry sample for an open drive.
@@ -195,10 +247,20 @@ func (s *Store) AppendPosition(p PositionSample) error {
 	_, err := s.db.Exec(`
 		INSERT INTO positions (
 			drive_id, vehicle_id, timestamp, latitude, longitude, speed_kmh,
-			heading, elevation_m, power_kw, odometer_km, battery_level, range_km, shift_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			heading, elevation_m, power_kw, odometer_km,
+			battery_level, usable_battery_level, range_km, ideal_range_km, est_range_km, battery_heater_on,
+			outside_temp_c, inside_temp_c, fan_status, driver_temp_setting_c, passenger_temp_setting_c,
+			is_climate_on, is_rear_defroster_on, is_front_defroster_on,
+			tpms_pressure_fl, tpms_pressure_fr, tpms_pressure_rl, tpms_pressure_rr,
+			shift_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, p.DriveID, p.VehicleID, fmtTime(p.Time), p.Lat, p.Lng, p.SpeedKmh,
-		p.Heading, p.ElevationM, p.PowerKw, p.OdometerKm, p.BatteryLevel, p.RangeKm, p.ShiftState)
+		p.Heading, p.ElevationM, p.PowerKw, p.OdometerKm,
+		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm, boolToInt(p.BatteryHeaterOn),
+		p.OutsideTempC, p.InsideTempC, p.FanStatus, p.DriverTempSettingC, p.PassengerTempSettingC,
+		boolToInt(p.IsClimateOn), boolToInt(p.IsRearDefrosterOn), boolToInt(p.IsFrontDefrosterOn),
+		p.TpmsPressureFL, p.TpmsPressureFR, p.TpmsPressureRL, p.TpmsPressureRR,
+		p.ShiftState)
 	if err != nil {
 		return fmt.Errorf("append position: %w", err)
 	}
@@ -211,13 +273,15 @@ type DriveEnd struct {
 	OdometerKm   float64
 	BatteryLevel int
 	RangeKm      float64
+	IdealRangeKm float64
 	Lat, Lng     float64
 }
 
-// CloseDrive finalizes a drive: sets end fields, computed distance and
-// duration, and marks status 'closed'. Distance/duration/max speed are
-// derived from the recorded positions plus start/end odometer so the
-// numbers are correct even if some samples were missed.
+// CloseDrive finalizes a drive: sets end fields, computed distance,
+// duration, and aggregate stats (max speed, max/min power, avg outside/
+// inside temp, ascent/descent), then marks status 'closed'. Aggregates
+// are derived from the recorded positions plus start/end odometer so
+// the numbers are correct even if some samples were missed.
 func (s *Store) CloseDrive(e DriveEnd) error {
 	var startTimeStr string
 	var startOdometer float64
@@ -237,21 +301,69 @@ func (s *Store) CloseDrive(e DriveEnd) error {
 	}
 	duration := e.Time.Sub(startTime).Minutes()
 
-	var maxSpeed sql.NullFloat64
-	_ = s.db.QueryRow(`SELECT MAX(speed_kmh) FROM positions WHERE drive_id = ?`, e.DriveID).Scan(&maxSpeed)
+	var maxSpeed, maxPower, minPower, avgOutside, avgInside sql.NullFloat64
+	_ = s.db.QueryRow(`
+		SELECT MAX(speed_kmh), MAX(power_kw), MIN(power_kw), AVG(outside_temp_c), AVG(inside_temp_c)
+		FROM positions WHERE drive_id = ?
+	`, e.DriveID).Scan(&maxSpeed, &maxPower, &minPower, &avgOutside, &avgInside)
+
+	ascent, descent, err := s.elevationChange(e.DriveID)
+	if err != nil {
+		return fmt.Errorf("compute elevation change: %w", err)
+	}
 
 	_, err = s.db.Exec(`
 		UPDATE drives SET
 			end_time = ?, end_odometer_km = ?, end_battery_level = ?,
-			end_range_km = ?, end_lat = ?, end_lng = ?,
-			distance_km = ?, duration_min = ?, max_speed_kmh = ?, status = 'closed'
+			end_range_km = ?, end_ideal_range_km = ?, end_lat = ?, end_lng = ?,
+			distance_km = ?, duration_min = ?, max_speed_kmh = ?,
+			max_power_kw = ?, min_power_kw = ?, outside_temp_avg_c = ?, inside_temp_avg_c = ?,
+			ascent_m = ?, descent_m = ?, status = 'closed'
 		WHERE id = ?
-	`, fmtTime(e.Time), e.OdometerKm, e.BatteryLevel, e.RangeKm, e.Lat, e.Lng,
-		distance, duration, maxSpeed.Float64, e.DriveID)
+	`, fmtTime(e.Time), e.OdometerKm, e.BatteryLevel, e.RangeKm, e.IdealRangeKm, e.Lat, e.Lng,
+		distance, duration, maxSpeed.Float64,
+		maxPower.Float64, minPower.Float64, avgOutside.Float64, avgInside.Float64,
+		ascent, descent, e.DriveID)
 	if err != nil {
 		return fmt.Errorf("close drive %d: %w", e.DriveID, err)
 	}
 	return nil
+}
+
+// elevationChange sums positive (ascent) and negative (descent, as a
+// positive magnitude) deltas between consecutive elevation_m readings
+// for a drive, skipping NULLs (elevation only comes from the streaming
+// client; if streaming was never connected during the drive, both
+// return 0, not an error).
+func (s *Store) elevationChange(driveID int64) (ascent, descent float64, err error) {
+	rows, err := s.db.Query(`
+		SELECT elevation_m FROM positions
+		WHERE drive_id = ? AND elevation_m IS NOT NULL
+		ORDER BY timestamp
+	`, driveID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	var prev float64
+	havePrev := false
+	for rows.Next() {
+		var elev float64
+		if err := rows.Scan(&elev); err != nil {
+			return 0, 0, err
+		}
+		if havePrev {
+			if d := elev - prev; d > 0 {
+				ascent += d
+			} else {
+				descent += -d
+			}
+		}
+		prev = elev
+		havePrev = true
+	}
+	return ascent, descent, rows.Err()
 }
 
 // OpenDriveID returns the id of the currently open drive for a vehicle,
@@ -275,42 +387,67 @@ type ChargeStart struct {
 	Time         time.Time
 	BatteryLevel int
 	RangeKm      float64
+	IdealRangeKm float64
 	Lat, Lng     float64
 }
 
 func (s *Store) OpenChargingSession(c ChargeStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO charging_sessions (
-			vehicle_id, start_time, start_battery_level, start_range_km, latitude, longitude, status
-		) VALUES (?, ?, ?, ?, ?, ?, 'open')
-	`, c.VehicleID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.Lat, c.Lng)
+			vehicle_id, start_time, start_battery_level, start_range_km, start_ideal_range_km,
+			latitude, longitude, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
+	`, c.VehicleID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng)
 	if err != nil {
 		return 0, fmt.Errorf("open charging session: %w", err)
 	}
 	return res.LastInsertId()
 }
 
+// ChargingSample is one charging telemetry sample. Field set mirrors
+// TeslaMate's charges table (lib/teslamate/log/charge.ex).
 type ChargingSample struct {
 	ChargingSessionID int64
 	VehicleID         int64
 	Time              time.Time
-	BatteryLevel      int
-	ChargerPowerKw    float64
-	ChargerVoltage    float64
-	ChargerCurrent    float64
-	EnergyAddedKwh    float64
-	RangeKm           float64
+
+	BatteryLevel       int
+	UsableBatteryLevel int
+
+	ChargerPowerKw      float64
+	ChargerVoltage      float64
+	ChargerCurrent      float64
+	ChargerPilotCurrent int
+	ChargerPhases       int
+	ConnChargeCable     string
+	FastChargerPresent  bool
+	FastChargerBrand    string
+	FastChargerType     string
+
+	EnergyAddedKwh       float64
+	RangeKm              float64
+	IdealRangeKm         float64
+	BatteryHeaterOn      bool
+	NotEnoughPowerToHeat bool
+	OutsideTempC         float64
 }
 
 func (s *Store) AppendChargingSample(c ChargingSample) error {
 	_, err := s.db.Exec(`
 		INSERT INTO charging_samples (
-			charging_session_id, vehicle_id, timestamp, battery_level,
-			charger_power_kw, charger_voltage, charger_actual_current,
-			charge_energy_added_kwh, range_km
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.ChargingSessionID, c.VehicleID, fmtTime(c.Time), c.BatteryLevel,
-		c.ChargerPowerKw, c.ChargerVoltage, c.ChargerCurrent, c.EnergyAddedKwh, c.RangeKm)
+			charging_session_id, vehicle_id, timestamp,
+			battery_level, usable_battery_level,
+			charger_power_kw, charger_voltage, charger_actual_current, charger_pilot_current,
+			charger_phases, conn_charge_cable, fast_charger_present, fast_charger_brand, fast_charger_type,
+			charge_energy_added_kwh, range_km, ideal_range_km,
+			battery_heater_on, not_enough_power_to_heat, outside_temp_c
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.ChargingSessionID, c.VehicleID, fmtTime(c.Time),
+		c.BatteryLevel, c.UsableBatteryLevel,
+		c.ChargerPowerKw, c.ChargerVoltage, c.ChargerCurrent, c.ChargerPilotCurrent,
+		c.ChargerPhases, c.ConnChargeCable, boolToInt(c.FastChargerPresent), c.FastChargerBrand, c.FastChargerType,
+		c.EnergyAddedKwh, c.RangeKm, c.IdealRangeKm,
+		boolToInt(c.BatteryHeaterOn), boolToInt(c.NotEnoughPowerToHeat), c.OutsideTempC)
 	return err
 }
 
@@ -319,21 +456,46 @@ type ChargeEnd struct {
 	Time              time.Time
 	BatteryLevel      int
 	RangeKm           float64
+	IdealRangeKm      float64
 	EnergyAddedKwh    float64
+
+	// ChargingEfficiency (0-1), if > 0, is used to estimate
+	// charge_energy_used_kwh = EnergyAddedKwh / ChargingEfficiency —
+	// the API only reports energy *added* to the battery, not energy
+	// drawn from the wall; TeslaMate models the difference the same
+	// way, via a configurable loss factor. Leave 0 to skip.
+	ChargingEfficiency float64
+
+	// PricePerKwh, if > 0, is used to compute cost = EnergyAddedKwh *
+	// PricePerKwh. Leave 0 to skip (matches TeslaMate's behavior
+	// without a configured geofence price).
+	PricePerKwh float64
 }
 
 func (s *Store) CloseChargingSession(e ChargeEnd) error {
-	var maxPower sql.NullFloat64
+	var maxPower, avgOutside sql.NullFloat64
 	_ = s.db.QueryRow(`
-		SELECT MAX(charger_power_kw) FROM charging_samples WHERE charging_session_id = ?
-	`, e.ChargingSessionID).Scan(&maxPower)
+		SELECT MAX(charger_power_kw), AVG(outside_temp_c) FROM charging_samples WHERE charging_session_id = ?
+	`, e.ChargingSessionID).Scan(&maxPower, &avgOutside)
+
+	var energyUsed sql.NullFloat64
+	if e.ChargingEfficiency > 0 {
+		energyUsed = sql.NullFloat64{Float64: e.EnergyAddedKwh / e.ChargingEfficiency, Valid: true}
+	}
+	var cost sql.NullFloat64
+	if e.PricePerKwh > 0 {
+		cost = sql.NullFloat64{Float64: e.EnergyAddedKwh * e.PricePerKwh, Valid: true}
+	}
 
 	_, err := s.db.Exec(`
 		UPDATE charging_sessions SET
-			end_time = ?, end_battery_level = ?, end_range_km = ?,
-			charge_energy_added_kwh = ?, max_charger_power_kw = ?, status = 'closed'
+			end_time = ?, end_battery_level = ?, end_range_km = ?, end_ideal_range_km = ?,
+			charge_energy_added_kwh = ?, charge_energy_used_kwh = ?, max_charger_power_kw = ?,
+			outside_temp_avg_c = ?, cost = ?, status = 'closed'
 		WHERE id = ?
-	`, fmtTime(e.Time), e.BatteryLevel, e.RangeKm, e.EnergyAddedKwh, maxPower.Float64, e.ChargingSessionID)
+	`, fmtTime(e.Time), e.BatteryLevel, e.RangeKm, e.IdealRangeKm,
+		e.EnergyAddedKwh, energyUsed, maxPower.Float64,
+		avgOutside.Float64, cost, e.ChargingSessionID)
 	return err
 }
 

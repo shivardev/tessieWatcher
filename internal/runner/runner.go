@@ -43,9 +43,16 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 	slog.Info("selected vehicle", "vin", summary.VIN, "display_name", summary.DisplayName)
 
-	vehicleDBID, err := store.UpsertVehicle(summary.VIN, fmt.Sprint(summary.VehicleID), summary.DisplayName, "", "")
+	vehicleDBID, err := store.UpsertVehicle(storage.VehicleMeta{
+		VIN: summary.VIN, TeslaID: fmt.Sprint(summary.VehicleID), DisplayName: summary.DisplayName,
+	})
 	if err != nil {
 		return fmt.Errorf("upsert vehicle: %w", err)
+	}
+	if cfg.Vehicle.EfficiencyWhKm > 0 {
+		if err := store.SetVehicleEfficiency(vehicleDBID, cfg.Vehicle.EfficiencyWhKm); err != nil {
+			slog.Warn("set vehicle efficiency failed", "error", err)
+		}
 	}
 
 	if cfg.Backup.Enabled {
@@ -122,7 +129,7 @@ func (l *loopState) run(ctx context.Context) error {
 
 		var sleepFor time.Duration
 		switch l.machine.State() {
-		case vehicle.StateAsleep, vehicle.StateSuspended, vehicle.StateUnknown:
+		case vehicle.StateAsleep, vehicle.StateOffline, vehicle.StateSuspended, vehicle.StateUnknown:
 			l.closeStream()
 			if err := l.checkSummary(ctx); err != nil {
 				slog.Warn("vehicle summary check failed", "error", err)
@@ -153,14 +160,14 @@ func (l *loopState) checkSummary(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	awake := false
+	rawState := "offline" // not found in the list at all: treat as offline
 	for _, v := range vehicles {
 		if v.VehicleID == l.vehicleID {
-			awake = v.Awake()
+			rawState = v.State
 			break
 		}
 	}
-	events := l.machine.OnSummary(time.Now().UTC(), awake)
+	events := l.machine.OnSummary(time.Now().UTC(), rawState)
 	return l.persist(events)
 }
 
@@ -176,8 +183,11 @@ func (l *loopState) pollVehicleData(ctx context.Context) error {
 		return err
 	}
 	if meta.Model != "" || meta.DisplayName != "" {
-		_, _ = meta, struct{}{} // keep vehicle metadata fresh occasionally
-		_, err := l.store.UpsertVehicle(meta.VIN, fmt.Sprint(l.vehicleID), meta.DisplayName, meta.Model, meta.TrimBadging)
+		_, err := l.store.UpsertVehicle(storage.VehicleMeta{
+			VIN: meta.VIN, TeslaID: fmt.Sprint(l.vehicleID), DisplayName: meta.DisplayName,
+			Model: meta.Model, TrimBadging: meta.TrimBadging,
+			ExteriorColor: meta.ExteriorColor, WheelType: meta.WheelType, SpoilerType: meta.SpoilerType,
+		})
 		if err != nil {
 			slog.Warn("update vehicle metadata failed", "error", err)
 		}
@@ -211,7 +221,8 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			s := ev.Snapshot
 			id, err := l.store.OpenDrive(storage.DriveStart{
 				VehicleID: l.vehicleDBID, Time: ev.At, OdometerKm: s.OdometerKm,
-				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, Lat: s.Lat, Lng: s.Lng,
+				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
+				Lat: s.Lat, Lng: s.Lng,
 			})
 			if err != nil {
 				return fmt.Errorf("open drive: %w", err)
@@ -223,13 +234,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			if l.driveID == 0 {
 				continue
 			}
-			s := ev.Snapshot
-			if err := l.store.AppendPosition(storage.PositionSample{
-				DriveID: l.driveID, VehicleID: l.vehicleDBID, Time: ev.At,
-				Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
-				ElevationM: s.ElevationM, PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
-				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, ShiftState: s.ShiftState,
-			}); err != nil {
+			if err := l.store.AppendPosition(positionFromSnapshot(l.driveID, l.vehicleDBID, ev.At, ev.Snapshot)); err != nil {
 				return fmt.Errorf("append position: %w", err)
 			}
 
@@ -240,7 +245,8 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			s := ev.Snapshot
 			if err := l.store.CloseDrive(storage.DriveEnd{
 				DriveID: l.driveID, Time: ev.At, OdometerKm: s.OdometerKm,
-				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, Lat: s.Lat, Lng: s.Lng,
+				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
+				Lat: s.Lat, Lng: s.Lng,
 			}); err != nil {
 				return fmt.Errorf("close drive: %w", err)
 			}
@@ -251,7 +257,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			s := ev.Snapshot
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
 				VehicleID: l.vehicleDBID, Time: ev.At, BatteryLevel: s.BatteryLevel,
-				RangeKm: s.RangeKm, Lat: s.Lat, Lng: s.Lng,
+				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, Lat: s.Lat, Lng: s.Lng,
 			})
 			if err != nil {
 				return fmt.Errorf("open charging session: %w", err)
@@ -266,9 +272,15 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			s := ev.Snapshot
 			if err := l.store.AppendChargingSample(storage.ChargingSample{
 				ChargingSessionID: l.chargeID, VehicleID: l.vehicleDBID, Time: ev.At,
-				BatteryLevel: s.BatteryLevel, ChargerPowerKw: s.ChargerPowerKw,
-				ChargerVoltage: s.ChargerVoltage, ChargerCurrent: s.ChargerActualCurrent,
-				EnergyAddedKwh: s.ChargeEnergyAddedKwh, RangeKm: s.RangeKm,
+				BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
+				ChargerPowerKw: s.ChargerPowerKw, ChargerVoltage: s.ChargerVoltage,
+				ChargerCurrent: s.ChargerActualCurrent, ChargerPilotCurrent: s.ChargerPilotCurrent,
+				ChargerPhases: s.ChargerPhases, ConnChargeCable: s.ConnChargeCable,
+				FastChargerPresent: s.FastChargerPresent, FastChargerBrand: s.FastChargerBrand,
+				FastChargerType: s.FastChargerType,
+				EnergyAddedKwh:  s.ChargeEnergyAddedKwh, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
+				BatteryHeaterOn: s.BatteryHeaterOn, NotEnoughPowerToHeat: s.NotEnoughPowerToHeat,
+				OutsideTempC: s.OutsideTempC,
 			}); err != nil {
 				return fmt.Errorf("append charging sample: %w", err)
 			}
@@ -280,7 +292,8 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			s := ev.Snapshot
 			if err := l.store.CloseChargingSession(storage.ChargeEnd{
 				ChargingSessionID: l.chargeID, Time: ev.At, BatteryLevel: s.BatteryLevel,
-				RangeKm: s.RangeKm, EnergyAddedKwh: s.ChargeEnergyAddedKwh,
+				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EnergyAddedKwh: s.ChargeEnergyAddedKwh,
+				ChargingEfficiency: l.cfg.Charging.Efficiency, PricePerKwh: l.cfg.Charging.PricePerKwh,
 			}); err != nil {
 				return fmt.Errorf("close charging session: %w", err)
 			}
@@ -347,6 +360,10 @@ func (l *loopState) drainStream() {
 				l.stream = nil
 				return
 			}
+			// The legacy streaming protocol only carries GPS/speed/power/
+			// battery/range/shift_state - richer telemetry (climate, TPMS,
+			// usable battery %, ideal/est range) only comes from REST
+			// vehicle_data polls, so those fields are left zero here.
 			if err := l.store.AppendPosition(storage.PositionSample{
 				DriveID: l.driveID, VehicleID: l.vehicleDBID, Time: s.Time,
 				Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
@@ -358,6 +375,30 @@ func (l *loopState) drainStream() {
 		default:
 			return
 		}
+	}
+}
+
+// positionFromSnapshot maps a full vehicle_data-derived Snapshot onto a
+// storage.PositionSample, carrying every field TeslaMate's positions
+// table tracks (see internal/storage/schema.go).
+func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Snapshot) storage.PositionSample {
+	return storage.PositionSample{
+		DriveID: driveID, VehicleID: vehicleDBID, Time: at,
+		Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
+		ElevationM: s.ElevationM, PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
+
+		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
+		RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EstRangeKm: s.EstRangeKm,
+		BatteryHeaterOn: s.BatteryHeaterOn,
+
+		OutsideTempC: s.OutsideTempC, InsideTempC: s.InsideTempC, FanStatus: s.FanStatus,
+		DriverTempSettingC: s.DriverTempSettingC, PassengerTempSettingC: s.PassengerTempSettingC,
+		IsClimateOn: s.IsClimateOn, IsRearDefrosterOn: s.IsRearDefrosterOn, IsFrontDefrosterOn: s.IsFrontDefrosterOn,
+
+		TpmsPressureFL: s.TpmsPressureFL, TpmsPressureFR: s.TpmsPressureFR,
+		TpmsPressureRL: s.TpmsPressureRL, TpmsPressureRR: s.TpmsPressureRR,
+
+		ShiftState: s.ShiftState,
 	}
 }
 

@@ -26,6 +26,32 @@ type Config struct {
 	Streaming StreamingConfig
 	Backup    BackupConfig
 	API       APIConfig
+	Vehicle   VehicleConfig
+	Charging  ChargingConfig
+}
+
+// VehicleConfig holds user-supplied (not API-reported) vehicle facts.
+type VehicleConfig struct {
+	// EfficiencyWhKm is a Wh/km consumption estimate used the same way
+	// TeslaMate uses it: purely informational, stored alongside the
+	// vehicle row for whatever reads the database to use in its own
+	// range projections. teslalog itself does not compute anything
+	// from it. Leave 0 to skip.
+	EfficiencyWhKm float64
+}
+
+// ChargingConfig controls the two charging figures the Owner API does
+// not report directly and that TeslaMate estimates: energy actually
+// drawn from the wall, and cost.
+type ChargingConfig struct {
+	// Efficiency (0-1) models charging losses: charge_energy_used_kwh
+	// is estimated as charge_energy_added_kwh / Efficiency. Leave 0 to
+	// skip recording an estimate at all (the column stays NULL).
+	Efficiency float64
+	// PricePerKwh, if set, is multiplied by charge_energy_added_kwh to
+	// populate charging_sessions.cost. Leave 0 for no cost tracking
+	// (matches TeslaMate's behavior with no geofence price configured).
+	PricePerKwh float64
 }
 
 type PollingConfig struct {
@@ -91,6 +117,15 @@ type rawConfig struct {
 		ClientID        string `toml:"client_id"`
 		UserAgent       string `toml:"user_agent"`
 	} `toml:"api"`
+
+	Vehicle struct {
+		EfficiencyWhKm float64 `toml:"efficiency_wh_km"`
+	} `toml:"vehicle"`
+
+	Charging struct {
+		Efficiency  float64 `toml:"efficiency"`
+		PricePerKwh float64 `toml:"price_per_kwh"`
+	} `toml:"charging"`
 }
 
 // Default returns a Config populated with sane defaults matching
@@ -201,6 +236,10 @@ func Load(path string) (Config, error) {
 	if raw.API.UserAgent != "" {
 		cfg.API.UserAgent = raw.API.UserAgent
 	}
+
+	cfg.Vehicle.EfficiencyWhKm = raw.Vehicle.EfficiencyWhKm
+	cfg.Charging.Efficiency = raw.Charging.Efficiency
+	cfg.Charging.PricePerKwh = raw.Charging.PricePerKwh
 
 	return cfg, nil
 }

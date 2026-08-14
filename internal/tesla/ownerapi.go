@@ -216,7 +216,10 @@ func (c *Client) WakeUp(ctx context.Context, vehicleID int64) error {
 
 // rawVehicleData mirrors the subset of Tesla's vehicle_data response
 // teslalog cares about. Field names/shapes follow the long-stable
-// public Owner API schema (see tesla-api.timdorr.com).
+// public Owner API schema (see tesla-api.timdorr.com), cross-checked
+// against TeslaMate's own field usage (lib/teslamate/log/*.ex) for data
+// parity: every field TeslaMate persists per-position/per-charge-sample
+// is captured here too.
 type rawVehicleData struct {
 	Response struct {
 		ID            int64  `json:"id"`
@@ -225,8 +228,11 @@ type rawVehicleData struct {
 		DisplayName   string `json:"display_name"`
 		State         string `json:"state"`
 		VehicleConfig struct {
-			CarType     string `json:"car_type"`
-			TrimBadging string `json:"trim_badging"`
+			CarType       string `json:"car_type"`
+			TrimBadging   string `json:"trim_badging"`
+			ExteriorColor string `json:"exterior_color"`
+			WheelType     string `json:"wheel_type"`
+			SpoilerType   string `json:"spoiler_type"`
 		} `json:"vehicle_config"`
 		DriveState struct {
 			ShiftState string  `json:"shift_state"`
@@ -239,16 +245,40 @@ type rawVehicleData struct {
 		ChargeState struct {
 			ChargingState        string  `json:"charging_state"`
 			BatteryLevel         int     `json:"battery_level"`
-			BatteryRange         float64 `json:"battery_range"`
+			UsableBatteryLevel   int     `json:"usable_battery_level"`
+			BatteryRange         float64 `json:"battery_range"` // "rated" range
 			IdealBatteryRange    float64 `json:"ideal_battery_range"`
+			EstBatteryRange      float64 `json:"est_battery_range"`
+			BatteryHeaterOn      bool    `json:"battery_heater_on"`
 			ChargeEnergyAdded    float64 `json:"charge_energy_added"`
 			ChargerPower         float64 `json:"charger_power"`
 			ChargerVoltage       float64 `json:"charger_voltage"`
 			ChargerActualCurrent float64 `json:"charger_actual_current"`
+			ChargerPilotCurrent  float64 `json:"charger_pilot_current"`
+			ChargerPhases        int     `json:"charger_phases"`
+			ConnChargeCable      string  `json:"conn_charge_cable"`
+			FastChargerPresent   bool    `json:"fast_charger_present"`
+			FastChargerBrand     string  `json:"fast_charger_brand"`
+			FastChargerType      string  `json:"fast_charger_type"`
+			NotEnoughPowerToHeat bool    `json:"not_enough_power_to_heat"`
 		} `json:"charge_state"`
+		ClimateState struct {
+			InsideTemp           float64 `json:"inside_temp"`
+			OutsideTemp          float64 `json:"outside_temp"`
+			DriverTempSetting    float64 `json:"driver_temp_setting"`
+			PassengerTempSetting float64 `json:"passenger_temp_setting"`
+			IsClimateOn          bool    `json:"is_climate_on"`
+			FanStatus            int     `json:"fan_status"`
+			IsRearDefrosterOn    bool    `json:"is_rear_defroster_on"`
+			IsFrontDefrosterOn   bool    `json:"is_front_defroster_on"`
+		} `json:"climate_state"`
 		VehicleState struct {
 			Odometer       float64 `json:"odometer"`
 			CarVersion     string  `json:"car_version"`
+			TpmsPressureFL float64 `json:"tpms_pressure_fl"`
+			TpmsPressureFR float64 `json:"tpms_pressure_fr"`
+			TpmsPressureRL float64 `json:"tpms_pressure_rl"`
+			TpmsPressureRR float64 `json:"tpms_pressure_rr"`
 			SoftwareUpdate struct {
 				Status  string `json:"status"`
 				Version string `json:"version"`
@@ -260,10 +290,13 @@ type rawVehicleData struct {
 // VehicleMeta is static-ish vehicle identity info parsed alongside a
 // vehicle_data snapshot.
 type VehicleMeta struct {
-	VIN         string
-	DisplayName string
-	Model       string
-	TrimBadging string
+	VIN           string
+	DisplayName   string
+	Model         string
+	TrimBadging   string
+	ExteriorColor string
+	WheelType     string
+	SpoilerType   string
 }
 
 // VehicleData fetches a full vehicle_data snapshot. The caller MUST
@@ -286,32 +319,66 @@ func (c *Client) VehicleData(ctx context.Context, vehicleID int64) (vehicle.Snap
 		return vehicle.Snapshot{}, VehicleMeta{}, fmt.Errorf("decode vehicle_data: %w", err)
 	}
 
+	cs := rv.Response.ChargeState
+	cl := rv.Response.ClimateState
+	vs := rv.Response.VehicleState
+
 	snap := vehicle.Snapshot{
-		Time:                 time.Now().UTC(),
-		ShiftState:           rv.Response.DriveState.ShiftState,
-		ChargingState:        rv.Response.ChargeState.ChargingState,
-		OdometerKm:           milesToKm(rv.Response.VehicleState.Odometer),
-		BatteryLevel:         rv.Response.ChargeState.BatteryLevel,
-		RangeKm:              milesToKm(rv.Response.ChargeState.BatteryRange),
-		IdealRangeKm:         milesToKm(rv.Response.ChargeState.IdealBatteryRange),
-		Lat:                  rv.Response.DriveState.Latitude,
-		Lng:                  rv.Response.DriveState.Longitude,
-		SpeedKmh:             milesToKm(rv.Response.DriveState.Speed),
-		Heading:              rv.Response.DriveState.Heading,
-		PowerKw:              rv.Response.DriveState.Power,
-		ChargeEnergyAddedKwh: rv.Response.ChargeState.ChargeEnergyAdded,
-		ChargerPowerKw:       rv.Response.ChargeState.ChargerPower,
-		ChargerVoltage:       rv.Response.ChargeState.ChargerVoltage,
-		ChargerActualCurrent: rv.Response.ChargeState.ChargerActualCurrent,
-		UpdateStatus:         rv.Response.VehicleState.SoftwareUpdate.Status,
-		UpdateVersion:        rv.Response.VehicleState.SoftwareUpdate.Version,
+		Time:          time.Now().UTC(),
+		ShiftState:    rv.Response.DriveState.ShiftState,
+		ChargingState: cs.ChargingState,
+		OdometerKm:    milesToKm(vs.Odometer),
+		Lat:           rv.Response.DriveState.Latitude,
+		Lng:           rv.Response.DriveState.Longitude,
+		SpeedKmh:      milesToKm(rv.Response.DriveState.Speed),
+		Heading:       rv.Response.DriveState.Heading,
+		PowerKw:       rv.Response.DriveState.Power,
+
+		BatteryLevel:         cs.BatteryLevel,
+		UsableBatteryLevel:   cs.UsableBatteryLevel,
+		RangeKm:              milesToKm(cs.BatteryRange),
+		IdealRangeKm:         milesToKm(cs.IdealBatteryRange),
+		EstRangeKm:           milesToKm(cs.EstBatteryRange),
+		BatteryHeaterOn:      cs.BatteryHeaterOn,
+		NotEnoughPowerToHeat: cs.NotEnoughPowerToHeat,
+
+		ChargeEnergyAddedKwh: cs.ChargeEnergyAdded,
+		ChargerPowerKw:       cs.ChargerPower,
+		ChargerVoltage:       cs.ChargerVoltage,
+		ChargerActualCurrent: cs.ChargerActualCurrent,
+		ChargerPilotCurrent:  int(cs.ChargerPilotCurrent),
+		ChargerPhases:        cs.ChargerPhases,
+		ConnChargeCable:      cs.ConnChargeCable,
+		FastChargerPresent:   cs.FastChargerPresent,
+		FastChargerBrand:     cs.FastChargerBrand,
+		FastChargerType:      cs.FastChargerType,
+
+		OutsideTempC:          cl.OutsideTemp,
+		InsideTempC:           cl.InsideTemp,
+		FanStatus:             cl.FanStatus,
+		DriverTempSettingC:    cl.DriverTempSetting,
+		PassengerTempSettingC: cl.PassengerTempSetting,
+		IsClimateOn:           cl.IsClimateOn,
+		IsRearDefrosterOn:     cl.IsRearDefrosterOn,
+		IsFrontDefrosterOn:    cl.IsFrontDefrosterOn,
+
+		TpmsPressureFL: vs.TpmsPressureFL,
+		TpmsPressureFR: vs.TpmsPressureFR,
+		TpmsPressureRL: vs.TpmsPressureRL,
+		TpmsPressureRR: vs.TpmsPressureRR,
+
+		UpdateStatus:  vs.SoftwareUpdate.Status,
+		UpdateVersion: vs.SoftwareUpdate.Version,
 	}
 
 	meta := VehicleMeta{
-		VIN:         rv.Response.VIN,
-		DisplayName: rv.Response.DisplayName,
-		Model:       rv.Response.VehicleConfig.CarType,
-		TrimBadging: rv.Response.VehicleConfig.TrimBadging,
+		VIN:           rv.Response.VIN,
+		DisplayName:   rv.Response.DisplayName,
+		Model:         rv.Response.VehicleConfig.CarType,
+		TrimBadging:   rv.Response.VehicleConfig.TrimBadging,
+		ExteriorColor: rv.Response.VehicleConfig.ExteriorColor,
+		WheelType:     rv.Response.VehicleConfig.WheelType,
+		SpoilerType:   rv.Response.VehicleConfig.SpoilerType,
 	}
 
 	return snap, meta, nil

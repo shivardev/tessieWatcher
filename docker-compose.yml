@@ -1,0 +1,23 @@
+# Optional Docker deployment (see README - the systemd/bare-binary path
+# is the primary one for the Pi Zero 2 W; this is for anyone who'd
+# rather run it as a container, on the Pi or anywhere else).
+#
+#   docker compose build
+#   docker compose run --rm teslalog auth   # one-time interactive login
+#   docker compose up -d
+#   docker compose logs -f
+services:
+  teslalog:
+    build: .
+    image: teslalog:latest
+    container_name: teslalog
+    restart: unless-stopped
+    volumes:
+      - teslalog-data:/var/lib/teslalog
+    # `command` defaults to `run` (see Dockerfile CMD). Override for
+    # one-off commands, e.g.:
+    #   docker compose run --rm teslalog status
+    #   docker compose run --rm teslalog export drives -out /var/lib/teslalog/drives.csv
+
+volumes:
+  teslalog-data:

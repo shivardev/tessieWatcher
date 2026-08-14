@@ -1,10 +1,18 @@
 # TeslaLog Mini
 
-A tiny, single-binary replacement for the TeslaMate logging pipeline, sized
-for a Raspberry Pi Zero 2 W (512MB RAM). It keeps the parts of TeslaMate
-worth keeping — Owner API + Tesla streaming, sleep-aware polling, drive and
-charge detection — and drops everything else (Postgres, Grafana, MQTT,
-Phoenix/Elixir, Docker).
+A tiny replacement for the TeslaMate logging pipeline, sized for a Raspberry
+Pi Zero 2 W (512MB RAM). It keeps the parts of TeslaMate worth keeping —
+Owner API + Tesla streaming, sleep-aware polling, drive and charge
+detection, and (see [Data model](#data-model--teslamate-parity) below)
+essentially the same SQLite data TeslaMate itself records per drive/charge —
+and drops everything else (Postgres, Grafana, MQTT, Phoenix/Elixir,
+geofencing, address lookup). Point your own Grafana (or anything else) at
+the resulting `tesla.db` file whenever you want to look at it; teslalog's
+only job is making sure the data is there and correct.
+
+Runs either as a plain systemd service (primary, lowest-overhead path for
+the Pi Zero 2 W) or as a Docker container (see
+[Running with Docker](#running-with-docker)) — same binary, your choice.
 
 ```
 Tesla
@@ -52,6 +60,7 @@ internal/runner/       wires the above into the daemon loop `teslalog run` execu
 systemd/teslalog.service
 deploy/cross-build.sh  cross-compile for the Pi (linux/arm64)
 deploy/install.sh       installs the binary + systemd unit + config on the Pi
+Dockerfile, docker-compose.yml   optional container deployment (see below)
 ```
 
 If Tesla ever kills the Owner API, only `internal/tesla/` needs replacing
@@ -81,7 +90,7 @@ manual `teslalog wake` CLI command. The daemon loop (`internal/runner`)
 never calls it.
 
 ```
-                    ASLEEP
+              ASLEEP / OFFLINE
                        │ becomes active (seen via cheap check)
                        ▼
                     ONLINE
@@ -94,16 +103,68 @@ never calls it.
                └───────┴────────┘
                        │
                        ▼
-                    ASLEEP (confirmed by next cheap check)
+              ASLEEP / OFFLINE (confirmed by next cheap check)
 ```
 
-## Data model
+(`ASLEEP` vs `OFFLINE` mirrors the Owner API's own vehicle summary state
+exactly — "asleep" is a normal sleep, "offline" means the car hasn't
+phoned home at all; both stop active polling identically.)
 
-SQLite tables: `vehicles`, `states` (state-machine history),
-`drives` + `positions`, `charging_sessions` + `charging_samples`,
-`battery_samples`, `software_updates`. Full schema in
-`internal/storage/schema.go`. All distances/speeds are stored in metric
-units (km, km/h) even though the Owner API itself reports in miles.
+## Data model & TeslaMate parity
+
+SQLite tables: `vehicles`, `states` (state-machine history), `drives` +
+`positions`, `charging_sessions` + `charging_samples`, `battery_samples`,
+`software_updates`. Full schema in `internal/storage/schema.go`. All
+distances/speeds/temperatures are stored in metric units even though the
+Owner API itself reports miles/Fahrenheit-adjacent fields.
+
+This schema was built by reading TeslaMate's actual Ecto schema files
+(`lib/teslamate/log/{car,position,drive,charging_process,charge,state,
+update}.ex`) field-by-field, not from memory, so the parity claim here is
+checked against TeslaMate's real source rather than approximate. Per table:
+
+- **positions** (per-drive GPS/telemetry samples): matches TeslaMate's
+  `positions` field-for-field — rated/ideal/estimated range as three
+  separate figures, raw vs. usable battery %, full climate state (inside/
+  outside temp, fan status, driver/passenger temp settings, defrosters,
+  climate on/off), all four TPMS tire pressures, battery heater status.
+  teslalog additionally keeps `shift_state` and `heading` per position,
+  which TeslaMate derives/stores differently.
+- **drives**: start/end odometer, distance, duration, battery %, rated
+  *and* ideal range, max speed, max/min power, avg outside/inside temp,
+  and ascent/descent (computed from position elevation deltas, same as
+  TeslaMate's 2025 addition) — all present. TeslaMate normalizes battery
+  level via a joined `position_id` rather than storing it directly on
+  `drives`; teslalog denormalizes it onto the row itself for a simpler
+  single-file schema, with no data loss (the full position history is
+  still there).
+- **charging_sessions / charging_samples**: matches TeslaMate's
+  `charging_processes`/`charges` field-for-field — usable battery %,
+  charger phases/pilot current/cable type, fast-charger brand & type,
+  rated *and* ideal range, battery heater / "not enough power to heat"
+  flags, avg outside temp. Two figures the Owner API doesn't report
+  directly (TeslaMate doesn't get them from the API either — it *models*
+  them) are opt-in via config: `charge_energy_used_kwh` (estimated from
+  a configurable charging-efficiency factor) and `cost` (from a flat
+  `price_per_kwh`, vs. TeslaMate's per-geofence pricing). Both are `NULL`
+  until you set the corresponding config value.
+- **states**: TeslaMate's own `states` table only tracks
+  online/offline/asleep; teslalog's is a superset, additionally
+  recording driving/charging/idle/suspended (TeslaMate keeps that finer
+  state only in memory).
+- **vehicles**: VIN, model, trim, exterior color, wheel type, spoiler
+  type (all from the API) plus an optional user-supplied `efficiency_wh_km`
+  (config-only, like TeslaMate's — not derived, just stored for whatever
+  reads the DB to use).
+- **software_updates**: start/end/version, same as TeslaMate.
+
+**Deliberately not ported** (per the original design and your steer that
+Grafana/dashboards aren't teslalog's job): TeslaMate's `geofences` and
+`addresses` tables (reverse-geocoding drive/charge locations into human
+addresses, and per-geofence charge pricing). teslalog stores raw lat/lng
+instead — full fidelity, just not resolved to a place name. If you want
+that later, it's a self-contained addition (a `geofences` table + a
+lookup at drive/charge open/close) that wouldn't touch anything else.
 
 ## Building
 
@@ -118,12 +179,28 @@ Storage uses `ncruces/go-sqlite3` — SQLite compiled to WebAssembly and
 embedded in the Go module, run via the pure-Go `wazero` runtime — so
 there's no cgo and no C compiler needed at all, on any platform.
 
-### Cross-compile for the Pi Zero 2 W
+### Cross-compile for x86_64 and the Pi Zero 2 W (arm64)
 
-On your dev machine (not the Pi), no cross-toolchain required:
+On your dev machine, no cross-toolchain required for either target
+(no cgo anywhere in this project — see above):
 
 ```sh
-./deploy/cross-build.sh                      # produces teslalog-linux-arm64 (static binary)
+./deploy/cross-build.sh
+# produces:
+#   teslalog-linux-amd64   - regular PC/server/VM, e.g. wherever your
+#                            existing TeslaMate/Docker host runs, for
+#                            testing side-by-side before touching the Pi
+#   teslalog-linux-arm64   - the Raspberry Pi Zero 2 W (actual target)
+```
+
+Either binary is a single static file — no install step, no Docker, no
+systemd required just to run it. Copy it anywhere and:
+
+```sh
+cp config.example.toml config.toml   # edit database/token_file paths as you like
+./teslalog-linux-amd64 auth   -config config.toml   # one-time interactive login
+./teslalog-linux-amd64 run    -config config.toml   # foreground; Ctrl-C to stop
+./teslalog-linux-amd64 status -config config.toml
 ```
 
 ## Deploying to the Pi
@@ -142,6 +219,35 @@ On your dev machine (not the Pi), no cross-toolchain required:
 5. `sudo systemctl enable --now teslalog`
 6. `journalctl -u teslalog -f` to watch it discover your vehicle and
    start logging.
+
+## Running with Docker
+
+Optional — the systemd path above needs no Docker at all. If you'd rather
+run it as a container (on the Pi or anywhere else):
+
+```sh
+docker compose build
+docker compose run --rm teslalog auth      # one-time interactive login (see Authentication below)
+docker compose up -d
+docker compose logs -f
+```
+
+Everything (`tesla.db`, `tokens.json`, backups) lives in the
+`teslalog-data` named volume, so it survives container recreation. Run
+any other subcommand the same way, e.g.
+`docker compose run --rm teslalog status` or
+`docker compose run --rm teslalog export drives -out /var/lib/teslalog/drives.csv`
+(then `docker cp` or `docker compose cp` the file out of the volume).
+
+Building directly for the Pi's arm64 from another machine:
+`docker buildx build --platform linux/arm64 -t teslalog:arm64 --load .`,
+then `docker save`/`docker load` it onto the Pi, or just build it on the
+Pi itself (the image is small and the build has no cgo/cross-toolchain
+requirement either).
+
+The image is `gcr.io/distroless/static-debian12` on top of the same
+static, cgo-free binary the systemd path uses — no shell, no package
+manager, just the binary and CA certificates for HTTPS to Tesla.
 
 ## Authentication
 
@@ -178,6 +284,9 @@ See `config.example.toml` for every field with inline docs. Key ones:
 | `polling.idle_timeout` | `3m` | how long idle-online before we suspend polling |
 | `polling.suspended_check_interval` | `15m` | how often we check "is it awake yet" while asleep |
 | `backup.retention_days` | `30` | days of nightly backups to keep |
+| `vehicle.efficiency_wh_km` | `0` (off) | stored on the vehicle row, informational only |
+| `charging.efficiency` | `0` (off) | if set, estimates `charge_energy_used_kwh` from energy added |
+| `charging.price_per_kwh` | `0` (off) | if set, computes `charging_sessions.cost` |
 
 ## CLI reference
 
@@ -219,6 +328,46 @@ doesn't do off-box replication itself.
 This proves the logic end-to-end; it's obviously not a substitute for a
 real drive with a real car, which is the actual v0.1 acceptance test (see
 below).
+
+## Verifying against a live TeslaMate instance
+
+Since you already have a working TeslaMate, the easiest way to trust
+teslalog's numbers is to run both against the same car at the same time
+and compare. This is completely safe — no Docker, systemd, or install
+needed, just the plain binary:
+
+1. Build (or grab) `teslalog-linux-amd64` (or `-arm64` if you're running
+   this on the Pi/ARM box that hosts TeslaMate) and put it somewhere
+   with a `config.toml` next to it (copy `config.example.toml`).
+2. `./teslalog-linux-amd64 auth -config config.toml` — do a **fresh**
+   interactive login, separate from whatever token TeslaMate is using.
+   Tesla's SSO supports multiple simultaneous logins/refresh tokens per
+   account, so this doesn't disturb TeslaMate's own session at all.
+3. `./teslalog-linux-amd64 run -config config.toml` in a terminal (or
+   `tmux`/`screen` if you want it to survive a disconnect) and watch the
+   log lines as you drive/charge.
+4. Running two independent pollers against one vehicle is safe by
+   design: teslalog only ever does read-only `vehicle_data`/vehicle-list
+   calls while the car is already awake, and never issues a wake command
+   unless you explicitly run `teslalog wake`. It will never fight
+   TeslaMate for control of the car's sleep state — it just observes
+   whatever state the car (and TeslaMate's own polling) puts it in.
+5. After a drive or charge, compare the two datasets:
+   ```sh
+   ./teslalog-linux-amd64 export drives  -out teslalog_drives.csv
+   ./teslalog-linux-amd64 export charges -out teslalog_charges.csv
+   sqlite3 config-database-path/tesla.db \
+     "select id, start_date, end_date, start_km, end_km, end_km-start_km as distance_km, start_battery_level, end_battery_level from drives order by id desc limit 5;"
+   ```
+   and check start/end time, distance, and battery-level delta against
+   the same drive in TeslaMate's UI (or `psql` against its Postgres DB —
+   the `drives`/`charging_processes` tables there use the same
+   underlying Owner API fields, just different column names/units in
+   places — see [Data model & TeslaMate parity](#data-model--teslamate-parity)
+   above for the exact field-by-field mapping). They should match to
+   within a poll interval (default 30s) on timestamps, and exactly on
+   odometer/battery values since both read the same `vehicle_data`
+   fields from Tesla.
 
 ## v0.1 acceptance test
 
