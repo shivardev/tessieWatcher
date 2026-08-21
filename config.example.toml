@@ -67,7 +67,7 @@ base_url = "https://nominatim.openstreetmap.org"
 # https://operations.osmfoundation.org/policies/nominatim/. If you make
 # more than occasional personal-use requests, that policy asks you to
 # self-host your own Nominatim instance instead and point base_url at it.
-user_agent = "teslalog/0.1.0 (personal use)"
+user_agent = "teslalog/0.2.0 (personal use)"
 
 # Named zones, checked before any reverse-geocoding lookup - free (no
 # network), and covers your most common places (home, work) without
@@ -85,7 +85,7 @@ user_agent = "teslalog/0.1.0 (personal use)"
 owner_api_base_url = "https://owner-api.teslamotors.com"
 sso_base_url        = "https://auth.tesla.com"
 client_id            = "ownerapi"
-user_agent           = "teslalog/0.1"
+user_agent           = "teslalog/0.2"
 
 [vehicle]
 # Wh/km consumption estimate, purely informational (stored on the

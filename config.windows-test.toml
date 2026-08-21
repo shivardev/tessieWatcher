@@ -44,13 +44,13 @@ addr    = ":8083"
 # config.example.toml's [geocoding] section for the full explanation.
 enabled = false
 base_url = "https://nominatim.openstreetmap.org"
-user_agent = "teslalog/0.1.0 (personal use)"
+user_agent = "teslalog/0.2.0 (personal use)"
 
 [api]
 owner_api_base_url = "https://owner-api.teslamotors.com"
 sso_base_url        = "https://auth.tesla.com"
 client_id            = "ownerapi"
-user_agent           = "teslalog/0.1"
+user_agent           = "teslalog/0.2"
 
 [vehicle]
 efficiency_wh_km = 0

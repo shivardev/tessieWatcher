@@ -257,7 +257,7 @@ func Default() Config {
 		Geocoding: GeocodingConfig{
 			Enabled:   false, // opt-in: a third-party network dependency, see GeocodingConfig's doc comment
 			BaseURL:   "https://nominatim.openstreetmap.org",
-			UserAgent: "teslalog/0.1.0 (personal use; https://github.com/shivardev/tessieWatcher)",
+			UserAgent: "teslalog/0.2.0 (personal use; https://github.com/shivardev/tessieWatcher)",
 		},
 		API: APIConfig{
 			OwnerAPIBaseURL: "https://owner-api.teslamotors.com",
@@ -271,7 +271,7 @@ func Default() Config {
 			// investigation question of why tokens obtained via this
 			// client_id get gated to fleet-api-only on some API calls.
 			ClientID:  "ownerapi",
-			UserAgent: "teslalog/0.1",
+			UserAgent: "teslalog/0.2",
 		},
 	}
 }
