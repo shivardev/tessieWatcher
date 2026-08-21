@@ -270,7 +270,26 @@
       ],
       "fieldConfig": {
         "defaults": {},
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "speed_kmh"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "view": {
@@ -462,8 +481,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -477,12 +496,45 @@
           "unit": "celsius",
           "custom": {
             "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "pointSize": 3
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "pointSize": 0,
+            "spanNulls": true,
+            "lineInterpolation": "smooth"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outside"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#4ade80"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Inside"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#fbbf24"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "tooltip": {
