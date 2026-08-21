@@ -70,6 +70,68 @@ func TestSnapshotProducesAValidUsableCopy(t *testing.T) {
 	}
 }
 
+// TestSnapshotIsNotWALModeAndSupportsConcurrentReaders is a regression
+// test for a real bug found live: the backup API's destination
+// defaulted to WAL mode, same as the source. That's fine for a database
+// something keeps writing to, but this snapshot is a static one-shot
+// file with no matching -wal/-shm sidecars - opening it forces every
+// reader through SQLite's WAL-recovery step, and concurrent readers
+// (e.g. Grafana loading several dashboard panels against the same
+// downloaded file at once - exactly what happened) race for that
+// recovery and the loser gets SQLITE_BUSY_RECOVERY ("database is
+// locked"), even though nothing is actually writing to the file.
+func TestSnapshotIsNotWALModeAndSupportsConcurrentReaders(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.db")
+	seedDB(t, srcPath)
+
+	dstPath := filepath.Join(dir, "dst.db")
+	if err := Snapshot(context.Background(), srcPath, dstPath); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	for _, sidecar := range []string{dstPath + "-wal", dstPath + "-shm"} {
+		if _, err := os.Stat(sidecar); err == nil {
+			t.Fatalf("expected no WAL sidecar file %s to exist after Snapshot", sidecar)
+		}
+	}
+
+	db, err := sql.Open("sqlite3", "file:"+dstPath+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("query journal_mode: %v", err)
+	}
+	if mode == "wal" {
+		t.Fatalf("expected snapshot to not be in WAL mode, got %q", mode)
+	}
+
+	// Simulate Grafana firing several panels' queries against the same
+	// downloaded file at once - this must not produce "database is
+	// locked" from any of them.
+	errCh := make(chan error, 10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			conn, err := sql.Open("sqlite3", "file:"+dstPath+"?mode=ro")
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer conn.Close()
+			var x int
+			errCh <- conn.QueryRow(`SELECT x FROM t`).Scan(&x)
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent read %d failed: %v", i, err)
+		}
+	}
+}
+
 func TestRunProducesAGzippedRestorableBackup(t *testing.T) {
 	dir := t.TempDir()
 	srcPath := filepath.Join(dir, "tesla.db")

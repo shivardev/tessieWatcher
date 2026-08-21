@@ -65,6 +65,29 @@ func Snapshot(ctx context.Context, srcPath, dstPath string) error {
 	if err := src.Backup("main", dstPath); err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
+
+	// The backup API creates dstPath as a fresh database, which defaults
+	// to WAL mode (matching the live one) - fine for a database teslalog
+	// itself keeps writing to, but this snapshot is a static, one-shot
+	// artifact nothing ever writes to again. Left in WAL mode, it needs
+	// matching -wal/-shm sidecar files that this function doesn't
+	// produce (and that get lost anyway once this file is copied
+	// elsewhere, e.g. downloaded via the portal) - opening a WAL-flagged
+	// .db with no sidecar files forces every reader to perform WAL
+	// recovery on first open, and concurrent readers (e.g. Grafana
+	// loading a dashboard's several panels at once) race for that
+	// recovery and lose with SQLITE_BUSY_RECOVERY ("database is
+	// locked"). Switching to DELETE mode checkpoints and folds
+	// everything into the single main file - the most portable format
+	// for any external tool to open, and immune to this race.
+	dst, err := sqlite3.OpenContext(ctx, "file:"+dstPath)
+	if err != nil {
+		return fmt.Errorf("open snapshot for journal-mode fixup: %w", err)
+	}
+	defer dst.Close()
+	if err := dst.Exec("PRAGMA journal_mode = DELETE"); err != nil {
+		return fmt.Errorf("set snapshot journal mode: %w", err)
+	}
 	return nil
 }
 

@@ -584,6 +584,17 @@ Consider periodically copying that directory off the Pi's SD card
 (rsync/rclone to another machine or cloud storage) — this project
 doesn't do off-box replication itself.
 
+The resulting snapshot/backup file is explicitly switched to
+non-WAL (`PRAGMA journal_mode = DELETE`) after the copy — it's a static,
+one-shot file nothing writes to again, and leaving it flagged WAL (with
+no matching `-wal`/`-shm` sidecar files, which don't survive being
+copied/downloaded elsewhere) forces every reader through a WAL-recovery
+step on open; concurrent readers of the same file (e.g. Grafana loading
+several dashboard panels against a downloaded copy at once — a real bug
+found live, before v0.2.3) race for that recovery and the loser gets
+`SQLITE_BUSY_RECOVERY` ("database is locked"), even though nothing is
+actually writing to the file.
+
 ## Portal (optional web page + database download)
 
 Set `[portal] enabled = true` (the default) in config.toml and teslalog
