@@ -1,0 +1,195 @@
+{
+  "id": null,
+  "uid": "teslalog-locations",
+  "title": "teslalog: Locations",
+  "description": "Places visited, ranked by frequency - approximates TeslaMate's own Locations dashboard, which additionally breaks this down by city/state/country from structured reverse-geocoding data teslalog doesn't currently capture (see README's Geofencing & locations section - only a single resolved place name is stored, not separate address components). Falls back to rounded lat/lng when a drive's end never resolved to a named location.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "# of distinct places visited",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Most-visited places",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 18,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15",
+          "rawQueryText": "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "cellOptions": {
+              "type": "gauge",
+              "mode": "lcd"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Visits"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3ea6ff"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Last visited",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200",
+          "rawQueryText": "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
