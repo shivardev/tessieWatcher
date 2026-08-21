@@ -419,6 +419,41 @@ func TestLifetimeAggregatesDrivesAndCharges(t *testing.T) {
 	}
 }
 
+func TestSleepStats24hSplitsAsleepVsAwakeTime(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN12", TeslaID: "12", DisplayName: "Car"})
+
+	now := time.Now().UTC()
+	windowStart := now.Add(-24 * time.Hour)
+	// Exactly at window start: online for 6h, then asleep for the
+	// remaining 18h up to now - covers the entire 24h window with no
+	// gap, so the split is unambiguous.
+	asleepStart := windowStart.Add(6 * time.Hour)
+	if _, err := s.OpenState(vehicleID, "online", windowStart); err != nil {
+		t.Fatalf("open online state: %v", err)
+	}
+	if _, err := s.OpenState(vehicleID, "asleep", asleepStart); err != nil {
+		t.Fatalf("open asleep state: %v", err)
+	}
+
+	stats, err := s.SleepStats24h(vehicleID, now)
+	if err != nil {
+		t.Fatalf("sleep stats: %v", err)
+	}
+	if diff := stats.WindowHours - 24; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("expected a 24h window, got %.2f", stats.WindowHours)
+	}
+	if diff := stats.AsleepHours - 18; diff > 0.05 || diff < -0.05 {
+		t.Fatalf("expected ~18h asleep, got %.2f", stats.AsleepHours)
+	}
+	if diff := stats.AwakeHours() - 6; diff > 0.05 || diff < -0.05 {
+		t.Fatalf("expected ~6h awake, got %.2f", stats.AwakeHours())
+	}
+	if diff := stats.AsleepPct() - 75; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("expected ~75%% asleep, got %.1f", stats.AsleepPct())
+	}
+}
+
 func TestLatestBatteryReadingPrefersOpenSessionOverIdleSample(t *testing.T) {
 	s := openTestStore(t)
 	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN9", TeslaID: "9", DisplayName: "Car"})

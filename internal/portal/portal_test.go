@@ -300,3 +300,33 @@ func TestIndexShowsFirmwareAndLifetimeTotals(t *testing.T) {
 		t.Fatalf("expected lifetime odometer 1020 km on the page, got: %s", body)
 	}
 }
+
+func TestIndexShowsAsleepPercentage(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	vehicleID, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN4", DisplayName: "Car"})
+	if err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	now := time.Now().UTC()
+	// Entirely asleep for the whole 24h window -> should render 100%.
+	if _, err := store.OpenState(vehicleID, "asleep", now.Add(-24*time.Hour)); err != nil {
+		t.Fatalf("open asleep state: %v", err)
+	}
+
+	srv := New(store, dbPath, nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Asleep (last 24h)") || !strings.Contains(body, "100%") {
+		t.Fatalf("expected a 100%% asleep stat on the page, got: %s", body)
+	}
+}

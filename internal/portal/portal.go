@@ -91,18 +91,27 @@ type indexData struct {
 	// table it's sourced from and why. IdealRangeKm is Tesla's older,
 	// often-frozen range figure, shown alongside the "rated" one the
 	// same way TeslaMate's own vehicle status card does.
-	HasBattery    bool
-	BatteryLevel  int
-	RatedRangeKm  float64
-	IdealRangeKm  float64
-	BatteryAt     string
-	Firmware      string
-	HasLifetime   bool
-	OdometerKm    float64
-	TotalDrives   int
-	TotalKm       float64
-	TotalCharges  int
-	TotalKwh      float64
+	HasBattery   bool
+	BatteryLevel int
+	RatedRangeKm float64
+	IdealRangeKm float64
+	BatteryAt    string
+	Firmware     string
+	HasLifetime  bool
+	OdometerKm   float64
+	TotalDrives  int
+	TotalKm      float64
+	TotalCharges int
+	TotalKwh     float64
+	// HasSleepStats/AsleepPct24h - see storage.SleepStats.AsleepPct's
+	// doc comment. Concrete proof the daemon's "never wake a sleeping
+	// car" design goal (see README's Sleep behavior section) is
+	// actually working, not just a policy taken on faith. Shown as
+	// soon as there's at least one recorded state - deliberately not
+	// gated behind HasLifetime, since it's most reassuring to see in
+	// the very first day, before any drives have happened yet.
+	HasSleepStats bool
+	AsleepPct24h  float64
 	RecentDrives  []recentDrive
 	RecentCharges []recentCharge
 	LogLines      []string
@@ -224,6 +233,7 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
       </span>
     </div>
     {{if .HasState}}<div class="stat"><span class="label">Since</span><span class="value">{{.StateSince}}</span></div>{{end}}
+    {{if .HasSleepStats}}<div class="stat"><span class="label">Asleep (last 24h)</span><span class="value">{{printf "%.0f" .AsleepPct24h}}%</span></div>{{end}}
     {{if .HasBattery}}
     <div class="stat"><span class="label">Battery</span><span class="value">{{.BatteryLevel}}%</span></div>
     <div class="stat"><span class="label">Rated range</span><span class="value">{{printf "%.0f" .RatedRangeKm}} km{{if .IdealRangeKm}} <span style="color:var(--text-dim)">({{printf "%.0f" .IdealRangeKm}} km ideal)</span>{{end}}</span></div>
@@ -391,6 +401,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		data.HasState = true
 		data.CurrentState = currentState
 		data.StateSince = stateSince
+	}
+
+	if data.HasState {
+		if sleep, err := s.store.SleepStats24h(vehicleID, time.Now().UTC()); err != nil {
+			slog.Warn("portal: sleep stats failed", "error", err)
+		} else {
+			data.HasSleepStats = true
+			data.AsleepPct24h = sleep.AsleepPct()
+		}
 	}
 
 	if s.logs != nil {

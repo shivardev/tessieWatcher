@@ -147,6 +147,15 @@ never calls it.
 exactly — "asleep" is a normal sleep, "offline" means the car hasn't
 phoned home at all; both stop active polling identically.)
 
+The portal's "Asleep (last 24h)" stat is this policy's actual receipt,
+not just a description of it — `internal/storage`'s `states` table
+already records every transition, so the percentage of the last 24
+hours spent in `asleep`/`offline`/`suspended` is one query away
+(`Store.SleepStats24h`). A car that mostly sits in a garage overnight
+should show a high number here; if it doesn't, that's a real signal
+something (sentry mode, a stuck climate/charge setting, a background
+app periodically opening the mobile app) is keeping it awake.
+
 ## Data model & TeslaMate parity
 
 SQLite tables: `vehicles`, `states` (state-machine history), `drives` +

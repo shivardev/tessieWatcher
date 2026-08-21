@@ -912,6 +912,99 @@ func (s *Store) Lifetime(vehicleID int64) (LifetimeStats, error) {
 	return out, nil
 }
 
+// SleepStats is how a vehicle's time was split, over some window,
+// between asleep-like states (asleep/offline/suspended - not being
+// polled at all) and awake ones (online/idle/driving/charging). This
+// is a concrete number for teslalog's own core design goal (see the
+// README's Sleep behavior section): it never wakes a sleeping car, so
+// an owner can see that policy actually paying off, not just trust it.
+type SleepStats struct {
+	WindowHours float64
+	AsleepHours float64
+}
+
+// AwakeHours is WindowHours-AsleepHours - the remainder, kept as a
+// method rather than a third stored field so the two can never drift
+// out of sync with each other.
+func (s SleepStats) AwakeHours() float64 {
+	h := s.WindowHours - s.AsleepHours
+	if h < 0 {
+		return 0
+	}
+	return h
+}
+
+// AsleepPct is AsleepHours as a percentage of WindowHours, or 0 if
+// there's no window (e.g. the vehicle was only just seen for the
+// first time).
+func (s SleepStats) AsleepPct() float64 {
+	if s.WindowHours <= 0 {
+		return 0
+	}
+	return s.AsleepHours / s.WindowHours * 100
+}
+
+func isAsleepLikeState(state string) bool {
+	switch state {
+	case "asleep", "offline", "suspended":
+		return true
+	default:
+		return false
+	}
+}
+
+// SleepStats24h computes SleepStats for the 24 hours ending at now.
+// Each states row is clipped to that window (a state that started
+// before the window, or is still open/hasn't ended, contributes only
+// its overlapping portion) - this is plain interval arithmetic in Go,
+// not a heavier SQL window function, since the row count per vehicle
+// per day is tiny (state changes, not polls).
+func (s *Store) SleepStats24h(vehicleID int64, now time.Time) (SleepStats, error) {
+	windowStart := now.Add(-24 * time.Hour)
+	out := SleepStats{WindowHours: 24}
+
+	rows, err := s.db.Query(`
+		SELECT state, started_at, ended_at FROM states
+		WHERE vehicle_id = ? AND started_at <= ? AND (ended_at IS NULL OR ended_at >= ?)
+		ORDER BY started_at
+	`, vehicleID, fmtTime(now), fmtTime(windowStart))
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var state, startedAt string
+		var endedAt sql.NullString
+		if err := rows.Scan(&state, &startedAt, &endedAt); err != nil {
+			return out, err
+		}
+		start, err := time.Parse(timeLayout, startedAt)
+		if err != nil {
+			continue
+		}
+		end := now
+		if endedAt.Valid {
+			if e, err := time.Parse(timeLayout, endedAt.String); err == nil {
+				end = e
+			}
+		}
+		if start.Before(windowStart) {
+			start = windowStart
+		}
+		if end.After(now) {
+			end = now
+		}
+		if end.Before(start) {
+			continue
+		}
+		if isAsleepLikeState(state) {
+			out.AsleepHours += end.Sub(start).Hours()
+		}
+	}
+	return out, rows.Err()
+}
+
 // LatestBatteryReading returns the most recent battery level/rated
 // range/ideal range known for a vehicle, preferring an in-progress
 // drive or charge (fresher than idle polling) over the last idle
