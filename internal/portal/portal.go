@@ -1,19 +1,28 @@
 // Package portal is a tiny, read-only HTTP server: one page showing
-// today's drives/last charge, and a button that downloads a consistent
+// today's drives/last charge, a button that downloads a consistent
 // snapshot of the live SQLite database (e.g. to open in Grafana via its
-// SQLite datasource plugin, or any other tool - teslalog itself has no
-// opinion on what reads the file afterward).
+// SQLite datasource plugin, or a browser-side frontend that loads it
+// into sql.js - teslalog itself has no opinion on what reads the file
+// afterward), and two small JSON endpoints (/api/status, /api/meta) for
+// exactly that kind of frontend to poll cheaply without re-downloading
+// and re-parsing the whole database on every check.
 //
 // There is deliberately no authentication. This is meant for a trusted
 // home LAN only - see config.example.toml's [portal] section and the
 // README's Portal section before binding this to anything internet-
 // reachable (e.g. a router port-forward), since the served database is a
-// complete log of everywhere the vehicle has been and when.
+// complete log of everywhere the vehicle has been and when. Every route
+// sets a permissive CORS header for the same reason: a frontend served
+// from a different origin/port (e.g. a Vite dev server, or a static
+// build served some other way) needs to be able to fetch these directly
+// from the browser, and there's no session/cookie-based auth here for a
+// wildcard origin to weaken.
 package portal
 
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -26,8 +35,9 @@ import (
 	"teslalog/internal/storage"
 )
 
-// Server serves the portal's two routes: "/" (status + download button)
-// and "/download" (a fresh database snapshot).
+// Server serves the portal's routes: "/" (status + download button),
+// "/download" (a fresh database snapshot), "/api/status" (cheap live
+// status JSON), and "/api/meta" (cheap freshness-check JSON).
 type Server struct {
 	store  *storage.Store
 	dbPath string
@@ -46,7 +56,26 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/download", s.handleDownload)
-	return mux
+	mux.HandleFunc("/api/status", s.handleAPIStatus)
+	mux.HandleFunc("/api/meta", s.handleAPIMeta)
+	return withCORS(mux)
+}
+
+// withCORS wraps h so every route (not just the /api/ ones) is
+// fetchable cross-origin - see the package comment for why a wildcard
+// is fine here. Preflight OPTIONS requests are answered directly
+// rather than reaching the wrapped handler.
+func withCORS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "*")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // Run starts the HTTP server on addr and blocks until ctx is canceled,
@@ -310,6 +339,108 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 </body>
 </html>
 `))
+
+// apiStatus is handleAPIStatus's response shape: the same "what's
+// going on right now" facts handleIndex renders as HTML, as JSON
+// instead - meant to be polled often (every few seconds) by a live
+// header/badge, without the cost of downloading and re-parsing the
+// whole database just to answer "is it driving right now".
+type apiStatus struct {
+	VehicleName    string   `json:"vehicle_name"`
+	State          string   `json:"state,omitempty"`
+	StateSince     string   `json:"state_since,omitempty"`
+	BatteryLevel   *int     `json:"battery_level,omitempty"`
+	RatedRangeKm   *float64 `json:"rated_range_km,omitempty"`
+	IdealRangeKm   *float64 `json:"ideal_range_km,omitempty"`
+	OdometerKm     *float64 `json:"odometer_km,omitempty"`
+	Firmware       string   `json:"firmware,omitempty"`
+	ActiveDriveID  *int64   `json:"active_drive_id,omitempty"`
+	ActiveChargeID *int64   `json:"active_charge_id,omitempty"`
+	UpdatedAt      string   `json:"updated_at"`
+}
+
+func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
+	out := apiStatus{VehicleName: "Vehicle", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+
+	var vehicleID int64
+	var displayName, firmware string
+	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)
+	if err := row.Scan(&vehicleID, &displayName, &firmware); err != nil {
+		if err != sql.ErrNoRows {
+			slog.Warn("portal: api/status query vehicle failed", "error", err)
+		}
+		writeJSON(w, out)
+		return
+	}
+	if displayName != "" {
+		out.VehicleName = displayName
+	}
+	out.Firmware = firmware
+
+	if state, err := s.store.CurrentState(vehicleID); err == nil && state != "" {
+		out.State = state
+	}
+	var stateSince string
+	if err := s.store.DB().QueryRow(`SELECT started_at FROM states WHERE vehicle_id = ? ORDER BY id DESC LIMIT 1`, vehicleID).Scan(&stateSince); err == nil {
+		out.StateSince = stateSince
+	}
+
+	if ok, level, rangeKm, idealRangeKm, _, err := s.store.LatestBatteryReading(vehicleID); err != nil {
+		slog.Warn("portal: api/status battery reading failed", "error", err)
+	} else if ok {
+		out.BatteryLevel = &level
+		out.RatedRangeKm = &rangeKm
+		out.IdealRangeKm = &idealRangeKm
+	}
+
+	if lt, err := s.store.Lifetime(vehicleID); err == nil && (lt.TotalDrives > 0 || lt.OdometerKm > 0) {
+		out.OdometerKm = &lt.OdometerKm
+	}
+
+	if id, err := s.store.OpenDriveID(vehicleID); err == nil && id != 0 {
+		out.ActiveDriveID = &id
+	}
+	if id, err := s.store.OpenChargingSessionID(vehicleID); err == nil && id != 0 {
+		out.ActiveChargeID = &id
+	}
+
+	writeJSON(w, out)
+}
+
+// handleAPIMeta reports the live database's freshness (its own mtime,
+// plus its WAL sidecar's if present, since a write under WAL mode can
+// land there without touching the main file) so a frontend can decide
+// whether it's worth re-downloading the whole /download snapshot
+// rather than doing so unconditionally on a timer.
+func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
+	type meta struct {
+		LastUpdated string `json:"last_updated"`
+		SizeBytes   int64  `json:"size_bytes"`
+	}
+
+	info, err := os.Stat(s.dbPath)
+	if err != nil {
+		slog.Warn("portal: api/meta stat failed", "error", err)
+		http.Error(w, "failed to stat database", http.StatusInternalServerError)
+		return
+	}
+	newest := info.ModTime()
+	size := info.Size()
+	if walInfo, err := os.Stat(s.dbPath + "-wal"); err == nil {
+		if walInfo.ModTime().After(newest) {
+			newest = walInfo.ModTime()
+		}
+	}
+
+	writeJSON(w, meta{LastUpdated: newest.UTC().Format(time.RFC3339Nano), SizeBytes: size})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("portal: write JSON response failed", "error", err)
+	}
+}
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{VehicleName: "Vehicle"}
