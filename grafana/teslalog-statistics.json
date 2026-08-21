@@ -1,0 +1,111 @@
+{
+  "id": null,
+  "uid": "teslalog-statistics",
+  "title": "teslalog: Statistics",
+  "description": "Monthly driving trends - time driven, distance, avg outside temp, drive count, and efficiency - matching TeslaMate's own Statistics dashboard's per-month view. Skips its energy-used/charging columns (those live in teslalog-charging-stats.json instead, to avoid duplicating the same figures two different ways).",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Per month",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC",
+          "rawQueryText": "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Efficiency %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "lcd"
+                }
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
