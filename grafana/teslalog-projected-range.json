@@ -1,0 +1,143 @@
+{
+  "id": null,
+  "uid": "teslalog-projected-range",
+  "title": "teslalog: Projected Range",
+  "description": "Rated range extrapolated to 100% SoC (battery_range_km * 100 / battery_level) plotted against cumulative mileage over the vehicle's life - matching TeslaMate's own Projected Range dashboard. A declining trend here over months/years is the clearest signal of real battery degradation.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Projected range at 100% vs mileage",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time",
+          "rawQueryText": "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "pointSize": 3
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Mileage (km)"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#fbbf24"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Projected range (km)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#4ade80"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}
