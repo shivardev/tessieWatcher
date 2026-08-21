@@ -324,25 +324,49 @@ or [Running with Docker](#running-with-docker) instead.
 
 ## Deploying to the Pi
 
-1. Flash 64-bit Raspberry Pi OS Lite, enable SSH + Wi-Fi, boot it. Once
-   booted, `ssh` in and run `uname -m`: `aarch64` confirms 64-bit (use
-   `teslalog-linux-arm64` below, the usual case); `armv7l` means you
-   flashed the 32-bit image instead (use `teslalog-linux-armv7` — same
-   steps otherwise).
-2. From your dev machine: `scp -r teslalog-linux-arm64 deploy/ systemd/ config.example.toml pi@<host>:~/teslalog/`
-   (the `-r` matters — `deploy/` and `systemd/` are directories; without
-   it, scp refuses them. Or just clone/copy this whole repo to the Pi and
-   cross-build elsewhere, copying only the resulting binary in.)
-3. On the Pi: `cd ~/teslalog && sudo bash deploy/install.sh teslalog-linux-arm64`
-4. Authenticate: `sudo -u teslalog teslalog auth -config /etc/teslalog/config.toml`
+### The fast way: one command, no clone, no cross-build
+
+Flash 64-bit Raspberry Pi OS Lite (or 32-bit — the installer detects
+which), enable SSH + Wi-Fi, boot it, `ssh` in, then run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/shivardev/tessieWatcher/master/deploy/quick-install.sh | sudo bash
+```
+
+This downloads the right prebuilt binary for your Pi's exact CPU
+(detected via `uname -m` — `aarch64` → `teslalog-linux-arm64`,
+`armv7l` → `teslalog-linux-armv7`) straight from this repo's [latest
+release](https://github.com/shivardev/tessieWatcher/releases/latest),
+along with `config.example.toml` and the systemd unit, and runs the
+same install steps as `deploy/install.sh` (below) with them — nothing
+it does is hidden; read `deploy/quick-install.sh` if you want to see
+every step first. No `git clone`, no dev machine, no cross-compiling
+required.
+
+Then:
+
+1. Authenticate: `sudo -u teslalog teslalog auth -config /etc/teslalog/config.toml`
    - This prints a Tesla login URL. Open it **on any device with a
      browser** (doesn't have to be the Pi), log in, and paste back the
      resulting `auth.tesla.com/void/callback?code=...` URL. Tesla's login
      can require 2FA/CAPTCHA, which is why this can't be fully
      automated — see [Authentication](#authentication).
-5. `sudo systemctl enable --now teslalog`
-6. `journalctl -u teslalog -f` to watch it discover your vehicle and
+2. `sudo systemctl enable --now teslalog`
+3. `journalctl -u teslalog -f` to watch it discover your vehicle and
    start logging.
+
+### The manual way: cross-build on your own machine
+
+If you'd rather build from source yourself (e.g. you've changed the
+code) instead of using a prebuilt release binary:
+
+1. Cross-build (see [Building](#building)) and check the Pi's arch as
+   above.
+2. `scp -r teslalog-linux-arm64 deploy/ systemd/ config.example.toml pi@<host>:~/teslalog/`
+   (the `-r` matters — `deploy/` and `systemd/` are directories; without
+   it, scp refuses them.)
+3. On the Pi: `cd ~/teslalog && sudo bash deploy/install.sh teslalog-linux-arm64`
+4. Same authenticate/enable/watch-logs steps as above.
 
 ## Running with Docker
 
@@ -658,9 +682,10 @@ whole point of this project.
 - ~~Optional geofencing / reverse-geocoding for human-readable drive
   start/end locations.~~ Done — see
   [Geofencing & locations](#geofencing--locations).
+- ~~A `curl | bash` one-line installer for first-time setup.~~ Done —
+  see [Deploying to the Pi](#deploying-to-the-pi) (`teslalog update`
+  already handled every install *after* that — see
+  [Updating](#updating)).
 - `teslalog export` as scheduled/automatic CSV/JSON snapshots.
 - Per-geofence charge pricing (currently one flat `price_per_kwh` for
   the whole account).
-- A `curl | bash` one-line installer for first-time setup (`teslalog
-  update` already handles every install after that — see
-  [Updating](#updating)).
