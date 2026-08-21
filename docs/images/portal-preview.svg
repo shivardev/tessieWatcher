@@ -1,0 +1,75 @@
+<svg viewBox="0 0 720 900" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Segoe UI', Roboto, sans-serif">
+  <rect width="720" height="900" fill="#0b0d10"/>
+
+  <text x="32" y="56" fill="#e6e8eb" font-size="24" font-weight="600">Shivaradhan&#8217;s Model Y</text>
+  <text x="32" y="80" fill="#8b93a1" font-size="14">teslalog</text>
+
+  <rect x="32" y="98" width="656" height="52" rx="8" fill="#3a2c0d" stroke="#5c4a12"/>
+  <text x="48" y="120" fill="#fbbf24" font-size="12.5">This page has no login &#8211; only reachable on your local network. Anyone on this</text>
+  <text x="48" y="138" fill="#fbbf24" font-size="12.5">Wi-Fi/LAN can see this page and download the database.</text>
+
+  <rect x="32" y="166" width="656" height="176" rx="10" fill="#14171c" stroke="#262b33"/>
+  <text x="52" y="198" fill="#8b93a1" font-size="14">Current state</text>
+  <rect x="220" y="185" width="52" height="22" rx="11" fill="#23262c"/>
+  <text x="246" y="200" fill="#9aa3af" font-size="12" text-anchor="middle" font-weight="600">Idle</text>
+  <line x1="52" y1="212" x2="668" y2="212" stroke="#262b33"/>
+  <text x="52" y="235" fill="#8b93a1" font-size="14">Since</text>
+  <text x="668" y="235" fill="#e6e8eb" font-size="14" text-anchor="end" font-weight="600">2026-08-21 03:25 UTC</text>
+  <line x1="52" y1="249" x2="668" y2="249" stroke="#262b33"/>
+  <text x="52" y="272" fill="#8b93a1" font-size="14">Drives today</text>
+  <text x="668" y="272" fill="#e6e8eb" font-size="14" text-anchor="end" font-weight="600">1</text>
+  <line x1="52" y1="286" x2="668" y2="286" stroke="#262b33"/>
+  <text x="52" y="309" fill="#8b93a1" font-size="14">Distance today</text>
+  <text x="668" y="309" fill="#e6e8eb" font-size="14" text-anchor="end" font-weight="600">1.4 km</text>
+  <line x1="52" y1="323" x2="668" y2="323" stroke="#262b33"/>
+  <text x="52" y="332" fill="#8b93a1" font-size="14">Last charge</text>
+  <text x="668" y="332" fill="#e6e8eb" font-size="13" text-anchor="end" font-weight="600">60% &#8594; 80% &#183; 8.4 kWh &#183; 8450 Raspberry Way</text>
+
+  <rect x="32" y="360" width="656" height="46" rx="8" fill="#3ea6ff"/>
+  <text x="360" y="389" fill="#04121f" font-size="15" text-anchor="middle" font-weight="700">&#11015; Download database (tesla.db)</text>
+
+  <text x="32" y="440" fill="#8b93a1" font-size="13" font-weight="600" letter-spacing="0.5">RECENT DRIVES</text>
+  <rect x="32" y="452" width="656" height="178" rx="10" fill="#14171c" stroke="#262b33"/>
+  <text x="48" y="475" fill="#8b93a1" font-size="10.5" font-weight="600">WHEN</text>
+  <text x="180" y="475" fill="#8b93a1" font-size="10.5" font-weight="600">FROM</text>
+  <text x="360" y="475" fill="#8b93a1" font-size="10.5" font-weight="600">TO</text>
+  <text x="560" y="475" fill="#8b93a1" font-size="10.5" font-weight="600" text-anchor="end">KM</text>
+  <text x="608" y="475" fill="#8b93a1" font-size="10.5" font-weight="600" text-anchor="end">MIN</text>
+  <text x="664" y="475" fill="#8b93a1" font-size="10.5" font-weight="600" text-anchor="end">%</text>
+  <line x1="48" y1="484" x2="664" y2="484" stroke="#262b33"/>
+
+  <g font-size="12" fill="#e6e8eb">
+    <text x="48" y="504">Aug 21, 01:25</text><text x="180" y="504">Publix Parking Lot</text><text x="360" y="504">8450 Raspberry Way</text>
+    <text x="560" y="504" text-anchor="end">1.4</text><text x="608" y="504" text-anchor="end">4</text><text x="664" y="504" text-anchor="end">66&#8594;66</text>
+    <line x1="48" y1="514" x2="664" y2="514" stroke="#1c2027"/>
+
+    <text x="48" y="534">Aug 20, 21:25</text><text x="180" y="534">8450 Raspberry Way</text><text x="360" y="534">Publix Parking Lot</text>
+    <text x="560" y="534" text-anchor="end">8.5</text><text x="608" y="534" text-anchor="end">16</text><text x="664" y="534" text-anchor="end">76&#8594;70</text>
+    <line x1="48" y1="544" x2="664" y2="544" stroke="#1c2027"/>
+
+    <text x="48" y="564">Aug 19, 21:25</text><text x="180" y="564">Domino&#8217;s, Collegedale</text><text x="360" y="564">8450 Raspberry Way</text>
+    <text x="560" y="564" text-anchor="end">4.4</text><text x="608" y="564" text-anchor="end">9</text><text x="664" y="564" text-anchor="end">63&#8594;62</text>
+    <line x1="48" y1="574" x2="664" y2="574" stroke="#1c2027"/>
+
+    <text x="48" y="594">Aug 19, 03:25</text><text x="180" y="594">8450 Raspberry Way</text><text x="360" y="594">Prickly Loop</text>
+    <text x="560" y="594" text-anchor="end">5.6</text><text x="608" y="594" text-anchor="end">23</text><text x="664" y="594" text-anchor="end">62&#8594;60</text>
+    <line x1="48" y1="604" x2="664" y2="604" stroke="#1c2027"/>
+
+    <text x="48" y="624">Aug 18, 03:25</text><text x="180" y="624">8450 Raspberry Way</text><text x="360" y="624">The Fresh Market</text>
+    <text x="560" y="624" text-anchor="end">8.7</text><text x="608" y="624" text-anchor="end">14</text><text x="664" y="624" text-anchor="end">73&#8594;66</text>
+  </g>
+
+  <text x="32" y="666" fill="#8b93a1" font-size="13" font-weight="600" letter-spacing="0.5">RECENT ACTIVITY</text>
+  <rect x="32" y="678" width="656" height="150" rx="8" fill="#05070a" stroke="#262b33"/>
+  <g font-family="Consolas, monospace" font-size="11" fill="#b8c0cc">
+    <text x="48" y="700">2026-08-20 23:25:57 INFO teslalog starting version=0.1.0 database=demo.db</text>
+    <text x="48" y="717">2026-08-20 23:25:57 INFO selected vehicle vin=5YJ3E1EA1PF000001</text>
+    <text x="48" y="734">2026-08-20 23:25:57 INFO state changed from=unknown to=online</text>
+    <text x="48" y="751">2026-08-20 23:25:57 INFO state changed from=online to=idle</text>
+    <text x="48" y="768">2026-08-20 23:25:57 INFO vehicle idle timeout reached, suspending active polling</text>
+    <text x="48" y="785">2026-08-20 23:25:57 INFO state changed from=idle to=suspended</text>
+    <text x="48" y="802">2026-08-20 23:25:57 INFO portal enabled addr=:8083</text>
+  </g>
+
+  <text x="360" y="856" fill="#8b93a1" font-size="12" text-anchor="middle">This page refreshes itself every 15s.</text>
+</svg>

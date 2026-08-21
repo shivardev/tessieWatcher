@@ -1,0 +1,90 @@
+{
+  "id": null,
+  "uid": "teslalog-mileage",
+  "title": "teslalog: Mileage",
+  "description": "Cumulative odometer reading over time.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Odometer",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT end_time AS time, end_odometer_km AS \"Odometer (km)\"\nFROM drives\nWHERE status = 'closed' AND end_odometer_km IS NOT NULL\nORDER BY end_time",
+          "rawQueryText": "SELECT end_time AS time, end_odometer_km AS \"Odometer (km)\"\nFROM drives\nWHERE status = 'closed' AND end_odometer_km IS NOT NULL\nORDER BY end_time",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,219 @@
+{
+  "id": null,
+  "uid": "teslalog-efficiency",
+  "title": "teslalog: Efficiency",
+  "description": "Derived efficiency figures from drive battery/range deltas - teslalog stores the same raw columns TeslaMate's own efficiency panel computes from, but doesn't pre-compute this itself (see README's Data model section).",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Configured Wh/km (if set)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1",
+          "rawQueryText": "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Avg battery %/km used (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Avg rated-range km lost per km driven (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Per-drive efficiency (most recent 200)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200",
+          "rawQueryText": "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

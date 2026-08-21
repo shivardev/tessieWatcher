@@ -1,0 +1,266 @@
+{
+  "id": null,
+  "uid": "teslalog-drive-stats",
+  "title": "teslalog: Drive Stats",
+  "description": "Aggregate driving stats and top drive destinations, matching TeslaMate's own Drive Stats dashboard.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "# of drives",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total distance",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthkm",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Median drive distance",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT distance_km AS value FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL\nORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL) / 2",
+          "rawQueryText": "SELECT distance_km AS value FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL\nORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL) / 2",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthkm",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Max speed ever",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "velocitykmh",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Top 10 destinations",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT end_location AS \"Destination\", COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed' AND end_location IS NOT NULL AND end_location != ''\nGROUP BY end_location\nORDER BY COUNT(*) DESC\nLIMIT 10",
+          "rawQueryText": "SELECT end_location AS \"Destination\", COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed' AND end_location IS NOT NULL AND end_location != ''\nGROUP BY end_location\nORDER BY COUNT(*) DESC\nLIMIT 10",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0
+      }
+    }
+  ]
+}

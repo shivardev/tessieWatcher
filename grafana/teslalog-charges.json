@@ -1,0 +1,265 @@
+{
+  "id": null,
+  "uid": "teslalog-charges",
+  "title": "teslalog: Charges",
+  "description": "Closed charging sessions with resolved locations and (if configured) cost.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total charges (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Energy added (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total cost (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Max charger power (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(MAX(max_charger_power_kw), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(MAX(max_charger_power_kw), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatt",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Charges",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  start_time AS time,\n  COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) AS \"Location\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(charge_energy_added_kwh, 1) AS \"kWh added\",\n  ROUND(charge_energy_used_kwh, 1) AS \"kWh used (est.)\",\n  ROUND(max_charger_power_kw, 1) AS \"max kW\",\n  ROUND(cost, 2) AS \"cost\",\n  ROUND((julianday(end_time) - julianday(start_time)) * 24 * 60, 0) AS \"min\"\nFROM charging_sessions\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "rawQueryText": "SELECT\n  start_time AS time,\n  COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) AS \"Location\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(charge_energy_added_kwh, 1) AS \"kWh added\",\n  ROUND(charge_energy_used_kwh, 1) AS \"kWh used (est.)\",\n  ROUND(max_charger_power_kw, 1) AS \"max kW\",\n  ROUND(cost, 2) AS \"cost\",\n  ROUND((julianday(end_time) - julianday(start_time)) * 24 * 60, 0) AS \"min\"\nFROM charging_sessions\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

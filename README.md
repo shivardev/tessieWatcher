@@ -1,18 +1,53 @@
 # TeslaLog Mini
 
-A tiny replacement for the TeslaMate logging pipeline, sized for a Raspberry
-Pi Zero 2 W (512MB RAM). It keeps the parts of TeslaMate worth keeping —
-Owner API + Tesla streaming, sleep-aware polling, drive and charge
-detection, and (see [Data model](#data-model--teslamate-parity) below)
-essentially the same SQLite data TeslaMate itself records per drive/charge —
-and drops everything else (Postgres, Grafana, MQTT, Phoenix/Elixir,
-geofencing, address lookup). Point your own Grafana (or anything else) at
-the resulting `tesla.db` file whenever you want to look at it; teslalog's
-only job is making sure the data is there and correct.
+[![Go Report Card](https://goreportcard.com/badge/github.com/shivardev/tessieWatcher)](https://goreportcard.com/report/github.com/shivardev/tessieWatcher)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](go.mod)
+[![Platforms](https://img.shields.io/badge/platforms-linux%2Farm64%20%7C%20linux%2Farmv7%20%7C%20linux%2Famd64%20%7C%20windows-informational)](#building)
+[![No cgo](https://img.shields.io/badge/cgo-disabled-success)](#building)
 
-Runs either as a plain systemd service (primary, lowest-overhead path for
-the Pi Zero 2 W) or as a Docker container (see
-[Running with Docker](#running-with-docker)) — same binary, your choice.
+**TeslaMate's data model, TeslaMate's sleep-aware polling, TeslaMate's
+field-for-field SQLite schema — in one static Go binary with no Postgres,
+no Grafana, no Docker, no Elixir runtime.** Built to run comfortably on a
+Raspberry Pi Zero 2 W's 512MB of RAM, and to keep working when Tesla's
+unofficial API shifts under it (which it does, regularly — see
+[Authentication](#authentication)).
+
+## Why this exists
+
+TeslaMate is a genuinely excellent piece of software, and this project
+isn't trying to replace it for anyone it already works well for. It exists
+for one narrow, specific reason: TeslaMate's stack — Postgres, Grafana, a
+Phoenix/Elixir runtime, MQTT — is real infrastructure, and a Pi Zero 2 W
+doesn't have room for it. teslalog is what's left when you ask "what does
+the *logging* actually need to be?" and answer honestly: an OAuth client,
+a sleep-aware state machine, and a place to put the rows. Everything else
+— dashboards, address lookup, cost modeling — can be layered on top of a
+correct SQLite file by whatever tool you already trust, including
+TeslaMate's own Grafana dashboards, pointed at this data instead.
+
+The one behavior this project cares about getting *right*, more than any
+feature: **while the car is asleep, leave it alone.** See
+[Sleep behavior](#sleep-behavior) below — a badly written Tesla logger
+that polls `vehicle_data` on a fixed interval forever will keep the car
+awake and cause real phantom-drain battery loss. Every other design
+decision in this codebase is secondary to that one.
+
+## What it looks like
+
+teslalog ships a small, dark-themed, read-only web page (on by default,
+no login — see [Portal](#portal-optional-web-page--database-download)):
+current vehicle state, today's drives, recent drives with resolved
+locations, the last charge, a live tail of what the daemon is doing, and
+a one-click database download.
+
+<p align="center">
+  <img src="docs/images/portal-preview.svg" alt="teslalog portal preview" width="640">
+</p>
+
+<sub>This is a preview generated from the actual page template and
+sample data, not a live screenshot — see the real thing at
+`http://<your-pi>:8083` once it's running.</sub>
 
 ```
 Tesla
@@ -22,30 +57,26 @@ Tesla
           │
           ▼
 Raspberry Pi Zero 2 W
-┌─────────────────────────────┐
-│ teslalog (one Go binary)     │
-│  auth (PKCE/SSO) + refresh   │
-│  Owner API client            │
-│  streaming client             │
-│  vehicle state machine        │
-│  SQLite storage (WAL)         │
-└──────────────┬───────────────┘
+┌───────────────────────────────┐
+│ teslalog (one Go binary)       │
+│  auth (PKCE/SSO) + refresh     │
+│  Owner API client              │
+│  streaming client              │
+│  vehicle state machine         │
+│  geofencing / reverse-geocode  │
+│  SQLite storage (WAL)          │
+│  read-only web portal          │
+└──────────────┬─────────────────┘
                ▼
      /var/lib/teslalog/tesla.db
 ```
 
-## Why this exists / what it deliberately does NOT do
+## What it deliberately does NOT do
 
 This is a **read-only historian**. It does not send commands to the car
-(no remote climate/charge control), does not do geofencing or address
-lookup, and has no dashboard in v0.1 — just a SQLite file you can query,
-export to CSV, or eventually put a tiny web UI on top of.
-
-The one behavior this project cares about getting *right*, more than
-any feature, is: **while the car is asleep, leave it alone.** See
-[Sleep behavior](#sleep-behavior) below — a badly written Tesla logger
-that polls `vehicle_data` every N seconds forever will keep the car
-awake and cause real phantom-drain battery loss.
+(no remote climate/charge control), and it doesn't bundle a full
+dashboarding stack — just a SQLite file you can query, export to CSV,
+view in the built-in portal, or point Grafana/Metabase/anything else at.
 
 ## Repository layout
 
@@ -188,13 +219,18 @@ client already supplements REST-derived positions the same way TeslaMate's
 does, but the REST cadence itself is a fixed, configurable interval per
 state rather than that adaptive state machine.
 
-**Deliberately not ported** (per the original design and your steer that
-Grafana/dashboards aren't teslalog's job): TeslaMate's `geofences` and
-`addresses` tables (reverse-geocoding drive/charge locations into human
-addresses, and per-geofence charge pricing). teslalog stores raw lat/lng
-instead — full fidelity, just not resolved to a place name. If you want
-that later, it's a self-contained addition (a `geofences` table + a
-lookup at drive/charge open/close) that wouldn't touch anything else.
+**Geofencing & locations**: `drives.start_location`/`end_location` and
+`charging_sessions.location` resolve to human-readable place names — see
+[Geofencing & locations](#geofencing--locations) below for how. Raw
+`start_lat`/`start_lng` etc. are always still stored regardless, so
+nothing is lost if a location never resolves to a name.
+
+**Still not ported**: TeslaMate's per-geofence charge pricing (different
+`price_per_kwh` depending on which named zone a charge happened in).
+teslalog's `charging_sessions.cost` is one flat rate for the whole
+account (`config.toml`'s `[charging].price_per_kwh`) — a real, deliberate
+simplification, not a gap that's cheap to close the way geofencing
+itself was.
 
 ## Building
 
@@ -458,7 +494,8 @@ database is a complete log of everywhere the vehicle has been and when.
 
 ### Viewing the data in Grafana
 
-teslalog doesn't bundle or run Grafana itself (see [Why this exists](#why-this-exists--what-it-deliberately-does-not-do)) —
+teslalog doesn't bundle or run Grafana itself (see
+[What it deliberately does NOT do](#what-it-deliberately-does-not-do)) —
 point your own existing Grafana instance at the downloaded file:
 
 1. Install the community **SQLite datasource plugin**
@@ -469,18 +506,45 @@ point your own existing Grafana instance at the downloaded file:
    downloaded `tesla-YYYY-MM-DD.db` file (or, for something that stays
    current, a path you periodically re-download to — this plugin reads
    the file directly, it doesn't poll teslalog itself).
-3. Build panels with plain SQL against teslalog's schema (see
-   [Data model & TeslaMate parity](#data-model--teslamate-parity) above
-   for the exact tables/columns) — e.g. a drives table panel:
+3. Import one of the ready-made dashboards in [`grafana/`](grafana/) —
+   Drives, Charges, Drive Stats, Mileage, States, Battery, and Efficiency,
+   built against teslalog's actual schema — or build your own panels with
+   plain SQL (see [Data model & TeslaMate parity](#data-model--teslamate-parity)
+   above for the exact tables/columns), e.g.:
    `SELECT start_time, distance_km, duration_min, start_battery_level, end_battery_level, max_speed_kmh FROM drives WHERE status = 'closed' ORDER BY start_time DESC`.
 
 **If you already have TeslaMate's Grafana dashboards**: they won't work
 unmodified against this file. TeslaMate's dashboards query a Postgres
 database with different table/column names than teslalog's SQLite
 schema (even though the underlying data is equivalent — see the parity
-table above for the exact mapping) — you'd rebuild the panels' SQL
-against teslalog's schema rather than reuse TeslaMate's dashboard JSON
-directly.
+table above for the exact mapping) — that's exactly what the dashboards
+in [`grafana/`](grafana/) are: the same panels, rewritten against
+teslalog's schema.
+
+## Geofencing & locations
+
+`drives.start_location`/`end_location` and `charging_sessions.location`
+resolve GPS coordinates to human-readable place names, the same job
+TeslaMate's `geofences`/`locations` tables do — teslalog's own simpler
+take on it, in `internal/geocode`. Two layers, cheapest first:
+
+1. **Named zones** — `[[geofence]]` entries in config.toml (name + lat +
+   lng + radius_m). Matching against a short list is pure math, no
+   network call at all. This is how a repeated spot like home shows up
+   with a real name for free.
+2. **Reverse-geocoding** (opt-in, off by default) — for anywhere you
+   haven't named, `[geocoding] enabled = true` falls back to an HTTP
+   lookup against an OSM Nominatim-compatible service, cached in
+   `geocode_cache` so the same spot is never looked up twice. Off by
+   default because, unlike geofences, this sends that location's
+   coordinates to a third-party server — turn it on deliberately, not
+   by accident. See `config.example.toml`'s `[geocoding]` section for
+   the exact tradeoffs and Nominatim's usage policy.
+
+Raw `start_lat`/`start_lng` (etc.) are always stored regardless of
+whether either layer resolves a name, so nothing is ever lost — a
+location just shows up as coordinates instead of a name until you add a
+geofence for it or turn geocoding on.
 
 ## Testing without a real car
 
@@ -552,11 +616,17 @@ shows a row with sane start/end time, distance, and battery delta, **and**
 minutes after you park (not endless `vehicle_data` polling). That's the
 whole point of this project.
 
-## What's next (not in v0.1)
+## What's next
 
 - ~~Tiny read-only HTTP dashboard over the SQLite file.~~ Done — see
   [Portal](#portal-optional-web-page--database-download) (`[portal]` in
   config.toml, no separate CLI subcommand needed).
+- ~~Optional geofencing / reverse-geocoding for human-readable drive
+  start/end locations.~~ Done — see
+  [Geofencing & locations](#geofencing--locations).
 - `teslalog export` as scheduled/automatic CSV/JSON snapshots.
-- Optional geofencing / reverse-geocoding for human-readable drive
-  start/end locations.
+- Per-geofence charge pricing (currently one flat `price_per_kwh` for
+  the whole account).
+- A `curl | bash` one-line installer for first-time setup (`teslalog
+  update` already handles every install after that — see
+  [Updating](#updating)).

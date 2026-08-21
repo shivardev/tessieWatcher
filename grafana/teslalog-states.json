@@ -1,0 +1,127 @@
+{
+  "id": null,
+  "uid": "teslalog-states",
+  "title": "teslalog: States",
+  "description": "State-machine history (asleep/offline/online/driving/charging/idle/suspended) - teslalog's states table is a superset of TeslaMate's own (which only tracks online/offline/asleep).",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Currently",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1",
+          "rawQueryText": "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Recent state changes",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500",
+          "rawQueryText": "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

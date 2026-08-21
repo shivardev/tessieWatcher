@@ -1,0 +1,265 @@
+{
+  "id": null,
+  "uid": "teslalog-drives",
+  "title": "teslalog: Drives",
+  "description": "Closed drives with resolved start/end locations (see README's Geofencing & locations section).",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total drives (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total distance (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthkm",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Avg distance per drive",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(AVG(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(AVG(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthkm",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Max speed (90d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "velocitykmh",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Drives",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "rawQueryText": "SELECT\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
