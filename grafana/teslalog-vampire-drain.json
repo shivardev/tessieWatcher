@@ -1,0 +1,142 @@
+{
+  "id": null,
+  "uid": "teslalog-vampire-drain",
+  "title": "teslalog: Vampire Drain",
+  "description": "Battery/range lost while parked (not driving, not charging) - matching TeslaMate's own Vampire Drain dashboard. Derived from consecutive battery_samples rows with no drive/charge session starting in between, filtered to gaps at least $min_idle_hours long.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-90d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "6",
+          "value": "6"
+        },
+        "hide": 0,
+        "label": "min. idle time (h)",
+        "name": "min_idle_hours",
+        "options": [
+          {
+            "selected": false,
+            "text": "1",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "3",
+            "value": "3"
+          },
+          {
+            "selected": true,
+            "text": "6",
+            "value": "6"
+          },
+          {
+            "selected": false,
+            "text": "12",
+            "value": "12"
+          },
+          {
+            "selected": false,
+            "text": "24",
+            "value": "24"
+          }
+        ],
+        "query": "1,3,6,12,24",
+        "type": "custom",
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Vampire drain",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH samples AS (\n  SELECT\n    timestamp,\n    battery_level,\n    battery_range_km,\n    LAG(timestamp) OVER (ORDER BY timestamp) AS prev_ts,\n    LAG(battery_level) OVER (ORDER BY timestamp) AS prev_level,\n    LAG(battery_range_km) OVER (ORDER BY timestamp) AS prev_range\n  FROM battery_samples\n)\nSELECT\n  prev_ts AS time,\n  timestamp AS \"End\",\n  ROUND((julianday(timestamp) - julianday(prev_ts)) * 24, 1) AS \"Period (h)\",\n  prev_level AS \"Start %\",\n  battery_level AS \"End %\",\n  (battery_level - prev_level) AS \"SoC diff\",\n  ROUND(prev_range - battery_range_km, 2) AS \"Range loss (km)\",\n  ROUND((prev_range - battery_range_km) / ((julianday(timestamp) - julianday(prev_ts)) * 24), 2) AS \"km lost / h\"\nFROM samples\nWHERE prev_ts IS NOT NULL\n  AND (julianday(timestamp) - julianday(prev_ts)) * 24 >= $min_idle_hours\n  AND NOT EXISTS (SELECT 1 FROM drives WHERE start_time > prev_ts AND start_time < timestamp)\n  AND NOT EXISTS (SELECT 1 FROM charging_sessions WHERE start_time > prev_ts AND start_time < timestamp)\nORDER BY prev_ts DESC\nLIMIT 200",
+          "rawQueryText": "WITH samples AS (\n  SELECT\n    timestamp,\n    battery_level,\n    battery_range_km,\n    LAG(timestamp) OVER (ORDER BY timestamp) AS prev_ts,\n    LAG(battery_level) OVER (ORDER BY timestamp) AS prev_level,\n    LAG(battery_range_km) OVER (ORDER BY timestamp) AS prev_range\n  FROM battery_samples\n)\nSELECT\n  prev_ts AS time,\n  timestamp AS \"End\",\n  ROUND((julianday(timestamp) - julianday(prev_ts)) * 24, 1) AS \"Period (h)\",\n  prev_level AS \"Start %\",\n  battery_level AS \"End %\",\n  (battery_level - prev_level) AS \"SoC diff\",\n  ROUND(prev_range - battery_range_km, 2) AS \"Range loss (km)\",\n  ROUND((prev_range - battery_range_km) / ((julianday(timestamp) - julianday(prev_ts)) * 24), 2) AS \"km lost / h\"\nFROM samples\nWHERE prev_ts IS NOT NULL\n  AND (julianday(timestamp) - julianday(prev_ts)) * 24 >= $min_idle_hours\n  AND NOT EXISTS (SELECT 1 FROM drives WHERE start_time > prev_ts AND start_time < timestamp)\n  AND NOT EXISTS (SELECT 1 FROM charging_sessions WHERE start_time > prev_ts AND start_time < timestamp)\nORDER BY prev_ts DESC\nLIMIT 200",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "SoC diff"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
