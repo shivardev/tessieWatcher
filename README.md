@@ -614,7 +614,7 @@ other machine you actually want to look at dashboards from:
 
 ```sh
 cd grafana
-./refresh-data.sh    # pulls tesla.db from your portal - see -PortalUrl/.ps1
+./refresh-data.sh http://<your-pi-ip>:8083    # pulls tesla.db from your own portal
 docker compose up -d
 ```
 

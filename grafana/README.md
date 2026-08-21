@@ -23,8 +23,7 @@ up automatically, with zero manual clicking:
 
 ```sh
 cd grafana
-./refresh-data.sh              # or .\refresh-data.ps1 on Windows -
-                                # downloads tesla.db from your portal
+./refresh-data.sh http://<your-teslalog-pi-ip>:8083   # or .\refresh-data.ps1 -PortalUrl ... on Windows
 docker compose up -d
 ```
 
