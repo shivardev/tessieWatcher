@@ -14,6 +14,7 @@ services:
     restart: unless-stopped
     volumes:
       - teslalog-data:/var/lib/teslalog
+      - teslalog-config:/etc/teslalog
     # `command` defaults to `run` (see Dockerfile CMD). Override for
     # one-off commands, e.g.:
     #   docker compose run --rm teslalog status
@@ -21,3 +22,10 @@ services:
 
 volumes:
   teslalog-data:
+  # Seeded from the image's /etc/teslalog/config.toml on first run; edit it
+  # in place afterwards (e.g. `docker compose exec teslalog` isn't
+  # available - this image has no shell - so edit via
+  # `docker run --rm -v teslalog_teslalog-config:/etc/teslalog -v "$PWD":/host alpine cp /host/config.toml /etc/teslalog/config.toml`,
+  # or just recreate the volume from a local file before first `up`) and it
+  # persists across `docker compose up --force-recreate` / image rebuilds.
+  teslalog-config:

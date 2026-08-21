@@ -17,10 +17,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"teslalog/internal/backup"
 	"teslalog/internal/config"
+	"teslalog/internal/geocode"
+	"teslalog/internal/portal"
 	"teslalog/internal/storage"
 	"teslalog/internal/tesla"
 	"teslalog/internal/vehicle"
@@ -28,6 +31,8 @@ import (
 
 // Run starts the teslalog daemon loop and blocks until ctx is canceled.
 func Run(ctx context.Context, cfg config.Config) error {
+	var logBuf *portal.LogBuffer // wired up below only if cfg.Portal.Enabled
+
 	store, err := storage.Open(cfg.Database)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
@@ -67,13 +72,64 @@ func Run(ctx context.Context, cfg config.Config) error {
 		go sched.Start(ctx)
 	}
 
+	if cfg.Portal.Enabled {
+		// Capture recent log activity into memory so the portal page can
+		// show "what's happening" without needing journalctl access or
+		// any special permissions. This tees into the buffer IN ADDITION
+		// to the normal stderr output (still what systemd/journalctl
+		// captures) - never a replacement for it.
+		logBuf = portal.NewLogBuffer(200)
+		slog.SetDefault(slog.New(teeHandler{slog.NewTextHandler(os.Stderr, nil), logBuf.Handler()}))
+
+		srv := portal.New(store, cfg.Database, logBuf)
+		go func() {
+			if err := srv.Run(ctx, cfg.Portal.Addr); err != nil {
+				slog.Error("portal server failed", "error", err)
+			}
+		}()
+		slog.Info("portal enabled", "addr", cfg.Portal.Addr)
+	}
+
+	// Recover from a crash or a systemd Restart=always cycle that left a
+	// drive or charging session marked 'open' in storage: resume writing to
+	// that same row instead of leaving it dangling forever while starting a
+	// second, parallel one. See vehicle.Resume's doc comment.
+	openDriveID, err := store.OpenDriveID(vehicleDBID)
+	if err != nil {
+		return fmt.Errorf("check for open drive: %w", err)
+	}
+	openChargeID, err := store.OpenChargingSessionID(vehicleDBID)
+	if err != nil {
+		return fmt.Errorf("check for open charging session: %w", err)
+	}
+	if openDriveID != 0 {
+		slog.Info("resuming drive left open across restart", "drive_id", openDriveID)
+	}
+	if openChargeID != 0 {
+		slog.Info("resuming charging session left open across restart", "session_id", openChargeID)
+	}
+
+	geofences := make([]geocode.Geofence, 0, len(cfg.Geofences))
+	for _, g := range cfg.Geofences {
+		geofences = append(geofences, geocode.Geofence{Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM})
+	}
+	geo := geocode.New(geofences, store, cfg.Geocoding.Enabled, cfg.Geocoding.BaseURL, cfg.Geocoding.UserAgent)
+
 	loop := &loopState{
-		cfg:         cfg,
-		client:      client,
-		store:       store,
-		vehicleID:   summary.VehicleID,
+		cfg: cfg, client: client, store: store,
+		// Tesla's vehicle_data/wake_up REST endpoints take the numeric
+		// "id" field (VehicleSummary.ID) - NOT "vehicle_id", which is a
+		// different identifier used only by the streaming API (see
+		// streamID below and VehicleSummary's own doc comment). Using
+		// vehicle_id here 404s: "vehicle_data: HTTP 404: not_found".
+		apiID:       summary.ID,
+		streamID:    summary.VehicleID,
+		vin:         summary.VIN,
 		vehicleDBID: vehicleDBID,
-		machine:     vehicle.New(cfg.Polling.IdleTimeout),
+		machine:     vehicle.Resume(cfg.Polling.IdleTimeout, openDriveID != 0, openChargeID != 0),
+		geo:         geo,
+		driveID:     openDriveID,
+		chargeID:    openChargeID,
 	}
 	return loop.run(ctx)
 }
@@ -101,12 +157,24 @@ func pickVehicle(ctx context.Context, client *tesla.Client, vin string) (tesla.V
 }
 
 type loopState struct {
-	cfg         config.Config
-	client      *tesla.Client
-	store       *storage.Store
-	vehicleID   int64
+	cfg    config.Config
+	client *tesla.Client
+	store  *storage.Store
+	// apiID is VehicleSummary.ID: the identifier Tesla's REST API
+	// (vehicle_data, wake_up) expects in its URL path.
+	apiID int64
+	// streamID is VehicleSummary.VehicleID: a separate identifier used
+	// only as the streaming websocket's subscription tag - NOT
+	// interchangeable with apiID (see VehicleSummary's doc comment).
+	streamID int64
+	// vin identifies "our" vehicle within a /api/1/products response
+	// that may list multiple vehicles (or non-vehicle products) -
+	// simpler and more obviously correct than matching on either numeric
+	// id, given there are two of those and they mean different things.
+	vin         string
 	vehicleDBID int64
 	machine     *vehicle.Machine
+	geo         *geocode.Resolver
 
 	driveID  int64
 	chargeID int64
@@ -130,16 +198,36 @@ func (l *loopState) run(ctx context.Context) error {
 		}
 
 		var sleepFor time.Duration
-		switch l.machine.State() {
-		case vehicle.StateAsleep, vehicle.StateOffline, vehicle.StateSuspended, vehicle.StateUnknown:
+		switch {
+		case isAsleepLike(l.machine.State()):
 			l.closeStream()
 			if err := l.checkSummary(ctx); err != nil {
 				slog.Warn("vehicle summary check failed", "error", err)
 			}
-			sleepFor = l.cfg.Polling.SuspendedCheckInterval
+			if isAsleepLike(l.machine.State()) {
+				sleepFor = l.cfg.Polling.SuspendedCheckInterval
+			} else {
+				// checkSummary just found the car active (e.g. woke up on
+				// its own) - start the fast poll/driving/charging cadence
+				// on the very next iteration instead of waiting out the
+				// full SuspendedCheckInterval (which could be 15+ minutes)
+				// before noticing. sleepFor stays its zero value, so the
+				// loop goes straight back around with no delay.
+			}
 		default:
 			if err := l.pollVehicleData(ctx); err != nil {
 				slog.Warn("vehicle_data poll failed", "error", err)
+				// vehicle_data can't reliably tell "asleep/offline" apart from
+				// a network blip (it just errors/times out either way), so
+				// fall back to the cheap, non-waking summary check to find
+				// out which. Without this, a car that genuinely went
+				// offline mid-drive/charge would otherwise keep getting
+				// vehicle_data retried at the fast driving/charging cadence
+				// forever instead of settling into the sleep-respecting
+				// suspended branch above.
+				if err := l.checkSummary(ctx); err != nil {
+					slog.Warn("fallback vehicle summary check failed", "error", err)
+				}
 			}
 			l.manageStream(ctx)
 			l.drainStream()
@@ -169,6 +257,53 @@ func (l *loopState) run(ctx context.Context) error {
 	}
 }
 
+// teeHandler is a slog.Handler that forwards every record to two
+// handlers - used to send log output to both stderr (what
+// systemd/journalctl captures, unchanged from before) and the portal's
+// in-memory LogBuffer, without either one replacing the other.
+type teeHandler struct {
+	a, b slog.Handler
+}
+
+func (t teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return t.a.Enabled(ctx, level) || t.b.Enabled(ctx, level)
+}
+
+func (t teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	if t.a.Enabled(ctx, r.Level) {
+		if err := t.a.Handle(ctx, r.Clone()); err != nil {
+			firstErr = err
+		}
+	}
+	if t.b.Enabled(ctx, r.Level) {
+		if err := t.b.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (t teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return teeHandler{t.a.WithAttrs(attrs), t.b.WithAttrs(attrs)}
+}
+
+func (t teeHandler) WithGroup(name string) slog.Handler {
+	return teeHandler{t.a.WithGroup(name), t.b.WithGroup(name)}
+}
+
+// isAsleepLike reports whether s is one of the states that should only
+// get the cheap, non-waking summary check (never vehicle_data) at
+// SuspendedCheckInterval cadence.
+func isAsleepLike(s vehicle.State) bool {
+	switch s {
+	case vehicle.StateAsleep, vehicle.StateOffline, vehicle.StateSuspended, vehicle.StateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // checkSummary performs the cheap, non-waking vehicle-list check and
 // feeds the result to the state machine.
 func (l *loopState) checkSummary(ctx context.Context) error {
@@ -178,7 +313,7 @@ func (l *loopState) checkSummary(ctx context.Context) error {
 	}
 	rawState := "offline" // not found in the list at all: treat as offline
 	for _, v := range vehicles {
-		if v.VehicleID == l.vehicleID {
+		if v.VIN == l.vin {
 			rawState = v.State
 			break
 		}
@@ -190,7 +325,7 @@ func (l *loopState) checkSummary(ctx context.Context) error {
 // pollVehicleData performs a full vehicle_data poll. Only called while
 // the machine believes the vehicle is online/driving/charging/idle.
 func (l *loopState) pollVehicleData(ctx context.Context) error {
-	snap, meta, err := l.client.VehicleData(ctx, l.vehicleID)
+	snap, meta, err := l.client.VehicleData(ctx, l.apiID)
 	if err != nil {
 		// A failure here (car went to sleep between our summary check
 		// and this poll, network blip, etc.) should NOT be treated as
@@ -200,7 +335,7 @@ func (l *loopState) pollVehicleData(ctx context.Context) error {
 	}
 	if meta.Model != "" || meta.DisplayName != "" {
 		_, err := l.store.UpsertVehicle(storage.VehicleMeta{
-			VIN: meta.VIN, TeslaID: fmt.Sprint(l.vehicleID), DisplayName: meta.DisplayName,
+			VIN: meta.VIN, TeslaID: fmt.Sprint(l.streamID), DisplayName: meta.DisplayName,
 			Model: meta.Model, TrimBadging: meta.TrimBadging, MarketingName: meta.MarketingName,
 			ExteriorColor: meta.ExteriorColor, WheelType: meta.WheelType, SpoilerType: meta.SpoilerType,
 		})
@@ -238,7 +373,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			id, err := l.store.OpenDrive(storage.DriveStart{
 				VehicleID: l.vehicleDBID, Time: ev.At, OdometerKm: s.OdometerKm,
 				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
-				Lat: s.Lat, Lng: s.Lng,
+				Lat: s.Lat, Lng: s.Lng, StartLocation: l.geo.Resolve(context.Background(), s.Lat, s.Lng),
 			})
 			if err != nil {
 				return fmt.Errorf("open drive: %w", err)
@@ -262,7 +397,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			if err := l.store.CloseDrive(storage.DriveEnd{
 				DriveID: l.driveID, Time: ev.At, OdometerKm: s.OdometerKm,
 				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
-				Lat: s.Lat, Lng: s.Lng,
+				Lat: s.Lat, Lng: s.Lng, EndLocation: l.geo.Resolve(context.Background(), s.Lat, s.Lng),
 			}); err != nil {
 				return fmt.Errorf("close drive: %w", err)
 			}
@@ -274,6 +409,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
 				VehicleID: l.vehicleDBID, Time: ev.At, BatteryLevel: s.BatteryLevel,
 				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, Lat: s.Lat, Lng: s.Lng,
+				Location: l.geo.Resolve(context.Background(), s.Lat, s.Lng),
 			})
 			if err != nil {
 				return fmt.Errorf("open charging session: %w", err)
@@ -353,7 +489,7 @@ func (l *loopState) manageStream(ctx context.Context) {
 			slog.Warn("cannot start stream: no access token", "error", err)
 			return
 		}
-		conn, err := tesla.Connect(ctx, l.cfg.Streaming.URL, token, l.vehicleID)
+		conn, err := tesla.Connect(ctx, l.cfg.Streaming.URL, token, l.streamID)
 		if err != nil {
 			slog.Warn("streaming connect failed, continuing on REST polling only", "error", err)
 			return
@@ -373,17 +509,31 @@ func (l *loopState) drainStream() {
 		select {
 		case s, ok := <-l.stream.Samples():
 			if !ok {
+				// The stream's read loop has exited (server closed the
+				// connection, a read error, etc.); log why before dropping
+				// it, rather than silently discarding the one error
+				// StreamConn ever reports. manageStream reconnects on the
+				// next loop iteration.
+				select {
+				case err := <-l.stream.Errors():
+					slog.Warn("streaming connection closed", "error", err)
+				default:
+					slog.Info("streaming connection closed")
+				}
 				l.stream = nil
 				return
 			}
 			// The legacy streaming protocol only carries GPS/speed/power/
-			// battery/range/shift_state - richer telemetry (climate, TPMS,
-			// usable battery %, ideal/est range) only comes from REST
-			// vehicle_data polls, so those fields are left zero here.
+			// battery/range/shift_state/elevation - richer telemetry
+			// (climate, TPMS, usable battery %, ideal/est range) only comes
+			// from REST vehicle_data polls, so those fields are left nil
+			// (stored as SQL NULL, not a misleading 0) here. ElevationM,
+			// unlike those, genuinely IS known from the stream, so it's the
+			// one field set here that positionFromSnapshot never sets.
 			if err := l.store.AppendPosition(storage.PositionSample{
 				DriveID: l.driveID, VehicleID: l.vehicleDBID, Time: s.Time,
 				Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
-				ElevationM: s.ElevationM, PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
+				ElevationM: ptr(s.ElevationM), PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
 				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, ShiftState: s.ShiftState,
 			}); err != nil {
 				slog.Warn("append streaming position failed", "error", err)
@@ -394,20 +544,27 @@ func (l *loopState) drainStream() {
 	}
 }
 
+// ptr returns a pointer to v, for the storage.PositionSample fields that
+// distinguish "genuinely unknown" (nil, stored as SQL NULL) from a real
+// zero reading.
+func ptr(v float64) *float64 { return &v }
+
 // positionFromSnapshot maps a full vehicle_data-derived Snapshot onto a
 // storage.PositionSample, carrying every field TeslaMate's positions
-// table tracks (see internal/storage/schema.go).
+// table tracks (see internal/storage/schema.go). ElevationM is left nil:
+// the Owner API's vehicle_data response doesn't report elevation at all
+// (only the streaming client does, see drainStream below).
 func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Snapshot) storage.PositionSample {
 	return storage.PositionSample{
 		DriveID: driveID, VehicleID: vehicleDBID, Time: at,
 		Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
-		ElevationM: s.ElevationM, PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
+		PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
 
 		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
 		RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EstRangeKm: s.EstRangeKm,
 		BatteryHeaterOn: s.BatteryHeaterOn,
 
-		OutsideTempC: s.OutsideTempC, InsideTempC: s.InsideTempC, FanStatus: s.FanStatus,
+		OutsideTempC: ptr(s.OutsideTempC), InsideTempC: ptr(s.InsideTempC), FanStatus: s.FanStatus,
 		DriverTempSettingC: s.DriverTempSettingC, PassengerTempSettingC: s.PassengerTempSettingC,
 		IsClimateOn: s.IsClimateOn, IsRearDefrosterOn: s.IsRearDefrosterOn, IsFrontDefrosterOn: s.IsFrontDefrosterOn,
 

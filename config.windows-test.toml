@@ -32,6 +32,20 @@ url     = "wss://streaming.vn.teslamotors.com/streaming/"
 # README).
 enabled = false
 
+[portal]
+# On for local testing - open http://localhost:8083 while `run-teslalog.bat`
+# is running. No login (see README's Portal section) - fine on your own
+# machine, don't expose this address beyond your home network.
+enabled = true
+addr    = ":8083"
+
+[geocoding]
+# Off by default - sends coordinates to a third party if enabled. See
+# config.example.toml's [geocoding] section for the full explanation.
+enabled = false
+base_url = "https://nominatim.openstreetmap.org"
+user_agent = "teslalog/0.1.0 (personal use)"
+
 [api]
 owner_api_base_url = "https://owner-api.teslamotors.com"
 sso_base_url        = "https://auth.tesla.com"

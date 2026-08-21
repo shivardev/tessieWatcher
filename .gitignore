@@ -1,9 +1,29 @@
+# Build outputs
 /teslalog-linux-arm64
 /teslalog-linux-amd64
+/teslalog-linux-armv7
 /teslalog
+/teslalog-windows-amd64.exe
+
+# Local Go caches
+/.gocache/
+/.gomodcache/
+
+# Runtime data and backups
 *.db
 *.db-wal
 *.db-shm
 *.db.gz
+
+# Local configuration and credentials
 tokens.json
-/teslalog-windows-amd64.exe
+/config.toml
+.env
+.env.*
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

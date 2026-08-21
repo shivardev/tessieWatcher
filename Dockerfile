@@ -19,13 +19,25 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/teslalog ./cmd/teslalog
+# The final stage's distroless:nonroot image has no shell, so directories
+# that need to be owned by its uid/gid 65532 ("nonroot") have to be
+# prepared here, in a stage that has one.
+RUN mkdir -p /out/var-lib-teslalog && chown 65532:65532 /out/var-lib-teslalog
 
-# distroless/static (not `scratch`) so HTTPS to Tesla's SSO/Owner API
-# has a CA certificate bundle to validate against.
-FROM gcr.io/distroless/static-debian12
+# distroless/static (not `scratch`) so HTTPS to Tesla's SSO/Owner API has a
+# CA certificate bundle to validate against. The :nonroot variant runs as
+# an unprivileged uid/gid (65532) rather than root, matching the hardened,
+# non-root posture systemd/teslalog.service already uses on the bare-metal
+# deployment path.
+FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/teslalog /usr/local/bin/teslalog
-COPY config.example.toml /etc/teslalog/config.toml
-VOLUME ["/var/lib/teslalog"]
+COPY --chown=65532:65532 config.example.toml /etc/teslalog/config.toml
+COPY --from=build --chown=65532:65532 /out/var-lib-teslalog /var/lib/teslalog
+# Both are named volumes in docker-compose.yml so config edits (VIN,
+# intervals, charging cost/efficiency, etc.) AND data survive
+# `docker compose up --force-recreate` / image rebuilds, not just data.
+VOLUME ["/var/lib/teslalog", "/etc/teslalog"]
 ENV TESLALOG_CONFIG=/etc/teslalog/config.toml
+USER nonroot
 ENTRYPOINT ["/usr/local/bin/teslalog"]
 CMD ["run"]

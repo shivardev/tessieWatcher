@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -75,7 +76,7 @@ type fixture struct {
 func buildScript() []fixture {
 	base := func() fixture {
 		var f fixture
-		f.ID, f.VehicleID = 42, 42
+		f.ID, f.VehicleID = 555, 42 // deliberately distinct: catches id/vehicle_id mixups (see VehicleSummary doc comment)
 		f.VIN = "5YJ3E1EA1PF000001"
 		f.DisplayName = "Test Model 3"
 		f.State = "online"
@@ -128,7 +129,7 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 	var summaryCalls int64
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/1/vehicles", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/1/products", func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt64(&summaryCalls, 1)
 		dataCalls := atomic.LoadInt64(&vehicleDataCalls)
 
@@ -144,13 +145,13 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 
 		json.NewEncoder(w).Encode(map[string]any{
 			"response": []map[string]any{{
-				"id": 42, "vehicle_id": 42, "vin": "5YJ3E1EA1PF000001",
+				"id": 555, "vehicle_id": 42, "vin": "5YJ3E1EA1PF000001",
 				"display_name": "Test Model 3", "state": state, "in_service": false,
 			}},
 			"count": 1,
 		})
 	})
-	mux.HandleFunc("/api/1/vehicles/42/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
 		idx := int(atomic.AddInt64(&vehicleDataCalls, 1)) - 1
 		if idx >= len(script) {
 			idx = len(script) - 1
@@ -296,5 +297,462 @@ func init() {
 	// fixtures ever get out of sync with tesla's rawVehicleData shape.
 	if len(buildScript()) == 0 {
 		panic(fmt.Sprintf("buildScript produced no fixtures"))
+	}
+}
+
+// TestRestartRecoversOpenDriveInsteadOfDuplicating simulates the daemon
+// being killed (crash, OOM, systemd Restart=always) while a drive is open,
+// then restarted against the same database. It must resume writing to the
+// same drive row rather than leaving it open forever while starting a
+// second, parallel one — see vehicle.Resume and its call site in Run.
+func TestRestartRecoversOpenDriveInsteadOfDuplicating(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tesla.db")
+	tokenPath := filepath.Join(dir, "tokens.json")
+	if err := tesla.SaveTokenFile(tokenPath, tesla.TokenSet{
+		AccessToken:  "test-access-token",
+		RefreshToken: "test-refresh-token",
+		ExpiresAt:    time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+
+	const vin = "5YJ3E1EA1PF000001"
+	summaryHandler := func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"response": []map[string]any{{
+				"id": 555, "vehicle_id": 42, "vin": vin,
+				"display_name": "Test Model 3", "state": "online", "in_service": false,
+			}},
+			"count": 1,
+		})
+	}
+
+	cfgFor := func(serverURL string) config.Config {
+		return config.Config{
+			Database:  dbPath,
+			TokenFile: tokenPath,
+			Polling: config.PollingConfig{
+				DrivingInterval:        2 * time.Millisecond,
+				ChargingInterval:       2 * time.Millisecond,
+				OnlineInterval:         2 * time.Millisecond,
+				IdleTimeout:            time.Hour, // don't let idle-suspend interfere with this test
+				SuspendedCheckInterval: 2 * time.Millisecond,
+			},
+			Streaming: config.StreamingConfig{Enabled: false},
+			Backup:    config.BackupConfig{Enabled: false},
+			API: config.APIConfig{
+				OwnerAPIBaseURL: serverURL, SSOBaseURL: serverURL,
+				ClientID: "ownerapi", UserAgent: "teslalog-test/0.1",
+			},
+		}
+	}
+
+	drivingFixture := func() fixture {
+		var f fixture
+		f.ID, f.VehicleID = 555, 42 // deliberately distinct: catches id/vehicle_id mixups (see VehicleSummary doc comment)
+		f.VIN, f.DisplayName, f.State = vin, "Test Model 3", "online"
+		f.VehicleConfig.CarType = "model3"
+		f.DriveState.ShiftState = "D"
+		f.ChargeState.ChargingState = "Disconnected"
+		f.ChargeState.BatteryLevel = 76
+		f.ChargeState.BatteryRange = km(300)
+		f.VehicleState.Odometer = km(1000.0)
+		return f
+	}
+
+	// --- Phase 1: daemon runs, opens a drive, then gets killed mid-drive ---
+	mux1 := http.NewServeMux()
+	mux1.HandleFunc("/api/1/products", summaryHandler)
+	mux1.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(fixtureResponse{Response: drivingFixture()})
+	})
+	server1 := httptest.NewServer(mux1)
+	defer server1.Close()
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	runErrCh1 := make(chan error, 1)
+	go func() { runErrCh1 <- Run(ctx1, cfgFor(server1.URL)) }()
+
+	// Wait for a drive to actually be open (not just a fixed sleep) before
+	// "crashing" it, so this isn't flaky under slow/cold-start conditions
+	// (e.g. first SQLite-via-wazero open in the process).
+	deadline1 := time.Now().Add(8 * time.Second)
+	var driveOpened bool
+	for time.Now().Before(deadline1) {
+		if hasState(t, dbPath, "driving") {
+			driveOpened = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel1()
+	<-runErrCh1
+	if !driveOpened {
+		t.Fatalf("drive never opened in phase 1 within the deadline")
+	}
+
+	func() {
+		store, err := storage.Open(dbPath)
+		if err != nil {
+			t.Fatalf("reopen store after phase 1: %v", err)
+		}
+		defer store.Close()
+		var vehicleID int64
+		if err := store.DB().QueryRow(`SELECT id FROM vehicles ORDER BY id LIMIT 1`).Scan(&vehicleID); err != nil {
+			t.Fatalf("query vehicle id: %v", err)
+		}
+		openID, err := store.OpenDriveID(vehicleID)
+		if err != nil {
+			t.Fatalf("query open drive: %v", err)
+		}
+		if openID == 0 {
+			t.Fatalf("expected a drive left open after phase 1, found none")
+		}
+		var count int
+		if err := store.DB().QueryRow(`SELECT COUNT(*) FROM drives`).Scan(&count); err != nil {
+			t.Fatalf("count drives: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("expected exactly 1 drive row after phase 1, got %d", count)
+		}
+	}()
+
+	// --- Phase 2: daemon restarts against the same DB; car is now parked ---
+	parkedFixture := drivingFixture()
+	parkedFixture.DriveState.ShiftState = ""
+	parkedFixture.ChargeState.BatteryLevel = 70
+	parkedFixture.VehicleState.Odometer = km(1013.7)
+
+	mux2 := http.NewServeMux()
+	mux2.HandleFunc("/api/1/products", summaryHandler)
+	mux2.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(fixtureResponse{Response: parkedFixture})
+	})
+	server2 := httptest.NewServer(mux2)
+	defer server2.Close()
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- Run(ctx2, cfgFor(server2.URL)) }()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var closed bool
+	for time.Now().Before(deadline) {
+		if hasState(t, dbPath, "idle") {
+			closed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel2()
+	<-runErrCh
+	if !closed {
+		t.Fatalf("vehicle never settled back into 'idle' after restart")
+	}
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store after phase 2: %v", err)
+	}
+	defer store.Close()
+
+	var count int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM drives`).Scan(&count); err != nil {
+		t.Fatalf("count drives: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("restart must resume the same drive, not open a second one; got %d drive rows", count)
+	}
+
+	var vehicleID int64
+	if err := store.DB().QueryRow(`SELECT id FROM vehicles ORDER BY id LIMIT 1`).Scan(&vehicleID); err != nil {
+		t.Fatalf("query vehicle id: %v", err)
+	}
+	drives, err := store.ListDrives(vehicleID, 0)
+	if err != nil {
+		t.Fatalf("list drives: %v", err)
+	}
+	if len(drives) != 1 {
+		t.Fatalf("expected exactly 1 closed drive, got %d", len(drives))
+	}
+	d := drives[0]
+	if d.StartBattery != 76 || d.EndBattery != 70 {
+		t.Fatalf("expected the resumed drive to carry its original start (76%%) through to the post-restart end (70%%), got %d%%->%d%%",
+			d.StartBattery, d.EndBattery)
+	}
+}
+
+// TestWakingUpDoesNotWaitOutTheFullSuspendedInterval pins a real bug found
+// against a live car: once the cheap summary check discovers the vehicle
+// went from asleep/suspended to active on its own, the daemon must start
+// polling vehicle_data on the very next loop iteration, not wait out the
+// (typically much longer, e.g. 15 minutes) SuspendedCheckInterval first.
+// The bug was that `sleepFor` got set to SuspendedCheckInterval
+// unconditionally inside the asleep-like branch, even when checkSummary
+// had just transitioned the state out of it in that same iteration.
+func TestWakingUpDoesNotWaitOutTheFullSuspendedInterval(t *testing.T) {
+	const vin = "5YJ3E1EA1PF000001"
+	var summaryCalls, vehicleDataCalls int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/1/products", func(w http.ResponseWriter, r *http.Request) {
+		// First two checks: asleep - one from Run's own pickVehicle, one
+		// from run()'s pre-loop checkSummary, so the machine is actually
+		// Asleep (not Online already) by the time the for loop's first
+		// iteration runs its own checkSummary in the asleep-like branch,
+		// which is the transition this test is actually exercising.
+		// Every check after that: online.
+		state := "online"
+		if atomic.AddInt64(&summaryCalls, 1) <= 2 {
+			state = "asleep"
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"response": []map[string]any{{
+				"id": 555, "vehicle_id": 42, "vin": vin,
+				"display_name": "Test Model 3", "state": state, "in_service": false,
+			}},
+			"count": 1,
+		})
+	})
+	mux.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&vehicleDataCalls, 1)
+		f := fixture{ID: 555, VehicleID: 42, VIN: vin, DisplayName: "Test Model 3", State: "online"}
+		f.ChargeState.BatteryLevel = 70
+		json.NewEncoder(w).Encode(fixtureResponse{Response: f})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tesla.db")
+	tokenPath := filepath.Join(dir, "tokens.json")
+	if err := tesla.SaveTokenFile(tokenPath, tesla.TokenSet{
+		AccessToken: "test-access-token", RefreshToken: "test-refresh-token",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+
+	cfg := config.Config{
+		Database:  dbPath,
+		TokenFile: tokenPath,
+		Polling: config.PollingConfig{
+			DrivingInterval: 2 * time.Millisecond, ChargingInterval: 2 * time.Millisecond,
+			OnlineInterval: 2 * time.Millisecond, IdleTimeout: time.Hour,
+			// Deliberately long relative to the test's own deadline below:
+			// if the bug is present, vehicle_data will never be called
+			// before this elapses and the test will time out waiting.
+			SuspendedCheckInterval: 5 * time.Second,
+		},
+		Streaming: config.StreamingConfig{Enabled: false},
+		Backup:    config.BackupConfig{Enabled: false},
+		API: config.APIConfig{
+			OwnerAPIBaseURL: server.URL, SSOBaseURL: server.URL,
+			ClientID: "ownerapi", UserAgent: "teslalog-test/0.1",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- Run(ctx, cfg) }()
+
+	deadline := time.Now().Add(2 * time.Second) // well under SuspendedCheckInterval
+	var polled bool
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&vehicleDataCalls) > 0 {
+			polled = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-runErrCh
+
+	if !polled {
+		t.Fatalf("vehicle_data was never called within 2s of waking up - the daemon waited out the full %s SuspendedCheckInterval instead of resuming fast polling immediately",
+			cfg.Polling.SuspendedCheckInterval)
+	}
+}
+
+// TestTeeHandlerForwardsToBothHandlers pins the portal's log-capture
+// mechanism: enabling the portal must tee log output into its in-memory
+// buffer WITHOUT silencing or altering what still goes to the normal
+// handler (stderr/journalctl) - neither destination should ever lose
+// records because of the other.
+func TestTeeHandlerForwardsToBothHandlers(t *testing.T) {
+	var aRecords, bRecords []string
+	a := &recordingHandler{out: &aRecords}
+	b := &recordingHandler{out: &bRecords}
+
+	logger := slog.New(teeHandler{a, b})
+	logger.Info("hello", "x", 1)
+	logger.With("component", "test").Warn("world")
+
+	if len(aRecords) != 2 || len(bRecords) != 2 {
+		t.Fatalf("expected both handlers to receive both records, got a=%v b=%v", aRecords, bRecords)
+	}
+	if aRecords[0] != "INFO hello x=1" || bRecords[0] != "INFO hello x=1" {
+		t.Fatalf("unexpected first record: a=%q b=%q", aRecords[0], bRecords[0])
+	}
+	if aRecords[1] != "WARN world component=test" || bRecords[1] != "WARN world component=test" {
+		t.Fatalf("unexpected second record (WithAttrs not forwarded correctly?): a=%q b=%q", aRecords[1], bRecords[1])
+	}
+}
+
+// recordingHandler is a minimal slog.Handler recording "LEVEL message
+// key=value..." lines, used only to verify teeHandler forwards
+// everything (message, level, and .With attrs) to each inner handler.
+type recordingHandler struct {
+	out   *[]string
+	attrs []slog.Attr
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	line := r.Level.String() + " " + r.Message
+	for _, a := range h.attrs {
+		line += " " + a.Key + "=" + a.Value.String()
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		line += " " + a.Key + "=" + a.Value.String()
+		return true
+	})
+	*h.out = append(*h.out, line)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &recordingHandler{out: h.out, attrs: append(append([]slog.Attr{}, h.attrs...), attrs...)}
+}
+
+func (h *recordingHandler) WithGroup(string) slog.Handler { return h }
+
+// TestDriveAndChargeLocationsResolveViaGeofence proves the geofencing
+// wiring end-to-end: a drive/charge whose start/end coordinates fall
+// inside a configured [[geofence]] must come out of the database with
+// that geofence's name in start_location/end_location/location, not
+// just resolvable in isolation (internal/geocode has its own unit
+// tests for the resolution logic itself).
+func TestDriveAndChargeLocationsResolveViaGeofence(t *testing.T) {
+	const vin = "5YJ3E1EA1PF000001"
+	homeLat, homeLng := 40.0000, -74.0000 // matches driveStart/chargeStart below
+	workLat, workLng := 40.0900, -74.0800 // matches driveEnd below
+
+	fx := func(lat, lng float64, shiftState, chargingState string, battery int, odometerKm float64) fixture {
+		var f fixture
+		f.ID, f.VehicleID = 555, 42
+		f.VIN, f.DisplayName, f.State = vin, "Test Model 3", "online"
+		f.VehicleConfig.CarType = "model3"
+		f.DriveState.ShiftState = shiftState
+		f.DriveState.Latitude, f.DriveState.Longitude = lat, lng
+		f.ChargeState.ChargingState = chargingState
+		f.ChargeState.BatteryLevel = battery
+		f.VehicleState.Odometer = km(odometerKm)
+		return f
+	}
+	script := []fixture{
+		fx(homeLat, homeLng, "D", "Disconnected", 76, 1000), // drive start, at "Home"
+		fx(workLat, workLng, "", "Disconnected", 70, 1010),  // drive end, at "Work"
+		fx(homeLat, homeLng, "", "Charging", 70, 1010),      // charge start, back at "Home"
+	}
+
+	var vehicleDataCalls int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/1/products", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"response": []map[string]any{{
+				"id": 555, "vehicle_id": 42, "vin": vin,
+				"display_name": "Test Model 3", "state": "online", "in_service": false,
+			}},
+			"count": 1,
+		})
+	})
+	mux.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		idx := int(atomic.AddInt64(&vehicleDataCalls, 1)) - 1
+		if idx >= len(script) {
+			idx = len(script) - 1
+		}
+		json.NewEncoder(w).Encode(fixtureResponse{Response: script[idx]})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tesla.db")
+	tokenPath := filepath.Join(dir, "tokens.json")
+	if err := tesla.SaveTokenFile(tokenPath, tesla.TokenSet{
+		AccessToken: "test-access-token", RefreshToken: "test-refresh-token",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+
+	cfg := config.Config{
+		Database:  dbPath,
+		TokenFile: tokenPath,
+		Polling: config.PollingConfig{
+			DrivingInterval: 2 * time.Millisecond, ChargingInterval: 2 * time.Millisecond,
+			OnlineInterval: 2 * time.Millisecond, IdleTimeout: time.Hour,
+			SuspendedCheckInterval: 2 * time.Millisecond,
+		},
+		Streaming: config.StreamingConfig{Enabled: false},
+		Backup:    config.BackupConfig{Enabled: false},
+		Geofences: []config.GeofenceConfig{
+			{Name: "Home", Lat: homeLat, Lng: homeLng, RadiusM: 50},
+			{Name: "Work", Lat: workLat, Lng: workLng, RadiusM: 50},
+		},
+		API: config.APIConfig{
+			OwnerAPIBaseURL: server.URL, SSOBaseURL: server.URL,
+			ClientID: "ownerapi", UserAgent: "teslalog-test/0.1",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- Run(ctx, cfg) }()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var chargeSeen bool
+	for time.Now().Before(deadline) {
+		if hasState(t, dbPath, "charging") {
+			chargeSeen = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-runErrCh
+	if !chargeSeen {
+		t.Fatalf("never reached 'charging' state within the deadline")
+	}
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+
+	var startLoc, endLoc sql.NullString
+	if err := store.DB().QueryRow(`SELECT start_location, end_location FROM drives ORDER BY id LIMIT 1`).Scan(&startLoc, &endLoc); err != nil {
+		t.Fatalf("query drive locations: %v", err)
+	}
+	if startLoc.String != "Home" {
+		t.Fatalf("expected drive start_location 'Home', got %q", startLoc.String)
+	}
+	if endLoc.String != "Work" {
+		t.Fatalf("expected drive end_location 'Work', got %q", endLoc.String)
+	}
+
+	var chargeLoc sql.NullString
+	if err := store.DB().QueryRow(`SELECT location FROM charging_sessions ORDER BY id LIMIT 1`).Scan(&chargeLoc); err != nil {
+		t.Fatalf("query charge location: %v", err)
+	}
+	if chargeLoc.String != "Home" {
+		t.Fatalf("expected charging_sessions.location 'Home', got %q", chargeLoc.String)
 	}
 }

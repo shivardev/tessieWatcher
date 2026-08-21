@@ -12,10 +12,10 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
-	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 const timeLayout = time.RFC3339Nano
@@ -60,7 +60,42 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
+	if err := applyColumnMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply column migrations: %w", err)
+	}
+
 	return &Store{db: db}, nil
+}
+
+// columnMigrations adds columns introduced after a table's initial
+// CREATE TABLE that already shipped in a release - `schema`'s own
+// CREATE TABLE IF NOT EXISTS only ever applies to a brand-new database;
+// it does nothing for a table that already exists on disk (e.g. an
+// already-deployed teslalog's tesla.db), so those need an explicit ADD
+// COLUMN here instead. Append-only: never remove or reorder entries,
+// since this list runs unconditionally on every startup against
+// databases at any prior version.
+var columnMigrations = []string{
+	`ALTER TABLE drives ADD COLUMN start_location TEXT`,
+	`ALTER TABLE drives ADD COLUMN end_location TEXT`,
+	`ALTER TABLE charging_sessions ADD COLUMN location TEXT`,
+}
+
+func applyColumnMigrations(db *sql.DB) error {
+	for _, stmt := range columnMigrations {
+		if _, err := db.Exec(stmt); err != nil {
+			// SQLite's error for a column that's already there (i.e. this
+			// migration already ran on a prior startup, or the table was
+			// just freshly CREATEd with the column already in it) - the
+			// one error this loop must swallow to stay idempotent.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	return nil
 }
 
 // Close closes the underlying database handle.
@@ -198,6 +233,10 @@ type DriveStart struct {
 	RangeKm      float64
 	IdealRangeKm float64
 	Lat, Lng     float64
+	// StartLocation is a resolved place name (config.toml [[geofence]]
+	// match, or reverse-geocoded if [geocoding].enabled) - empty string
+	// stores as NULL, meaning neither resolved anything.
+	StartLocation string
 }
 
 // OpenDrive inserts a new open drive row and returns its id.
@@ -205,17 +244,37 @@ func (s *Store) OpenDrive(d DriveStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO drives (
 			vehicle_id, start_time, start_odometer_km, start_battery_level,
-			start_range_km, start_ideal_range_km, start_lat, start_lng, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
-	`, d.VehicleID, fmtTime(d.Time), d.OdometerKm, d.BatteryLevel, d.RangeKm, d.IdealRangeKm, d.Lat, d.Lng)
+			start_range_km, start_ideal_range_km, start_lat, start_lng, start_location, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+	`, d.VehicleID, fmtTime(d.Time), d.OdometerKm, d.BatteryLevel, d.RangeKm, d.IdealRangeKm, d.Lat, d.Lng, nullIfEmpty(d.StartLocation))
 	if err != nil {
 		return 0, fmt.Errorf("open drive: %w", err)
 	}
 	return res.LastInsertId()
 }
 
+// nullIfEmpty turns an empty string into a real SQL NULL rather than
+// storing a misleading empty string for "no location resolved".
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
 // PositionSample is one GPS/telemetry sample. Field set mirrors
 // TeslaMate's positions table (lib/teslamate/log/position.ex).
+//
+// ElevationM, OutsideTempC and InsideTempC are *float64 (nil = unknown),
+// not plain float64, because they are NOT always available: REST-derived
+// samples (positionFromSnapshot in internal/runner) never carry elevation
+// (the Owner API doesn't report it), and streaming-derived samples
+// (drainStream) never carry climate data (Tesla's legacy stream protocol
+// doesn't include it). Storing a bare 0.0 zero-value for "unknown" instead
+// of a real SQL NULL would silently corrupt CloseDrive's
+// AVG(outside_temp_c)/AVG(inside_temp_c) and elevationChange's ascent/
+// descent calculation (which already, correctly, filters on
+// `elevation_m IS NOT NULL`) by mixing real readings with phantom zeros.
 type PositionSample struct {
 	DriveID    int64
 	VehicleID  int64
@@ -223,7 +282,7 @@ type PositionSample struct {
 	Lat, Lng   float64
 	SpeedKmh   float64
 	Heading    float64
-	ElevationM float64
+	ElevationM *float64
 	PowerKw    float64
 	OdometerKm float64
 
@@ -234,8 +293,8 @@ type PositionSample struct {
 	EstRangeKm         float64
 	BatteryHeaterOn    bool
 
-	OutsideTempC          float64
-	InsideTempC           float64
+	OutsideTempC          *float64
+	InsideTempC           *float64
 	FanStatus             int
 	DriverTempSettingC    float64
 	PassengerTempSettingC float64
@@ -281,6 +340,8 @@ type DriveEnd struct {
 	RangeKm      float64
 	IdealRangeKm float64
 	Lat, Lng     float64
+	// EndLocation - see DriveStart.StartLocation's doc comment.
+	EndLocation string
 }
 
 // CloseDrive finalizes a drive: sets end fields, computed distance,
@@ -321,12 +382,12 @@ func (s *Store) CloseDrive(e DriveEnd) error {
 	_, err = s.db.Exec(`
 		UPDATE drives SET
 			end_time = ?, end_odometer_km = ?, end_battery_level = ?,
-			end_range_km = ?, end_ideal_range_km = ?, end_lat = ?, end_lng = ?,
+			end_range_km = ?, end_ideal_range_km = ?, end_lat = ?, end_lng = ?, end_location = ?,
 			distance_km = ?, duration_min = ?, max_speed_kmh = ?,
 			max_power_kw = ?, min_power_kw = ?, outside_temp_avg_c = ?, inside_temp_avg_c = ?,
 			ascent_m = ?, descent_m = ?, status = 'closed'
 		WHERE id = ?
-	`, fmtTime(e.Time), e.OdometerKm, e.BatteryLevel, e.RangeKm, e.IdealRangeKm, e.Lat, e.Lng,
+	`, fmtTime(e.Time), e.OdometerKm, e.BatteryLevel, e.RangeKm, e.IdealRangeKm, e.Lat, e.Lng, nullIfEmpty(e.EndLocation),
 		distance, duration, maxSpeed.Float64,
 		maxPower.Float64, minPower.Float64, avgOutside.Float64, avgInside.Float64,
 		ascent, descent, e.DriveID)
@@ -395,15 +456,19 @@ type ChargeStart struct {
 	RangeKm      float64
 	IdealRangeKm float64
 	Lat, Lng     float64
+	// Location - see DriveStart.StartLocation's doc comment. A charging
+	// session only gets one (unlike a drive's separate start/end), since
+	// it happens in one place.
+	Location string
 }
 
 func (s *Store) OpenChargingSession(c ChargeStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO charging_sessions (
 			vehicle_id, start_time, start_battery_level, start_range_km, start_ideal_range_km,
-			latitude, longitude, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')
-	`, c.VehicleID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng)
+			latitude, longitude, location, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
+	`, c.VehicleID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng, nullIfEmpty(c.Location))
 	if err != nil {
 		return 0, fmt.Errorf("open charging session: %w", err)
 	}
@@ -553,6 +618,38 @@ func (s *Store) CompleteSoftwareUpdate(vehicleID int64, version string, at time.
 	return err
 }
 
+// ---- geocode cache ----
+//
+// *Store satisfies internal/geocode.Cache directly via these two
+// methods, so the geocode package stays decoupled from storage (no
+// import of internal/storage from internal/geocode) while still
+// getting real persistence across restarts.
+
+// Lookup returns a previously-cached place name for the rounded
+// coordinate pair (latKey, lngKey; see internal/geocode.roundCoord),
+// or ok=false if nothing's cached for it yet.
+func (s *Store) Lookup(latKey, lngKey float64) (name string, ok bool, err error) {
+	err = s.db.QueryRow(`
+		SELECT name FROM geocode_cache WHERE lat_key = ? AND lng_key = ?
+	`, latKey, lngKey).Scan(&name)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
+// Save persists a resolved place name for the rounded coordinate pair.
+func (s *Store) Save(latKey, lngKey float64, name string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO geocode_cache (lat_key, lng_key, name) VALUES (?, ?, ?)
+		ON CONFLICT(lat_key, lng_key) DO UPDATE SET name = excluded.name
+	`, latKey, lngKey, name)
+	return err
+}
+
 // ---- export/reporting helpers ----
 
 type DriveSummary struct {
@@ -563,13 +660,19 @@ type DriveSummary struct {
 	DurationMin  float64
 	StartBattery int
 	EndBattery   int
+	// StartLocation/EndLocation are resolved place names (see
+	// DriveStart.StartLocation's doc comment) - empty if neither a
+	// configured geofence nor reverse-geocoding resolved anything.
+	StartLocation string
+	EndLocation   string
 }
 
 // ListDrives returns closed drives for a vehicle, optionally filtered
 // by year (pass 0 for all years), newest first.
 func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 	q := `
-		SELECT id, start_time, end_time, distance_km, duration_min, start_battery_level, end_battery_level
+		SELECT id, start_time, end_time, distance_km, duration_min, start_battery_level, end_battery_level,
+			start_location, end_location
 		FROM drives
 		WHERE vehicle_id = ? AND status = 'closed'
 	`
@@ -592,7 +695,8 @@ func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 		var endTime sql.NullString
 		var distance, duration sql.NullFloat64
 		var startBattery, endBattery sql.NullInt64
-		if err := rows.Scan(&d.ID, &d.StartTime, &endTime, &distance, &duration, &startBattery, &endBattery); err != nil {
+		var startLoc, endLoc sql.NullString
+		if err := rows.Scan(&d.ID, &d.StartTime, &endTime, &distance, &duration, &startBattery, &endBattery, &startLoc, &endLoc); err != nil {
 			return nil, err
 		}
 		d.EndTime = endTime.String
@@ -600,6 +704,8 @@ func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 		d.DurationMin = duration.Float64
 		d.StartBattery = int(startBattery.Int64)
 		d.EndBattery = int(endBattery.Int64)
+		d.StartLocation = startLoc.String
+		d.EndLocation = endLoc.String
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -612,11 +718,13 @@ type ChargeSummary struct {
 	StartBattery   int
 	EndBattery     int
 	EnergyAddedKwh float64
+	// Location - see ChargeStart.Location's doc comment.
+	Location string
 }
 
 func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) {
 	q := `
-		SELECT id, start_time, end_time, start_battery_level, end_battery_level, charge_energy_added_kwh
+		SELECT id, start_time, end_time, start_battery_level, end_battery_level, charge_energy_added_kwh, location
 		FROM charging_sessions
 		WHERE vehicle_id = ? AND status = 'closed'
 	`
@@ -639,9 +747,11 @@ func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) 
 		var endTime sql.NullString
 		var startBattery, endBattery sql.NullInt64
 		var energy sql.NullFloat64
-		if err := rows.Scan(&c.ID, &c.StartTime, &endTime, &startBattery, &endBattery, &energy); err != nil {
+		var loc sql.NullString
+		if err := rows.Scan(&c.ID, &c.StartTime, &endTime, &startBattery, &endBattery, &energy, &loc); err != nil {
 			return nil, err
 		}
+		c.Location = loc.String
 		c.EndTime = endTime.String
 		c.StartBattery = int(startBattery.Int64)
 		c.EndBattery = int(endBattery.Int64)

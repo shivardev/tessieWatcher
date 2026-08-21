@@ -220,3 +220,46 @@ func TestDrivingWhileChargingClosesChargeFirst(t *testing.T) {
 		t.Fatalf("expected StateDriving, got %s", m.State())
 	}
 }
+
+// TestResumeContinuesOpenDriveInsteadOfRestarting simulates a daemon
+// restart (crash, or systemd Restart=always) mid-drive: the runner would
+// find a still-'open' drive row in storage and construct the machine with
+// Resume(..., driving=true, ...) instead of New(...). The next
+// OnVehicleData while still driving must continue that drive (EvDrivePoint)
+// rather than opening a second, parallel one (EvDriveStart) that would
+// leave the original dangling open forever.
+func TestResumeContinuesOpenDriveInsteadOfRestarting(t *testing.T) {
+	m := Resume(3*time.Minute, true, false)
+	m.OnSummary(t0(), "online")
+
+	events := m.OnVehicleData(Snapshot{Time: t0().Add(time.Second), ShiftState: "D", OdometerKm: 1010, BatteryLevel: 72})
+	if containsKind(events, EvDriveStart) {
+		t.Fatalf("resumed machine should not re-open the drive with EvDriveStart, got %+v", kindsOf(events))
+	}
+	if !containsKind(events, EvDrivePoint) {
+		t.Fatalf("expected EvDrivePoint continuing the resumed drive, got %+v", kindsOf(events))
+	}
+	if m.State() != StateDriving {
+		t.Fatalf("expected StateDriving, got %s", m.State())
+	}
+}
+
+// TestResumeClosesOpenDriveIfNoLongerDriving covers the other half: the
+// car finished the drive (and maybe started/finished charging too) while
+// the daemon was down. On reconnect it must close out the resumed
+// drive/charge with the first fresh snapshot rather than leaving them open.
+func TestResumeClosesOpenDriveIfNoLongerDriving(t *testing.T) {
+	m := Resume(3*time.Minute, true, true)
+	m.OnSummary(t0(), "online")
+
+	events := m.OnVehicleData(Snapshot{Time: t0().Add(time.Second), ShiftState: "", ChargingState: "Disconnected", OdometerKm: 1020, BatteryLevel: 68})
+	if !containsKind(events, EvDriveEnd) {
+		t.Fatalf("expected EvDriveEnd closing the resumed drive, got %+v", kindsOf(events))
+	}
+	if !containsKind(events, EvChargeEnd) {
+		t.Fatalf("expected EvChargeEnd closing the resumed charging session, got %+v", kindsOf(events))
+	}
+	if m.State() != StateIdle {
+		t.Fatalf("expected StateIdle, got %s", m.State())
+	}
+}

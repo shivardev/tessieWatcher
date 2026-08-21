@@ -60,6 +60,13 @@ func main() {
 		err = runBackup(configPath)
 	case "export":
 		err = runExport(configPath, args)
+	case "auth-callback":
+		// Not for interactive use - see runAuthCallback. No -config flag:
+		// os.Args[2] is the callback URL, which could itself start with a
+		// "-" in principle, so this case deliberately skips fs.Parse(args).
+		err = runAuthCallback(args)
+	case "update":
+		err = runUpdate()
 	case "version", "-v", "--version":
 		fmt.Printf("teslalog %s\n", version)
 		return
@@ -89,6 +96,7 @@ Usage:
   teslalog backup [-config path]             run one SQLite backup immediately
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
   teslalog export charges [-year N] [-out f] export closed charging sessions to CSV
+  teslalog update                            self-update to the latest GitHub release
   teslalog version                           print version
 
 Config file: TOML, defaults to /etc/teslalog/config.toml (see config.example.toml).
@@ -128,22 +136,32 @@ func runAuth(configPath string) error {
 		return fmt.Errorf("generate PKCE parameters: %w", err)
 	}
 
+	relayPath := authCallbackRelayPath()
+	_ = os.Remove(relayPath) // clear any stale callback left over from a previous attempt
+
 	authURL := tesla.AuthorizeURL(cfg.API, p)
 	fmt.Println("1. Open this URL in a browser and log in to your Tesla account:")
 	fmt.Println()
 	fmt.Println("   " + authURL)
 	fmt.Println()
-	fmt.Println("2. After login, the browser will land on a blank/broken page at a")
-	fmt.Println("   auth.tesla.com/void/callback URL. That's expected.")
-	fmt.Println("3. Copy the FULL resulting URL from the address bar (or just the")
-	fmt.Println("   'code' query parameter) and paste it below.")
+	fmt.Println("2. After login, Tesla redirects to a tesla://auth/callback?code=...&state=...")
+	fmt.Println("   URL - the same one the official Tesla app registers itself to handle. Most")
+	fmt.Println("   browsers either fail silently (the page just hangs on \"Loading...\" forever,")
+	fmt.Println("   with nothing to copy) or show an \"Open Tesla?\"/\"can't open this link\" prompt.")
+	fmt.Println("   That's expected - see README's Authentication section for why.")
+	fmt.Println("3a. If you've already run deploy/register-tesla-protocol.ps1 once on THIS")
+	fmt.Println("    machine, this step captures the redirect automatically - just wait, nothing")
+	fmt.Println("    more to do here.")
+	fmt.Println("3b. Otherwise, get the full tesla://auth/callback?code=...&state=... URL however")
+	fmt.Println("    your browser exposes it (an error dialog's text, or DevTools' Network/Console")
+	fmt.Println("    tab if you opened it before clicking login) and paste it (or just the 'code'")
+	fmt.Println("    value) below.")
 	fmt.Println()
-	fmt.Print("Paste the redirect URL or code here: ")
+	fmt.Print("Paste the redirect URL or code here (or leave this - auto-capture will fill it in): ")
 
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
+	line, err := waitForCallback(relayPath)
 	if err != nil {
-		return fmt.Errorf("read input: %w", err)
+		return fmt.Errorf("read callback: %w", err)
 	}
 
 	code, err := tesla.ParseCallback(line, p)
@@ -163,6 +181,75 @@ func runAuth(configPath string) error {
 
 	fmt.Printf("\nSuccess. Tokens saved to %s (mode 0600).\n", cfg.TokenFile)
 	fmt.Println("Run `teslalog run` to start logging, or `teslalog status` once you have data.")
+	return nil
+}
+
+// authCallbackRelayPath is the fixed local file `teslalog auth` polls for
+// a captured tesla://auth/callback URL, and that a separately-invoked
+// `teslalog auth-callback <url>` process (see runAuthCallback) writes it
+// to. They're different OS processes - the tesla:// protocol handler
+// Windows launches on redirect is a brand-new process, not a message
+// delivered to the already-running `teslalog auth` - so a shared file is
+// the simplest way to hand the URL from one to the other.
+func authCallbackRelayPath() string {
+	return filepath.Join(os.TempDir(), "teslalog-auth-callback.txt")
+}
+
+// waitForCallback blocks until the login redirect is available by
+// whichever path gets there first: a human pasting it into stdin (the
+// original, universal path - works from any device, including one that
+// isn't running teslalog at all), or a registered tesla:// protocol
+// handler on this machine writing it to authCallbackRelayPath (see
+// runAuthCallback and deploy/register-tesla-protocol.ps1). Without that
+// registration, only the stdin path ever fires, so this is a strict
+// superset of the old "just read a line from stdin" behavior.
+func waitForCallback(relayPath string) (string, error) {
+	result := make(chan string, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			errCh <- fmt.Errorf("read input: %w", err)
+			return
+		}
+		result <- line
+	}()
+
+	go func() {
+		for {
+			data, err := os.ReadFile(relayPath)
+			if err == nil && len(data) > 0 {
+				result <- string(data)
+				return
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case line := <-result:
+		return line, nil
+	case err := <-errCh:
+		return "", err
+	}
+}
+
+// runAuthCallback is invoked by the OS-registered tesla:// URL protocol
+// handler (deploy/register-tesla-protocol.ps1), not by a user directly:
+// Windows launches it as a brand-new process, passing the full redirect
+// URL as its one argument. It just relays that URL to a concurrently
+// running `teslalog auth` process via authCallbackRelayPath, since
+// there's no other channel between these two separate processes.
+func runAuthCallback(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: teslalog auth-callback <tesla://auth/callback?code=...&state=...>")
+	}
+	if err := os.WriteFile(authCallbackRelayPath(), []byte(args[0]), 0o600); err != nil {
+		return fmt.Errorf("relay callback: %w", err)
+	}
+	fmt.Println("Login captured - return to the `teslalog auth` window, it should complete automatically.")
 	return nil
 }
 
@@ -213,7 +300,9 @@ func runWake(configPath string) error {
 		}
 	}
 	fmt.Printf("Waking %s (%s)... this is a manual, explicit action.\n", target.DisplayName, target.VIN)
-	return client.WakeUp(ctx, target.VehicleID)
+	// wake_up (like vehicle_data) takes VehicleSummary.ID, not VehicleID -
+	// see VehicleSummary's doc comment in internal/tesla/ownerapi.go.
+	return client.WakeUp(ctx, target.ID)
 }
 
 // ---- status ----
@@ -346,10 +435,10 @@ func runExport(configPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		cw.Write([]string{"id", "start_time", "end_time", "distance_km", "duration_min", "start_battery_pct", "end_battery_pct"})
+		cw.Write([]string{"id", "start_time", "end_time", "start_location", "end_location", "distance_km", "duration_min", "start_battery_pct", "end_battery_pct"})
 		for _, d := range drives {
 			cw.Write([]string{
-				strconv.FormatInt(d.ID, 10), d.StartTime, d.EndTime,
+				strconv.FormatInt(d.ID, 10), d.StartTime, d.EndTime, d.StartLocation, d.EndLocation,
 				fmt.Sprintf("%.2f", d.DistanceKm), fmt.Sprintf("%.1f", d.DurationMin),
 				strconv.Itoa(d.StartBattery), strconv.Itoa(d.EndBattery),
 			})
@@ -359,10 +448,10 @@ func runExport(configPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		cw.Write([]string{"id", "start_time", "end_time", "start_battery_pct", "end_battery_pct", "energy_added_kwh"})
+		cw.Write([]string{"id", "start_time", "end_time", "location", "start_battery_pct", "end_battery_pct", "energy_added_kwh"})
 		for _, c := range charges {
 			cw.Write([]string{
-				strconv.FormatInt(c.ID, 10), c.StartTime, c.EndTime,
+				strconv.FormatInt(c.ID, 10), c.StartTime, c.EndTime, c.Location,
 				strconv.Itoa(c.StartBattery), strconv.Itoa(c.EndBattery),
 				fmt.Sprintf("%.2f", c.EnergyAddedKwh),
 			})

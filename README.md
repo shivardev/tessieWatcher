@@ -56,6 +56,7 @@ internal/tesla/        Owner API + SSO auth + streaming client (isolated on purp
 internal/vehicle/      sleep-aware state machine (pure, unit-tested, no I/O)
 internal/storage/      SQLite schema + queries (ncruces/go-sqlite3, pure Go, no cgo)
 internal/backup/       online SQLite backup (safe under WAL) + gzip + rotation
+internal/portal/       optional read-only HTTP page + database download (see Portal below)
 internal/runner/       wires the above into the daemon loop `teslalog run` executes
 systemd/teslalog.service
 deploy/cross-build.sh  cross-compile for the Pi (linux/arm64)
@@ -214,16 +215,18 @@ On your dev machine, no cross-toolchain required for either target
 (no cgo anywhere in this project — see above):
 
 ```sh
-./deploy/cross-build.sh
+bash deploy/cross-build.sh
 # produces:
-#   teslalog-linux-amd64   - regular PC/server/VM, e.g. wherever your
-#                            existing TeslaMate/Docker host runs, for
-#                            testing side-by-side before touching the Pi
-#   teslalog-linux-arm64   - the Raspberry Pi Zero 2 W (actual target)
+#   teslalog-linux-amd64      - regular PC/server/VM, e.g. wherever your
+#                               existing TeslaMate/Docker host runs, for
+#                               testing side-by-side before touching the Pi
+#   teslalog-linux-arm64      - the Raspberry Pi Zero 2 W (actual target)
+#   teslalog-windows-amd64.exe - for run-teslalog.bat/status-teslalog.bat,
+#                               to try it directly on a Windows dev machine
 ```
 
-Either binary is a single static file — no install step, no Docker, no
-systemd required just to run it. Copy it anywhere and:
+Either Linux binary is a single static file — no install step, no
+Docker, no systemd required just to run it. Copy it anywhere and:
 
 ```sh
 cp config.example.toml config.toml   # edit database/token_file paths as you like
@@ -232,12 +235,38 @@ cp config.example.toml config.toml   # edit database/token_file paths as you lik
 ./teslalog-linux-amd64 status -config config.toml
 ```
 
+### Trying it directly on Windows
+
+No Linux box, Pi, or Docker needed just to see it work: after
+`bash deploy/cross-build.sh` produces `teslalog-windows-amd64.exe`, put it
+at the repo root (`config.windows-test.toml` is already there, with
+relative `database`/`token_file` paths so nothing needs admin rights) and
+double-click, or run from a terminal:
+
+```
+run-teslalog.bat      # first run: prompts for the one-time Tesla login,
+                       # then starts the daemon in the foreground
+status-teslalog.bat    # today's drives/last charge, and exports
+                       # drives.csv/charges.csv next to the .bat files
+```
+
+This is the same daemon and database format as the Linux/Pi path — useful
+for a quick first look, or for side-by-side testing against an existing
+TeslaMate instance (see below) without leaving your desk. For the real
+unattended deployment, follow [Deploying to the Pi](#deploying-to-the-pi)
+or [Running with Docker](#running-with-docker) instead.
+
 ## Deploying to the Pi
 
-1. Flash 64-bit Raspberry Pi OS Lite, enable SSH + Wi-Fi, boot it.
-2. From your dev machine: `scp teslalog-linux-arm64 deploy/ systemd/ config.example.toml pi@<host>:~/teslalog/`
-   (or just clone/copy this whole repo to the Pi and cross-build elsewhere,
-   copying only the resulting binary in).
+1. Flash 64-bit Raspberry Pi OS Lite, enable SSH + Wi-Fi, boot it. Once
+   booted, `ssh` in and run `uname -m`: `aarch64` confirms 64-bit (use
+   `teslalog-linux-arm64` below, the usual case); `armv7l` means you
+   flashed the 32-bit image instead (use `teslalog-linux-armv7` — same
+   steps otherwise).
+2. From your dev machine: `scp -r teslalog-linux-arm64 deploy/ systemd/ config.example.toml pi@<host>:~/teslalog/`
+   (the `-r` matters — `deploy/` and `systemd/` are directories; without
+   it, scp refuses them. Or just clone/copy this whole repo to the Pi and
+   cross-build elsewhere, copying only the resulting binary in.)
 3. On the Pi: `cd ~/teslalog && sudo bash deploy/install.sh teslalog-linux-arm64`
 4. Authenticate: `sudo -u teslalog teslalog auth -config /etc/teslalog/config.toml`
    - This prints a Tesla login URL. Open it **on any device with a
@@ -262,9 +291,11 @@ docker compose logs -f
 ```
 
 Everything (`tesla.db`, `tokens.json`, backups) lives in the
-`teslalog-data` named volume, so it survives container recreation. Run
-any other subcommand the same way, e.g.
-`docker compose run --rm teslalog status` or
+`teslalog-data` named volume, and `config.toml` lives in a separate
+`teslalog-config` volume (seeded from `config.example.toml` on first run),
+so both your data and any config edits (VIN, intervals, charging cost)
+survive container recreation and image rebuilds. Run any other
+subcommand the same way, e.g. `docker compose run --rm teslalog status` or
 `docker compose run --rm teslalog export drives -out /var/lib/teslalog/drives.csv`
 (then `docker cp` or `docker compose cp` the file out of the volume).
 
@@ -274,9 +305,11 @@ then `docker save`/`docker load` it onto the Pi, or just build it on the
 Pi itself (the image is small and the build has no cgo/cross-toolchain
 requirement either).
 
-The image is `gcr.io/distroless/static-debian12` on top of the same
-static, cgo-free binary the systemd path uses — no shell, no package
-manager, just the binary and CA certificates for HTTPS to Tesla.
+The image is `gcr.io/distroless/static-debian12:nonroot` on top of the
+same static, cgo-free binary the systemd path uses — no shell, no package
+manager, just the binary and CA certificates for HTTPS to Tesla, running
+as an unprivileged uid (matching the non-root posture of
+`systemd/teslalog.service` on the bare-metal path).
 
 ## Authentication
 
@@ -286,12 +319,45 @@ SSO PKCE login flow as the official Tesla mobile app:
 
 1. Generates a PKCE code verifier/challenge pair.
 2. Prints a `https://auth.tesla.com/oauth2/v3/authorize?...` URL.
-3. You log in in a browser (any device). Tesla redirects to a
-   `void/callback` URL that doesn't resolve to anything real — that's
-   expected, just copy the URL (or the `code` parameter) from the address
-   bar.
+3. You log in in a browser. Tesla redirects to
+   `tesla://auth/callback?code=...&state=...` — the same custom URL
+   scheme the official Tesla app registers itself to handle. Since
+   nothing else on a normal machine is registered for it, most browsers
+   just hang on a "Loading..." screen forever with nothing visible to
+   copy (some show an "Open Tesla?"/"can't open this link" prompt
+   instead — behavior varies).
+   (Until ~April 2026 this redirected to a dead `void/callback` *https*
+   page instead, which every third-party tool — TeslaMate, teslapy,
+   tesla_auth, and this project — could just read from the address bar.
+   Tesla tightened redirect_uri validation and broke that trick
+   account-wide; `tesla://auth/callback` is the fix the wider
+   TeslaMate/tesla_auth ecosystem converged on, see
+   [teslamate-org/teslamate#5296](https://github.com/teslamate-org/teslamate/issues/5296).)
+
+   Two ways to get the code out of that redirect:
+   - **Automatic (recommended, same machine only):** once, run
+     `.\deploy\register-tesla-protocol.ps1 -TeslalogPath .\teslalog-windows-amd64.exe`
+     (no admin rights needed — it's a per-user registration). From then
+     on, Windows hands the `tesla://` redirect straight to
+     `teslalog auth-callback`, which relays it to your waiting
+     `teslalog auth` automatically — nothing to copy/paste at all. Remove
+     it later with `-Unregister`. (Linux/Pi equivalent: register a
+     `.desktop` file as the `x-scheme-handler/tesla` handler via
+     `xdg-mime` yourself — not scripted here, since the Pi's daemon
+     doesn't run a browser at all; do the login step from your own
+     desktop instead.)
+   - **Manual (works from any device, e.g. logging in from your phone):**
+     get the full `tesla://auth/callback?code=...&state=...` URL however
+     your browser exposes it — some show it in the failure dialog/page's
+     text; if not, open DevTools (F12) *before* clicking login and check
+     the Network or Console tab afterwards for the blocked navigation,
+     which carries the full URL — and paste it (or just the `code`
+     value) into the waiting `teslalog auth` prompt.
 4. `teslalog auth` exchanges that code for an access + refresh token pair,
-   saved to `/var/lib/teslalog/tokens.json` (mode 0600).
+   saved to `/var/lib/teslalog/tokens.json` (mode 0600 — a real
+   permission restriction on Linux; on Windows, e.g. via
+   `run-teslalog.bat`, the file gets default OS permissions instead, since
+   Windows doesn't have a POSIX mode bit for Go's `os.WriteFile` to set).
 5. The daemon refreshes the access token automatically using the refresh
    token; if the refresh token itself ever expires/is revoked (e.g. Tesla
    password changed), re-run `teslalog auth`.
@@ -329,7 +395,39 @@ teslalog wake                        explicit manual wake (never automatic)
 teslalog backup                      run one backup immediately
 teslalog export drives  [-year 2026] [-out drives.csv]
 teslalog export charges [-year 2026] [-out charges.csv]
+teslalog update                       self-update to the latest GitHub release
 ```
+
+(`teslalog auth-callback <url>` also exists, but isn't meant to be run by
+hand — see [Authentication](#authentication)'s `register-tesla-protocol.ps1`
+step; Windows invokes it for you.)
+
+## Updating
+
+No `git clone`, no rebuilding from source, no re-authenticating:
+
+```sh
+sudo systemctl stop teslalog          # optional but recommended: avoids
+                                       # replacing the binary while it's
+                                       # actively running
+sudo -u teslalog teslalog update -config /etc/teslalog/config.toml
+sudo systemctl start teslalog
+```
+
+`teslalog update` checks this project's
+[GitHub Releases](https://github.com/shivardev/tessieWatcher/releases)
+for a newer version, downloads the binary matching whatever platform
+it's currently running on, and replaces itself in place — same binary
+path, same `tokens.json`, same `tesla.db`, nothing else touched. Skipping
+the stop/start bracket above still works on Linux (replacing a running
+executable's file is safe there — the currently-running process keeps
+using the old file until it restarts), it's just not possible on Windows
+(the OS locks a running `.exe`); `teslalog update` detects that case and
+tells you what to do instead.
+
+First-time install still needs the manual steps in
+[Deploying to the Pi](#deploying-to-the-pi) once (there's no
+`curl | bash` one-liner yet) — `update` is for every install after that.
 
 ## Backups
 
@@ -342,6 +440,47 @@ writing to it under WAL. Backups are gzipped and written to
 Consider periodically copying that directory off the Pi's SD card
 (rsync/rclone to another machine or cloud storage) — this project
 doesn't do off-box replication itself.
+
+## Portal (optional web page + database download)
+
+Set `[portal] enabled = true` in config.toml and teslalog serves a tiny
+read-only page at `addr` (default `:8083`, e.g.
+`http://<pi-hostname-or-ip>:8083`): today's drive count/distance, the
+last charge, and a "Download database" button. That button takes a
+fresh, consistent snapshot of the live database (same safe online-backup
+mechanism as scheduled backups, just uncompressed and on demand) and
+downloads it as `tesla-YYYY-MM-DD.db`.
+
+**There is no login.** This is meant for your own home network only —
+open that address from your phone/laptop while on the same Wi-Fi as the
+Pi. Do not port-forward this address to the public internet; the
+database is a complete log of everywhere the vehicle has been and when.
+
+### Viewing the data in Grafana
+
+teslalog doesn't bundle or run Grafana itself (see [Why this exists](#why-this-exists--what-it-deliberately-does-not-do)) —
+point your own existing Grafana instance at the downloaded file:
+
+1. Install the community **SQLite datasource plugin**
+   (`frser-sqlite-datasource`) on your Grafana instance:
+   `grafana-cli plugins install frser-sqlite-datasource`, then restart
+   Grafana.
+2. Add a data source of that type, pointing its "Path" setting at the
+   downloaded `tesla-YYYY-MM-DD.db` file (or, for something that stays
+   current, a path you periodically re-download to — this plugin reads
+   the file directly, it doesn't poll teslalog itself).
+3. Build panels with plain SQL against teslalog's schema (see
+   [Data model & TeslaMate parity](#data-model--teslamate-parity) above
+   for the exact tables/columns) — e.g. a drives table panel:
+   `SELECT start_time, distance_km, duration_min, start_battery_level, end_battery_level, max_speed_kmh FROM drives WHERE status = 'closed' ORDER BY start_time DESC`.
+
+**If you already have TeslaMate's Grafana dashboards**: they won't work
+unmodified against this file. TeslaMate's dashboards query a Postgres
+database with different table/column names than teslalog's SQLite
+schema (even though the underlying data is equivalent — see the parity
+table above for the exact mapping) — you'd rebuild the panels' SQL
+against teslalog's schema rather than reuse TeslaMate's dashboard JSON
+directly.
 
 ## Testing without a real car
 
@@ -415,7 +554,9 @@ whole point of this project.
 
 ## What's next (not in v0.1)
 
-- Tiny read-only HTTP dashboard over the SQLite file (`teslalog serve`).
+- ~~Tiny read-only HTTP dashboard over the SQLite file.~~ Done — see
+  [Portal](#portal-optional-web-page--database-download) (`[portal]` in
+  config.toml, no separate CLI subcommand needed).
 - `teslalog export` as scheduled/automatic CSV/JSON snapshots.
 - Optional geofencing / reverse-geocoding for human-readable drive
   start/end locations.

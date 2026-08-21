@@ -174,6 +174,21 @@ func New(idleTimeout time.Duration) *Machine {
 	}
 }
 
+// Resume creates a Machine like New, but pre-flagged as already mid-drive
+// and/or mid-charge. Use this when the runner finds a drive/charging_session
+// row still marked 'open' in storage at startup (e.g. after a crash or a
+// systemd Restart=always cycle) — rather than starting a brand-new
+// drive/charge on top of one that's still genuinely in progress, the next
+// OnVehicleData call correctly emits EvDrivePoint/EvChargePoint (continuing
+// the existing open row), or EvDriveEnd/EvChargeEnd if the vehicle is no
+// longer driving/charging by the time we reconnect.
+func Resume(idleTimeout time.Duration, driving, charging bool) *Machine {
+	m := New(idleTimeout)
+	m.driving = driving
+	m.charging = charging
+	return m
+}
+
 // State returns the machine's current state.
 func (m *Machine) State() State {
 	return m.state

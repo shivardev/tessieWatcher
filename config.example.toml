@@ -40,6 +40,45 @@ dir            = "/var/lib/teslalog/backups"
 retention_days = 30
 interval       = "24h"
 
+[portal]
+# On by default: a tiny read-only HTTP page (current state, today's
+# drives, last charge, recent drives, recent log activity, and a
+# "Download database" button that hands you a consistent snapshot of
+# tesla.db - e.g. to open in Grafana via its SQLite datasource plugin).
+# There is NO login. Set enabled = false if this box isn't on a network
+# you trust, or is reachable from the public internet - anyone who can
+# reach this address can download a complete log of everywhere the
+# vehicle has been and when. Do not port-forward this address.
+enabled = true
+addr    = ":8083"
+
+[geocoding]
+# Off by default. If enabled, a drive/charge location that doesn't match
+# any [[geofence]] below falls back to a reverse-geocoding HTTP lookup
+# against an OSM Nominatim-compatible service (results are cached, so
+# the same spot is never looked up twice). This sends that location's
+# GPS coordinates to a third-party server - off by default for exactly
+# that reason, even though it's the same thing TeslaMate itself does by
+# default. See the README's Geofencing & locations section.
+enabled = false
+base_url = "https://nominatim.openstreetmap.org"
+# Nominatim's usage policy requires a descriptive User-Agent (ideally
+# with contact info) - see
+# https://operations.osmfoundation.org/policies/nominatim/. If you make
+# more than occasional personal-use requests, that policy asks you to
+# self-host your own Nominatim instance instead and point base_url at it.
+user_agent = "teslalog/0.1.0 (personal use)"
+
+# Named zones, checked before any reverse-geocoding lookup - free (no
+# network), and covers your most common places (home, work) without
+# ever sending their coordinates anywhere. Add as many [[geofence]]
+# blocks as you like; radius_m is required (no implicit default).
+# [[geofence]]
+# name     = "Home"
+# lat      = 35.0000
+# lng      = -85.0000
+# radius_m = 50
+
 [api]
 # These defaults are correct for the standard Tesla Owner API/SSO
 # endpoints; only override for testing against a mock server.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,28 @@ func (c *Client) ensureFreshToken(ctx context.Context) error {
 	if !c.tokens.Expired(2 * time.Minute) {
 		return nil
 	}
+
+	// Another process may have already refreshed and persisted a fresh
+	// token since we loaded ours: the CLI is explicitly designed to run
+	// `teslalog status`/`export`/`backup` as one-off commands *while the
+	// daemon (`teslalog run`) is also running* (see README), and each
+	// spins up its own Client from the same token file independently.
+	// Tesla's refresh tokens are commonly single-use/rotating, so if we
+	// skipped this and refreshed from our own (already-consumed) copy
+	// anyway, we'd invalidate the fresh token the other process just
+	// saved and force a full re-`teslalog auth`. Reloading first avoids
+	// spending a refresh in that race for free.
+	if onDisk, err := c.store.Load(); err == nil {
+		if !onDisk.Expired(2 * time.Minute) {
+			c.tokens = onDisk
+			return nil
+		}
+		// Still expired, but adopt the on-disk copy anyway before
+		// refreshing: if another process already rotated the refresh
+		// token since we loaded ours, this is the only up-to-date one.
+		c.tokens = onDisk
+	}
+
 	if c.tokens.RefreshToken == "" {
 		return fmt.Errorf("access token expired and no refresh token available; run `teslalog auth`")
 	}
@@ -160,11 +183,23 @@ func backoff(attempt int) {
 	time.Sleep(base + jitter)
 }
 
-// VehicleSummary is one entry from GET /api/1/vehicles — a cheap call
-// that reports whether the car is online WITHOUT waking it up. This is
-// the only call teslalog makes while the vehicle is ASLEEP/SUSPENDED.
+// VehicleSummary is one vehicle entry from GET /api/1/products — a cheap
+// call that reports whether the car is online WITHOUT waking it up. This
+// is the only call teslalog makes while the vehicle is ASLEEP/SUSPENDED.
+//
+// /api/1/products, not the older /api/1/vehicles: Tesla gates the latter
+// to "Endpoint is only available on fleetapi" (HTTP 412) as of 2026 even
+// for accounts where the rest of the legacy Owner API (including
+// vehicle_data) still works fine — matching TeslaMate's own
+// lib/tesla_api/vehicle.ex, which made this exact switch (Tesla began
+// deprecating /api/1/vehicles for this purpose back in January 2024).
 type VehicleSummary struct {
-	ID          int64  `json:"id"`
+	// ID is what WakeUp and VehicleData's id parameter must be:
+	// /api/1/vehicles/{ID}/vehicle_data, /api/1/vehicles/{ID}/wake_up.
+	ID int64 `json:"id"`
+	// VehicleID is a DIFFERENT identifier, used only as the streaming
+	// websocket's subscription tag (see tesla.Connect) - NOT
+	// interchangeable with ID. Passing this to VehicleData/WakeUp 404s.
 	VehicleID   int64  `json:"vehicle_id"`
 	VIN         string `json:"vin"`
 	DisplayName string `json:"display_name"`
@@ -176,34 +211,45 @@ type VehicleSummary struct {
 // reachable right now (as opposed to asleep/offline).
 func (v VehicleSummary) Awake() bool { return v.State == "online" }
 
-type listVehiclesResponse struct {
+type listProductsResponse struct {
 	Response []VehicleSummary `json:"response"`
 	Count    int              `json:"count"`
 }
 
-// ListVehicles fetches the account's vehicles and their summary state.
+// ListVehicles fetches the account's vehicles and their summary state via
+// /api/1/products, which also lists any Powerwalls/energy sites on the
+// account interleaved in the same array (with a different, VIN-less
+// shape) — filtered out here since they decode to a zero-value VIN.
 // Safe to call at any time, including while the vehicle is asleep — it
 // never wakes the car.
 func (c *Client) ListVehicles(ctx context.Context) ([]VehicleSummary, error) {
-	data, status, err := c.do(ctx, http.MethodGet, "/api/1/vehicles", nil)
+	data, status, err := c.do(ctx, http.MethodGet, "/api/1/products", nil)
 	if err != nil {
 		return nil, err
 	}
 	if status != http.StatusOK {
 		return nil, fmt.Errorf("list vehicles: HTTP %d: %s", status, string(data))
 	}
-	var lr listVehiclesResponse
+	var lr listProductsResponse
 	if err := json.Unmarshal(data, &lr); err != nil {
-		return nil, fmt.Errorf("decode vehicles list: %w", err)
+		return nil, fmt.Errorf("decode products list: %w", err)
 	}
-	return lr.Response, nil
+	vehicles := make([]VehicleSummary, 0, len(lr.Response))
+	for _, p := range lr.Response {
+		if p.VIN == "" {
+			continue // a Powerwall/energy site, not a vehicle
+		}
+		vehicles = append(vehicles, p)
+	}
+	return vehicles, nil
 }
 
-// WakeUp explicitly issues a wake command. Deliberately NOT called
+// WakeUp explicitly issues a wake command. id is VehicleSummary.ID, NOT
+// VehicleID (see VehicleSummary's doc comment). Deliberately NOT called
 // anywhere in the daemon's automatic polling loop — see cmd/teslalog's
 // `wake` subcommand for the only (manual, user-invoked) call site.
-func (c *Client) WakeUp(ctx context.Context, vehicleID int64) error {
-	path := fmt.Sprintf("/api/1/vehicles/%d/wake_up", vehicleID)
+func (c *Client) WakeUp(ctx context.Context, id int64) error {
+	path := fmt.Sprintf("/api/1/vehicles/%d/wake_up", id)
 	data, status, err := c.do(ctx, http.MethodPost, path, nil)
 	if err != nil {
 		return err
@@ -307,13 +353,22 @@ type VehicleMeta struct {
 	SpoilerType   string
 }
 
-// VehicleData fetches a full vehicle_data snapshot. The caller MUST
-// only invoke this while the vehicle is known to be online (e.g. after
-// ListVehicles reported State=="online") — vehicle_data returns errors
-// (and, more importantly, is pointless load) when the car is asleep,
-// and teslalog never calls wake_up to work around that.
-func (c *Client) VehicleData(ctx context.Context, vehicleID int64) (vehicle.Snapshot, VehicleMeta, error) {
-	path := fmt.Sprintf("/api/1/vehicles/%d/vehicle_data", vehicleID)
+// VehicleData fetches a full vehicle_data snapshot. id is
+// VehicleSummary.ID, NOT VehicleID (see VehicleSummary's doc comment) -
+// passing VehicleID here 404s. The caller MUST only invoke this while the
+// vehicle is known to be online (e.g. after ListVehicles reported
+// State=="online") — vehicle_data returns errors (and, more importantly,
+// is pointless load) when the car is asleep, and teslalog never calls
+// wake_up to work around that.
+func (c *Client) VehicleData(ctx context.Context, id int64) (vehicle.Snapshot, VehicleMeta, error) {
+	// The endpoints query parameter is not optional decoration: TeslaMate's
+	// own client (lib/tesla_api/vehicle.ex) always sends this exact list,
+	// and Tesla's vehicle_data endpoint has been observed to omit sections
+	// silently (not error) when it's left off - a request that "succeeds"
+	// but is missing e.g. vehicle_config would corrupt model/trim
+	// identification without ever surfacing as an error.
+	const endpoints = "charge_state;climate_state;closures_state;drive_state;gui_settings;location_data;vehicle_config;vehicle_state;vehicle_data_combo"
+	path := fmt.Sprintf("/api/1/vehicles/%d/vehicle_data?endpoints=%s", id, url.QueryEscape(endpoints))
 	data, status, err := c.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return vehicle.Snapshot{}, VehicleMeta{}, err

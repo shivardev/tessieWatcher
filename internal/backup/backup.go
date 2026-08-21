@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/ncruces/go-sqlite3"
-	_ "github.com/ncruces/go-sqlite3/embed"
 )
 
 // Run performs one backup of the SQLite database at dbPath into
@@ -31,7 +30,7 @@ func Run(ctx context.Context, dbPath, backupDir string, retentionDays int, at ti
 	tmpPath := filepath.Join(backupDir, fmt.Sprintf(".tmp-backup-%d.db", at.UnixNano()))
 	defer os.Remove(tmpPath)
 
-	if err := sqliteBackup(ctx, dbPath, tmpPath); err != nil {
+	if err := Snapshot(ctx, dbPath, tmpPath); err != nil {
 		return "", fmt.Errorf("sqlite backup: %w", err)
 	}
 
@@ -48,12 +47,15 @@ func Run(ctx context.Context, dbPath, backupDir string, retentionDays int, at ti
 	return finalPath, nil
 }
 
-// sqliteBackup uses SQLite's online backup API (sqlite3_backup_init /
+// Snapshot uses SQLite's online backup API (sqlite3_backup_init /
 // _step / _finish), via ncruces/go-sqlite3's native Conn.Backup, which
 // is safe to run against a live WAL-mode database that teslalog is
 // actively writing to (this opens its own connection to srcPath rather
 // than sharing the daemon's, so it never blocks/is blocked by it).
-func sqliteBackup(ctx context.Context, srcPath, dstPath string) error {
+// Exported so callers other than Run (e.g. internal/portal's on-demand
+// download) can get a consistent, safe copy of the live database without
+// going through Run's gzip+rotation-into-backupDir behavior.
+func Snapshot(ctx context.Context, srcPath, dstPath string) error {
 	src, err := sqlite3.OpenContext(ctx, "file:"+srcPath+"?mode=ro")
 	if err != nil {
 		return fmt.Errorf("open source db: %w", err)

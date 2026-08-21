@@ -10,11 +10,16 @@ package storage
 // schemas (lib/teslamate/log/{car,position,drive,charging_process,
 // charge,state,update}.ex) for data parity: every field TeslaMate
 // records per drive/position/charge is captured here too, in metric
-// units throughout. Deliberately NOT ported: TeslaMate's geofence/
-// address reverse-geocoding tables (locations, geofences) and
-// cost-by-geofence pricing — teslalog stores raw lat/lng instead and
-// leaves address lookup and mapping to whatever reads the SQLite file
-// (e.g. Grafana).
+// units throughout.
+//
+// geofences/geocode_cache and drives.start_location/end_location/
+// charging_sessions.location are teslalog's own, simpler take on what
+// TeslaMate's geofences/locations tables do: named zones (config.toml's
+// [[geofence]] entries) checked first, falling back to a cached
+// reverse-geocoding lookup (internal/geocode) if enabled - see the
+// README's Geofencing & locations section. Cost-by-geofence pricing is
+// still not ported; charging_sessions.cost is one flat rate for the
+// whole account (config.toml's [charging].price_per_kwh).
 const schema = `
 PRAGMA foreign_keys = ON;
 
@@ -80,6 +85,11 @@ CREATE TABLE IF NOT EXISTS drives (
 	start_lng             REAL,
 	end_lat               REAL,
 	end_lng               REAL,
+	-- Resolved via config.toml's [[geofence]] entries, falling back to
+	-- geocode_cache/reverse-geocoding if [geocoding].enabled - NULL if
+	-- neither matched (raw start_lat/start_lng are always there anyway).
+	start_location        TEXT,
+	end_location          TEXT,
 	max_speed_kmh         REAL,
 	max_power_kw          REAL,
 	min_power_kw          REAL,
@@ -155,6 +165,8 @@ CREATE TABLE IF NOT EXISTS charging_sessions (
 	cost                     REAL,
 	latitude                 REAL,
 	longitude                REAL,
+	-- Same resolution as drives.start_location/end_location - see there.
+	location                 TEXT,
 	status                   TEXT NOT NULL DEFAULT 'open'
 );
 CREATE INDEX IF NOT EXISTS idx_charging_sessions_vehicle_start ON charging_sessions(vehicle_id, start_time);
@@ -198,6 +210,19 @@ CREATE TABLE IF NOT EXISTS battery_samples (
 	source                 TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_battery_samples_vehicle_ts ON battery_samples(vehicle_id, timestamp);
+
+-- Persistent cache of resolved (lat,lng) -> place name lookups, so the
+-- same spot is never reverse-geocoded twice - both to respect the
+-- geocoding service's rate limit and to avoid unnecessary network calls.
+-- lat_key/lng_key are coordinates rounded to ~11m precision (see
+-- internal/geocode.roundCoord), not the raw sample coordinates.
+CREATE TABLE IF NOT EXISTS geocode_cache (
+	lat_key    REAL NOT NULL,
+	lng_key    REAL NOT NULL,
+	name       TEXT NOT NULL,
+	created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+	PRIMARY KEY (lat_key, lng_key)
+);
 
 CREATE TABLE IF NOT EXISTS software_updates (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,

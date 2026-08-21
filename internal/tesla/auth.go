@@ -29,12 +29,21 @@ import (
 	"teslalog/internal/config"
 )
 
-// RedirectURI is Tesla's SSO callback used by the official apps. It
-// does not need to resolve to anything real: after login Tesla
-// redirects the browser here with ?code=...&state=..., and the page
-// will show a blank/broken page — that's expected. The user copies the
-// resulting URL (or just the code) back into `teslalog auth`.
-const RedirectURI = "https://auth.tesla.com/void/callback"
+// RedirectURI is the callback Tesla's SSO redirects the browser to after
+// login, with ?code=...&state=... attached. It does not need to resolve
+// to anything real — the user copies the resulting redirect back into
+// `teslalog auth` rather than the browser ever completing it.
+//
+// This is a custom URI scheme (what the real Tesla mobile app registers
+// itself as the OS handler for), not the "https://auth.tesla.com/void/callback"
+// dead-page URL every third-party tool (TeslaMate, teslapy, tesla_auth,
+// and this project) used to use. Tesla started rejecting that redirect_uri
+// for the "ownerapi" client_id in ~April 2026 ("The 'redirect_uri' supplied
+// is not registered for this 'client_id'" — see
+// github.com/teslamate-org/teslamate#5296); tesla_auth v0.13.0+ fixed it by
+// switching to this exact value, which is still registered for
+// "ownerapi". client_id itself is unaffected by that change.
+const RedirectURI = "tesla://auth/callback"
 
 const authScope = "openid email offline_access"
 

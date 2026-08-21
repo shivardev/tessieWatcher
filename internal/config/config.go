@@ -25,9 +25,57 @@ type Config struct {
 	Polling   PollingConfig
 	Streaming StreamingConfig
 	Backup    BackupConfig
+	Portal    PortalConfig
+	Geocoding GeocodingConfig
+	Geofences []GeofenceConfig
 	API       APIConfig
 	Vehicle   VehicleConfig
 	Charging  ChargingConfig
+}
+
+// GeofenceConfig is one user-named circular zone (a config.toml
+// [[geofence]] entry) - checked before any reverse-geocoding lookup, so
+// your most common places (home, work) resolve for free with no network
+// call at all. See internal/geocode.
+type GeofenceConfig struct {
+	Name    string
+	Lat     float64
+	Lng     float64
+	RadiusM float64
+}
+
+// GeocodingConfig controls the optional, off-by-default fallback for
+// resolving a drive/charge location that didn't match any configured
+// geofence: a reverse-geocoding HTTP lookup against an OSM
+// Nominatim-compatible service, cached in the database so the same spot
+// is never looked up twice. Off by default since it's a network
+// dependency to a third-party service, unlike geofences which are free.
+type GeocodingConfig struct {
+	Enabled bool
+	BaseURL string
+	// UserAgent identifies this installation to the geocoding service.
+	// Nominatim's usage policy requires a descriptive User-Agent (ideally
+	// with contact info) - see
+	// https://operations.osmfoundation.org/policies/nominatim/. If you're
+	// making more than occasional personal-use requests, that policy asks
+	// you to self-host your own Nominatim instance instead and point
+	// BaseURL at it.
+	UserAgent string
+}
+
+// PortalConfig controls the read-only HTTP portal (internal/portal): a
+// status page plus a button that downloads a fresh database snapshot.
+// On by default - see config.example.toml and the README's Portal
+// section before leaving this on for anything other than a trusted home
+// LAN, or if this machine is reachable from the public internet - there
+// is no login, and the database is a complete log of everywhere the
+// vehicle has been and when.
+type PortalConfig struct {
+	Enabled bool
+	// Addr is the address net/http.Server listens on, e.g. ":8083" (all
+	// interfaces - reachable from other devices on the LAN) or
+	// "127.0.0.1:8083" (this machine only).
+	Addr string
 }
 
 // VehicleConfig holds user-supplied (not API-reported) vehicle facts.
@@ -136,6 +184,25 @@ type rawConfig struct {
 		Interval      string `toml:"interval"`
 	} `toml:"backup"`
 
+	Portal struct {
+		Enabled *bool  `toml:"enabled"`
+		Addr    string `toml:"addr"`
+	} `toml:"portal"`
+
+	Geocoding struct {
+		Enabled   *bool  `toml:"enabled"`
+		BaseURL   string `toml:"base_url"`
+		UserAgent string `toml:"user_agent"`
+	} `toml:"geocoding"`
+
+	// [[geofence]] array-of-tables - see GeofenceConfig.
+	Geofence []struct {
+		Name    string  `toml:"name"`
+		Lat     float64 `toml:"lat"`
+		Lng     float64 `toml:"lng"`
+		RadiusM float64 `toml:"radius_m"`
+	} `toml:"geofence"`
+
 	API struct {
 		OwnerAPIBaseURL string `toml:"owner_api_base_url"`
 		SSOBaseURL      string `toml:"sso_base_url"`
@@ -179,11 +246,30 @@ func Default() Config {
 			RetentionDays: 30,
 			Interval:      24 * time.Hour,
 		},
+		Portal: PortalConfig{
+			// On by default: it's the primary way to see the daemon is
+			// alive without SSHing in. Still no authentication (see
+			// PortalConfig's doc comment) - set enabled = false in
+			// config.toml if this box isn't on a network you trust.
+			Enabled: true,
+			Addr:    ":8083",
+		},
+		Geocoding: GeocodingConfig{
+			Enabled:   false, // opt-in: a third-party network dependency, see GeocodingConfig's doc comment
+			BaseURL:   "https://nominatim.openstreetmap.org",
+			UserAgent: "teslalog/0.1.0 (personal use; https://github.com/shivardev/tessieWatcher)",
+		},
 		API: APIConfig{
 			OwnerAPIBaseURL: "https://owner-api.teslamotors.com",
 			SSOBaseURL:      "https://auth.tesla.com",
-			// Same public client_id historically used by the official
-			// Tesla mobile app for the SSO PKCE flow.
+			// The public client_id used for the interactive SSO PKCE login
+			// flow (the only one Tesla's /oauth2/v3/authorize accepts for
+			// that flow - a hex client_id found in an abandoned 2019-era
+			// library turned out to be for Tesla's long-retired
+			// password-grant flow instead, and is rejected outright here).
+			// See runner.go/ownerapi.go for the separate, currently-under-
+			// investigation question of why tokens obtained via this
+			// client_id get gated to fleet-api-only on some API calls.
 			ClientID:  "ownerapi",
 			UserAgent: "teslalog/0.1",
 		},
@@ -263,6 +349,28 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Backup.Enabled != nil {
 		cfg.Backup.Enabled = *raw.Backup.Enabled
+	}
+
+	if raw.Portal.Enabled != nil {
+		cfg.Portal.Enabled = *raw.Portal.Enabled
+	}
+	if raw.Portal.Addr != "" {
+		cfg.Portal.Addr = raw.Portal.Addr
+	}
+
+	if raw.Geocoding.Enabled != nil {
+		cfg.Geocoding.Enabled = *raw.Geocoding.Enabled
+	}
+	if raw.Geocoding.BaseURL != "" {
+		cfg.Geocoding.BaseURL = raw.Geocoding.BaseURL
+	}
+	if raw.Geocoding.UserAgent != "" {
+		cfg.Geocoding.UserAgent = raw.Geocoding.UserAgent
+	}
+
+	cfg.Geofences = nil
+	for _, g := range raw.Geofence {
+		cfg.Geofences = append(cfg.Geofences, GeofenceConfig{Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM})
 	}
 
 	if raw.API.OwnerAPIBaseURL != "" {

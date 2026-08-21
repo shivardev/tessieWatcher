@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -22,8 +23,8 @@ func TestLoadMissingFileReturnsDefaults(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	want := Default()
-	if cfg != want {
-		t.Fatalf("expected defaults for a missing file, got %+v", cfg)
+	if !reflect.DeepEqual(cfg, want) {
+		t.Fatalf("expected defaults for a missing file, got %+v, want %+v", cfg, want)
 	}
 }
 
@@ -92,5 +93,62 @@ price_per_kwh = 0.32
 	}
 	if cfg.Charging.PricePerKwh != 0.32 {
 		t.Fatalf("charging.price_per_kwh = %v, want 0.32", cfg.Charging.PricePerKwh)
+	}
+}
+
+func TestLoadGeofencesAndGeocoding(t *testing.T) {
+	path := writeTemp(t, `
+[geocoding]
+enabled = true
+base_url = "http://localhost:9000"
+user_agent = "test-agent"
+
+[[geofence]]
+name = "Home"
+lat = 35.1
+lng = -85.2
+radius_m = 50
+
+[[geofence]]
+name = "Work"
+lat = 36.0
+lng = -86.0
+radius_m = 100
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Geocoding.Enabled {
+		t.Fatalf("expected geocoding.enabled = true")
+	}
+	if cfg.Geocoding.BaseURL != "http://localhost:9000" {
+		t.Fatalf("unexpected base_url: %q", cfg.Geocoding.BaseURL)
+	}
+	if cfg.Geocoding.UserAgent != "test-agent" {
+		t.Fatalf("unexpected user_agent: %q", cfg.Geocoding.UserAgent)
+	}
+	if len(cfg.Geofences) != 2 {
+		t.Fatalf("expected 2 geofences, got %d: %+v", len(cfg.Geofences), cfg.Geofences)
+	}
+	if cfg.Geofences[0] != (GeofenceConfig{Name: "Home", Lat: 35.1, Lng: -85.2, RadiusM: 50}) {
+		t.Fatalf("unexpected first geofence: %+v", cfg.Geofences[0])
+	}
+	if cfg.Geofences[1].Name != "Work" {
+		t.Fatalf("unexpected second geofence: %+v", cfg.Geofences[1])
+	}
+}
+
+func TestLoadNoGeofencesLeavesEmptySlice(t *testing.T) {
+	path := writeTemp(t, "database = \"x.db\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Geofences) != 0 {
+		t.Fatalf("expected no geofences, got %+v", cfg.Geofences)
+	}
+	if cfg.Geocoding.Enabled {
+		t.Fatalf("expected geocoding disabled by default")
 	}
 }
