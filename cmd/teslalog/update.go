@@ -6,8 +6,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -123,6 +125,17 @@ func runUpdate() error {
 
 	tmpPath := selfPath + ".new"
 	if err := downloadFile(client, downloadURL, tmpPath); err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			// The common case: teslalog is installed to a root-owned
+			// directory (/usr/local/bin - see deploy/install.sh), but
+			// this process is running as the unprivileged 'teslalog'
+			// service user, which can't write a new file there. Unlike
+			// `auth` (which must run as the teslalog user, so token file
+			// ownership matches the daemon), `update` replaces a system
+			// binary and needs root - see the README's Updating section.
+			return fmt.Errorf("download %s: %w\n\nThis usually means teslalog needs to run as root to replace its own binary "+
+				"(try: sudo teslalog update ...), not as the unprivileged teslalog service user.", assetName, err)
+		}
 		return fmt.Errorf("download %s: %w", assetName, err)
 	}
 	if err := os.Chmod(tmpPath, 0o755); err != nil { // no-op on Windows, required on Linux

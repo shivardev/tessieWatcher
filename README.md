@@ -500,9 +500,19 @@ No `git clone`, no rebuilding from source, no re-authenticating:
 sudo systemctl stop teslalog          # optional but recommended: avoids
                                        # replacing the binary while it's
                                        # actively running
-sudo -u teslalog teslalog update -config /etc/teslalog/config.toml
+sudo teslalog update -config /etc/teslalog/config.toml
 sudo systemctl start teslalog
 ```
+
+Run this as **root**, not as the unprivileged `teslalog` service user —
+unlike `auth` (which must run as `teslalog`, so the resulting
+`tokens.json` is owned by the same user the daemon runs as), `update`
+replaces the binary at `/usr/local/bin/teslalog`, a root-owned system
+path (see `deploy/install.sh`); `teslalog` itself has no write access
+there by design, the same way it can't write anywhere else outside
+`/var/lib/teslalog`. Running it as the service user fails with a
+permission error (which `teslalog update` recognizes and tells you to
+re-run as root instead, rather than leaving you to guess).
 
 `teslalog update` checks this project's
 [GitHub Releases](https://github.com/shivardev/tessieWatcher/releases)
@@ -515,9 +525,9 @@ using the old file until it restarts), it's just not possible on Windows
 (the OS locks a running `.exe`); `teslalog update` detects that case and
 tells you what to do instead.
 
-First-time install still needs the manual steps in
-[Deploying to the Pi](#deploying-to-the-pi) once (there's no
-`curl | bash` one-liner yet) — `update` is for every install after that.
+First-time install: see [Deploying to the Pi](#deploying-to-the-pi) —
+either the `curl | bash` one-liner or the manual cross-build path.
+`update` is for every install after that.
 
 ## Backups
 

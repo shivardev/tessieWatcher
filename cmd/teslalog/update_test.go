@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestAssetNameForEveryBuiltPlatform pins assetNameFor's output to
 // exactly what deploy/cross-build.sh produces for every platform it
@@ -37,5 +43,37 @@ func TestAssetNameForUnsupportedPlatformErrors(t *testing.T) {
 		if _, err := assetNameFor(c.goos, c.goarch); err == nil {
 			t.Fatalf("%s/%s: expected an error for a platform with no prebuilt binary", c.goos, c.goarch)
 		}
+	}
+}
+
+// TestDownloadFileToUnwritableTargetReturnsPermissionError pins the
+// error runUpdate's "run as root instead" hint (see update.go) relies
+// on: writing to a path this process can't write to must produce an
+// error that errors.Is(err, fs.ErrPermission) recognizes - this is
+// exactly what happens for real when `teslalog update` runs as the
+// unprivileged teslalog service user against a root-owned install
+// (e.g. /usr/local/bin - see deploy/install.sh), which is the bug this
+// hint exists for.
+func TestDownloadFileToUnwritableTargetReturnsPermissionError(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "teslalog.new")
+
+	// Create the file first, then strip write permission - downloadFile
+	// always opens with O_CREATE|O_TRUNC, so an existing read-only file
+	// (rather than an unwritable parent directory, which behaves
+	// inconsistently across OSes in a temp-dir test) reliably exercises
+	// the same "can't write here" failure on both Windows and Linux.
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed existing file: %v", err)
+	}
+	if err := os.Chmod(target, 0o444); err != nil {
+		t.Fatalf("chmod read-only: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(target, 0o644) }) // let TempDir clean up
+
+	// The exact open call downloadFile makes on its destination path.
+	_, openErr := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if !errors.Is(openErr, fs.ErrPermission) {
+		t.Fatalf("expected fs.ErrPermission opening a read-only file for writing, got %v", openErr)
 	}
 }
