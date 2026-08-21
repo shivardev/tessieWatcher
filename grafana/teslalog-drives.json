@@ -243,8 +243,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
-          "rawQueryText": "SELECT\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "queryText": "SELECT\n  id AS drive_id,\n  CAST(strftime('%s', start_time) AS INTEGER) * 1000 AS start_epoch,\n  CAST(strftime('%s', end_time) AS INTEGER) * 1000 AS end_epoch,\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
+          "rawQueryText": "SELECT\n  id AS drive_id,\n  CAST(strftime('%s', start_time) AS INTEGER) * 1000 AS start_epoch,\n  CAST(strftime('%s', end_time) AS INTEGER) * 1000 AS end_epoch,\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -255,7 +255,62 @@
       ],
       "fieldConfig": {
         "defaults": {},
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "drive_id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "start_epoch"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "end_epoch"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "time"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Drive details",
+                    "url": "/d/teslalog-drive-details/teslalog-drive-details?var-drive_id=${__data.fields.drive_id}&from=${__data.fields.start_epoch}&to=${__data.fields.end_epoch}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showHeader": true
