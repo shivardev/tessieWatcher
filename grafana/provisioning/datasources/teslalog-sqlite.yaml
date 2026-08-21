@@ -1,0 +1,17 @@
+# Grafana datasource provisioning - see
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#data-sources
+#
+# Auto-registers a SQLite datasource pointed at whatever tesla.db
+# lands in the ../data/ folder (bind-mounted to /data in the
+# container - see ../docker-compose.yml). No manual "Add data
+# source" click-through needed.
+apiVersion: 1
+
+datasources:
+  - name: teslalog
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: false
+    editable: true
+    jsonData:
+      path: /data/tesla.db

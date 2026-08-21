@@ -605,14 +605,31 @@ database is a complete log of everywhere the vehicle has been and when.
 
 ### Viewing the data in Grafana
 
-teslalog doesn't bundle or run Grafana itself (see
+The daemon itself still doesn't bundle or run Grafana (see
 [What it deliberately does NOT do](#what-it-deliberately-does-not-do)) —
-point your own existing Grafana instance at the downloaded file:
+but [`grafana/`](grafana/) has a self-contained, optional `docker-compose.yml`
+that gets you a fully-provisioned Grafana (plugin, datasource, and all 7
+dashboards below, already wired up, zero manual clicking) on whatever
+other machine you actually want to look at dashboards from:
+
+```sh
+cd grafana
+./refresh-data.sh    # pulls tesla.db from your portal - see -PortalUrl/.ps1
+docker compose up -d
+```
+
+Then open `http://localhost:3001`. See [`grafana/README.md`](grafana/README.md)
+for the details (changing the default login, running it on a different
+machine, keeping data fresh, running it alongside an existing Grafana).
+
+**If you'd rather add this to an existing Grafana instance instead:**
 
 1. Install the community **SQLite datasource plugin**
    (`frser-sqlite-datasource`) on your Grafana instance:
    `grafana-cli plugins install frser-sqlite-datasource`, then restart
-   Grafana.
+   Grafana with `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=frser-sqlite-datasource`
+   set (Grafana blocks unsigned community plugins from loading without it,
+   even after the files are installed).
 2. Add a data source of that type, pointing its "Path" setting at the
    downloaded `tesla-YYYY-MM-DD.db` file (or, for something that stays
    current, a path you periodically re-download to — this plugin reads

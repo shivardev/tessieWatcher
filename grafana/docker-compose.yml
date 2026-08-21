@@ -1,0 +1,42 @@
+# Standalone, self-provisioning Grafana for teslalog - separate from
+# (and doesn't touch) any TeslaMate/Postgres Grafana you already run.
+# `docker compose up -d` here gets you:
+#   - the community SQLite datasource plugin, installed and allowed to
+#     load unsigned (Grafana blocks unsigned plugins by default)
+#   - that datasource already registered, pointed at ./data/tesla.db
+#   - all 7 teslalog-*.json dashboards in this directory already
+#     imported into a "teslalog" folder
+# with zero manual clicking - see ../grafana/README.md for what to do
+# after it's up (mostly: nothing, just open Grafana).
+#
+# Portable: copy this whole grafana/ directory to any machine with
+# Docker installed and run the same command - nothing here is tied to
+# this specific host. Default port is 3001, not Grafana's usual 3000,
+# specifically so this can run alongside an existing Grafana (e.g. a
+# TeslaMate one) on the same machine without a port clash - change the
+# left side of the ports mapping below if you'd rather use 3000 on a
+# machine that doesn't already have something there.
+services:
+  grafana:
+    image: grafana/grafana-oss:12.4.0
+    container_name: teslalog-grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_INSTALL_PLUGINS=frser-sqlite-datasource
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=frser-sqlite-datasource
+    volumes:
+      # Grafana's own state (its settings db, installed plugins,
+      # users) - separate named volume, untouched by anything below.
+      - grafana-storage:/var/lib/grafana
+      # Where the downloaded tesla.db lands - see refresh-data.sh/.ps1.
+      - ./data:/data
+      # This directory's own *.json dashboard files, read-only -
+      # Grafana's file provider only picks up *.json here, so
+      # docker-compose.yml/README.md/provisioning/ are ignored.
+      - ./:/var/lib/grafana/dashboards:ro
+      - ./provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  grafana-storage:

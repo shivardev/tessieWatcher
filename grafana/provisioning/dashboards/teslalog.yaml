@@ -1,0 +1,20 @@
+# Grafana dashboard provisioning - see
+# https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards
+#
+# Auto-loads every teslalog-*.json dashboard in this directory's
+# parent (../.., i.e. grafana/ itself - bind-mounted read-only to
+# /var/lib/grafana/dashboards in the container, see
+# ../../docker-compose.yml) into a "teslalog" folder in Grafana's UI.
+# Grafana's file provider only picks up *.json files here, so
+# README.md and this provisioning/ directory itself are ignored -
+# no need to duplicate the dashboard files anywhere.
+apiVersion: 1
+
+providers:
+  - name: teslalog
+    folder: teslalog
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

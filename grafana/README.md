@@ -15,7 +15,46 @@ for the field-by-field mapping between the two).
 | `teslalog-battery.json` | Battery level/range over time from idle-poll samples — phantom-drain analysis |
 | `teslalog-efficiency.json` | Derived per-drive efficiency (battery %/km, rated-range km lost per km) |
 
-## Setup
+## Setup: the easy way (recommended)
+
+`docker-compose.yml` in this directory is a complete, self-provisioning
+Grafana — the plugin, the datasource, and all 7 dashboards above are set
+up automatically, with zero manual clicking:
+
+```sh
+cd grafana
+./refresh-data.sh              # or .\refresh-data.ps1 on Windows -
+                                # downloads tesla.db from your portal
+docker compose up -d
+```
+
+Open **http://localhost:3001** (default login `admin`/`admin` — change it,
+especially once this is reachable on your LAN) and every dashboard is
+already there, in a "teslalog" folder, already pointed at real data.
+
+Port 3001, not Grafana's usual 3000, specifically so this can run
+alongside an existing Grafana (e.g. a TeslaMate/Postgres one) on the same
+machine without a conflict — edit the `ports:` line in `docker-compose.yml`
+if you'd rather use 3000 on a machine that doesn't already have something
+there.
+
+**This whole `grafana/` directory is portable** — copy it to any machine
+with Docker installed (your own PC, a home server, wherever you actually
+want to look at dashboards from) and the same two commands work there too.
+Since the datasource reads a static file snapshot rather than a live
+connection to teslalog, re-run `refresh-data.sh`/`.ps1` (pointed at your
+portal's actual address, via `-PortalUrl`/an argument, or `TESLALOG_PORTAL_URL`)
+whenever you want current data — no restart needed, Grafana just re-reads
+the file on the next query.
+
+See `provisioning/` for how the auto-setup works under the hood
+(`datasources/teslalog-sqlite.yaml`, `dashboards/teslalog.yaml`) if you
+want to adapt it.
+
+## Setup: by hand
+
+If you'd rather add this to an existing Grafana instance manually instead
+of running the standalone one above:
 
 1. Install the community SQLite datasource plugin on your Grafana instance:
    ```
@@ -23,7 +62,9 @@ for the field-by-field mapping between the two).
    ```
    then restart Grafana. (Docker: set `GF_INSTALL_PLUGINS=frser-sqlite-datasource`
    and `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=frser-sqlite-datasource`
-   as environment variables on the Grafana container instead.)
+   as environment variables on the Grafana container instead — Grafana
+   blocks unsigned community plugins like this one from loading without it,
+   even after `grafana-cli` installs the files.)
 2. Add a data source of that type (**Connections → Add new connection →
    SQLite**), pointing its **Path** at your downloaded `tesla-YYYY-MM-DD.db`
    file (via the [portal](../README.md#portal-optional-web-page--database-download)'s

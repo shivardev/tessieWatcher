@@ -15,6 +15,11 @@
 *.db-shm
 *.db.gz
 
+# grafana/docker-compose.yml's bind-mounted data dir (tesla.db
+# snapshots downloaded by refresh-data.sh/.ps1) - already covered by
+# *.db above, kept explicit here for clarity.
+/grafana/data/
+
 # Local configuration and credentials
 tokens.json
 /config.toml
