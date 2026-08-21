@@ -277,3 +277,119 @@ func TestChargingSampleCarriesChargeLimitSoc(t *testing.T) {
 		t.Fatalf("expected charge_limit_soc 80, got %d", limit)
 	}
 }
+
+func TestChargeSummaryDerivesACvsDCFromSamples(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN7", TeslaID: "7", DisplayName: "Car"})
+
+	start := time.Now().UTC()
+	dcID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20, RangeKm: 80})
+	if err != nil {
+		t.Fatalf("open dc session: %v", err)
+	}
+	if err := s.AppendChargingSample(ChargingSample{
+		ChargingSessionID: dcID, VehicleID: vehicleID, Time: start.Add(time.Minute),
+		BatteryLevel: 60, FastChargerPresent: true, RangeKm: 240,
+	}); err != nil {
+		t.Fatalf("append dc sample: %v", err)
+	}
+	if err := s.CloseChargingSession(ChargeEnd{ChargingSessionID: dcID, Time: start.Add(20 * time.Minute), BatteryLevel: 80, RangeKm: 320, EnergyAddedKwh: 40}); err != nil {
+		t.Fatalf("close dc session: %v", err)
+	}
+
+	acStart := start.Add(time.Hour)
+	acID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: acStart, BatteryLevel: 50, RangeKm: 200})
+	if err != nil {
+		t.Fatalf("open ac session: %v", err)
+	}
+	if err := s.AppendChargingSample(ChargingSample{
+		ChargingSessionID: acID, VehicleID: vehicleID, Time: acStart.Add(time.Minute),
+		BatteryLevel: 60, FastChargerPresent: false, RangeKm: 240,
+	}); err != nil {
+		t.Fatalf("append ac sample: %v", err)
+	}
+	if err := s.CloseChargingSession(ChargeEnd{ChargingSessionID: acID, Time: acStart.Add(4 * time.Hour), BatteryLevel: 80, RangeKm: 320, EnergyAddedKwh: 24}); err != nil {
+		t.Fatalf("close ac session: %v", err)
+	}
+
+	charges, err := s.ListCharges(vehicleID, 0)
+	if err != nil {
+		t.Fatalf("list charges: %v", err)
+	}
+	if len(charges) != 2 {
+		t.Fatalf("expected 2 charges, got %d", len(charges))
+	}
+	// Newest first: AC session, then DC session.
+	if charges[0].ChargeType() != "AC" {
+		t.Fatalf("expected first (newest) charge to be AC, got %s", charges[0].ChargeType())
+	}
+	if charges[1].ChargeType() != "DC" {
+		t.Fatalf("expected second (oldest) charge to be DC, got %s", charges[1].ChargeType())
+	}
+	if got := charges[1].KwhPerRatedKm(); got <= 0 {
+		t.Fatalf("expected a positive kWh/rated-km for the DC session, got %.3f", got)
+	}
+}
+
+func TestDriveSummaryEfficiencyRatio(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN8", TeslaID: "8", DisplayName: "Car"})
+
+	start := time.Now().UTC()
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 100, RangeKm: 300})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: start.Add(10 * time.Minute), OdometerKm: 110, RangeKm: 290}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+
+	drives, err := s.ListDrives(vehicleID, 0)
+	if err != nil {
+		t.Fatalf("list drives: %v", err)
+	}
+	if len(drives) != 1 {
+		t.Fatalf("expected 1 drive, got %d", len(drives))
+	}
+	d := drives[0]
+	if d.RangeLostKm() != 10 {
+		t.Fatalf("expected 10 rated-range km lost, got %.2f", d.RangeLostKm())
+	}
+	// Drove 10km, lost 10 rated-range km: ratio should be ~1.0.
+	if diff := d.EfficiencyRatio() - 1.0; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("expected efficiency ratio ~1.0, got %.3f", d.EfficiencyRatio())
+	}
+}
+
+func TestLatestBatteryReadingPrefersOpenSessionOverIdleSample(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN9", TeslaID: "9", DisplayName: "Car"})
+
+	if ok, _, _, _, _, err := s.LatestBatteryReading(vehicleID); err != nil || ok {
+		t.Fatalf("expected no reading yet, got ok=%v err=%v", ok, err)
+	}
+
+	now := time.Now().UTC()
+	if err := s.InsertBatterySample(vehicleID, now, 55, 220, 230, "poll"); err != nil {
+		t.Fatalf("insert battery sample: %v", err)
+	}
+	if ok, level, rangeKm, _, _, err := s.LatestBatteryReading(vehicleID); err != nil || !ok || level != 55 || rangeKm != 220 {
+		t.Fatalf("expected idle reading level=55 range=220, got ok=%v level=%d range=%.1f err=%v", ok, level, rangeKm, err)
+	}
+
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: now.Add(time.Minute), OdometerKm: 10, RangeKm: 220})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	if err := s.AppendPosition(PositionSample{
+		DriveID: driveID, VehicleID: vehicleID, Time: now.Add(2 * time.Minute),
+		BatteryLevel: 52, RangeKm: 210,
+	}); err != nil {
+		t.Fatalf("append position: %v", err)
+	}
+
+	ok, level, rangeKm, _, _, err := s.LatestBatteryReading(vehicleID)
+	if err != nil || !ok || level != 52 || rangeKm != 210 {
+		t.Fatalf("expected in-drive reading level=52 range=210, got ok=%v level=%d range=%.1f err=%v", ok, level, rangeKm, err)
+	}
+}

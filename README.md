@@ -184,7 +184,11 @@ checked against TeslaMate's real source rather than approximate. Per table:
   them) are opt-in via config: `charge_energy_used_kwh` (estimated from
   a configurable charging-efficiency factor) and `cost` (from a flat
   `price_per_kwh`, vs. TeslaMate's per-geofence pricing). Both are `NULL`
-  until you set the corresponding config value.
+  until you set the corresponding config value. `is_dc_fast_charge` is
+  derived at close time from whether any sample in the session ever saw
+  `fast_charger_present` — the AC/DC "type" split TeslaMate's own
+  Charging Stats dashboard shows, computed here instead of stored raw by
+  the API.
 - **states**: TeslaMate's own `states` table only tracks
   online/offline/asleep; teslalog's is a superset, additionally
   recording driving/charging/idle/suspended (TeslaMate keeps that finer
@@ -224,6 +228,18 @@ state rather than that adaptive state machine.
 [Geofencing & locations](#geofencing--locations) below for how. Raw
 `start_lat`/`start_lng` etc. are always still stored regardless, so
 nothing is lost if a location never resolves to a name.
+
+**Derived stats (computed at read time, not stored as columns)**:
+`teslalog export drives`/the portal's Recent drives table show a
+rated-range-km-lost-per-km-driven ratio (≈1.0 means the drive matched
+its EPA/WLTP rating; higher means it drove less efficiently than
+rated) — the same figure `grafana/teslalog-efficiency.json` charts over
+time. `teslalog export charges`/the portal's Recent charges table show
+kWh added per rated-range-km gained, a rough charging-efficiency figure
+(higher usually means a colder battery or a lossier charger). Both are
+plain arithmetic over columns that are already stored, computed fresh
+on every read — see `DriveSummary.EfficiencyRatio`/
+`ChargeSummary.KwhPerRatedKm` in `internal/storage/storage.go`.
 
 **Still not ported**: TeslaMate's per-geofence charge pricing (different
 `price_per_kwh` depending on which named zone a charge happened in).
@@ -479,13 +495,16 @@ doesn't do off-box replication itself.
 
 ## Portal (optional web page + database download)
 
-Set `[portal] enabled = true` in config.toml and teslalog serves a tiny
-read-only page at `addr` (default `:8083`, e.g.
-`http://<pi-hostname-or-ip>:8083`): today's drive count/distance, the
-last charge, and a "Download database" button. That button takes a
-fresh, consistent snapshot of the live database (same safe online-backup
-mechanism as scheduled backups, just uncompressed and on demand) and
-downloads it as `tesla-YYYY-MM-DD.db`.
+Set `[portal] enabled = true` (the default) in config.toml and teslalog
+serves a tiny read-only dark-mode page at `addr` (default `:8083`, e.g.
+`http://<pi-hostname-or-ip>:8083`): current battery %/rated range,
+today's drive count/distance, the last five drives and charges (with
+the AC/DC type and derived efficiency figures from
+[Data model & TeslaMate parity](#data-model--teslamate-parity) above),
+a live tail of recent log activity, and a "Download database" button.
+That button takes a fresh, consistent snapshot of the live database
+(same safe online-backup mechanism as scheduled backups, just
+uncompressed and on demand) and downloads it as `tesla-YYYY-MM-DD.db`.
 
 **There is no login.** This is meant for your own home network only —
 open that address from your phone/laptop while on the same Wi-Fi as the

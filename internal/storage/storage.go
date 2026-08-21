@@ -85,6 +85,7 @@ var columnMigrations = []string{
 	`ALTER TABLE positions ADD COLUMN valet_mode INTEGER`,
 	`ALTER TABLE positions ADD COLUMN climate_keeper_mode TEXT`,
 	`ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER`,
+	`ALTER TABLE charging_sessions ADD COLUMN is_dc_fast_charge INTEGER`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -560,9 +561,10 @@ type ChargeEnd struct {
 
 func (s *Store) CloseChargingSession(e ChargeEnd) error {
 	var maxPower, avgOutside sql.NullFloat64
+	var everFastCharger sql.NullInt64
 	_ = s.db.QueryRow(`
-		SELECT MAX(charger_power_kw), AVG(outside_temp_c) FROM charging_samples WHERE charging_session_id = ?
-	`, e.ChargingSessionID).Scan(&maxPower, &avgOutside)
+		SELECT MAX(charger_power_kw), AVG(outside_temp_c), MAX(fast_charger_present) FROM charging_samples WHERE charging_session_id = ?
+	`, e.ChargingSessionID).Scan(&maxPower, &avgOutside, &everFastCharger)
 
 	var energyUsed sql.NullFloat64
 	if e.ChargingEfficiency > 0 {
@@ -577,11 +579,11 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		UPDATE charging_sessions SET
 			end_time = ?, end_battery_level = ?, end_range_km = ?, end_ideal_range_km = ?,
 			charge_energy_added_kwh = ?, charge_energy_used_kwh = ?, max_charger_power_kw = ?,
-			outside_temp_avg_c = ?, cost = ?, status = 'closed'
+			outside_temp_avg_c = ?, cost = ?, is_dc_fast_charge = ?, status = 'closed'
 		WHERE id = ?
 	`, fmtTime(e.Time), e.BatteryLevel, e.RangeKm, e.IdealRangeKm,
 		e.EnergyAddedKwh, energyUsed, maxPower.Float64,
-		avgOutside.Float64, cost, e.ChargingSessionID)
+		avgOutside.Float64, cost, everFastCharger.Int64, e.ChargingSessionID)
 	return err
 }
 
@@ -680,6 +682,36 @@ type DriveSummary struct {
 	// configured geofence nor reverse-geocoding resolved anything.
 	StartLocation string
 	EndLocation   string
+	// StartRangeKm/EndRangeKm are the Tesla-reported "rated" range at
+	// each end - RangeLostKm (start-end) is the input to a cheap
+	// derived efficiency figure: how many rated-range km were consumed
+	// per km actually driven (1.0 means the drive matched the EPA/WLTP
+	// rating exactly; >1.0 means it drove less efficiently than rated).
+	// See grafana/teslalog-efficiency.json for the same computation.
+	StartRangeKm float64
+	EndRangeKm   float64
+	MaxSpeedKmh  float64
+}
+
+// RangeLostKm is StartRangeKm-EndRangeKm, floored at 0 (a charge or a
+// range-estimate correction mid-drive can otherwise make this go
+// negative, which isn't meaningful as "range lost").
+func (d DriveSummary) RangeLostKm() float64 {
+	lost := d.StartRangeKm - d.EndRangeKm
+	if lost < 0 {
+		return 0
+	}
+	return lost
+}
+
+// EfficiencyRatio is rated-range km lost per km actually driven, or 0
+// if it can't be computed (no distance, or no range lost - e.g. a very
+// short drive where the rated range estimate didn't tick down at all).
+func (d DriveSummary) EfficiencyRatio() float64 {
+	if d.DistanceKm <= 0 {
+		return 0
+	}
+	return d.RangeLostKm() / d.DistanceKm
 }
 
 // ListDrives returns closed drives for a vehicle, optionally filtered
@@ -687,7 +719,7 @@ type DriveSummary struct {
 func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 	q := `
 		SELECT id, start_time, end_time, distance_km, duration_min, start_battery_level, end_battery_level,
-			start_location, end_location
+			start_location, end_location, start_range_km, end_range_km, max_speed_kmh
 		FROM drives
 		WHERE vehicle_id = ? AND status = 'closed'
 	`
@@ -708,10 +740,11 @@ func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 	for rows.Next() {
 		var d DriveSummary
 		var endTime sql.NullString
-		var distance, duration sql.NullFloat64
+		var distance, duration, startRange, endRange, maxSpeed sql.NullFloat64
 		var startBattery, endBattery sql.NullInt64
 		var startLoc, endLoc sql.NullString
-		if err := rows.Scan(&d.ID, &d.StartTime, &endTime, &distance, &duration, &startBattery, &endBattery, &startLoc, &endLoc); err != nil {
+		if err := rows.Scan(&d.ID, &d.StartTime, &endTime, &distance, &duration, &startBattery, &endBattery,
+			&startLoc, &endLoc, &startRange, &endRange, &maxSpeed); err != nil {
 			return nil, err
 		}
 		d.EndTime = endTime.String
@@ -721,6 +754,9 @@ func (s *Store) ListDrives(vehicleID int64, year int) ([]DriveSummary, error) {
 		d.EndBattery = int(endBattery.Int64)
 		d.StartLocation = startLoc.String
 		d.EndLocation = endLoc.String
+		d.StartRangeKm = startRange.Float64
+		d.EndRangeKm = endRange.Float64
+		d.MaxSpeedKmh = maxSpeed.Float64
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -733,13 +769,48 @@ type ChargeSummary struct {
 	StartBattery   int
 	EndBattery     int
 	EnergyAddedKwh float64
+	// EnergyUsedKwh is only populated if config.toml sets
+	// [charging].efficiency - see ChargeEnd.ChargingEfficiency.
+	EnergyUsedKwh     float64
+	MaxChargerPowerKw float64
+	// Cost is only populated if config.toml sets a price_per_kwh.
+	Cost float64
+	// StartRangeKm/EndRangeKm mirror DriveSummary's fields; used to
+	// derive kWh per rated-range-km added, a rough charging-efficiency
+	// figure (higher means more energy lost to heat/conversion getting
+	// that range back, e.g. from cold-battery charging).
+	StartRangeKm float64
+	EndRangeKm   float64
+	// IsDCFastCharge - see schema.go's charging_sessions.is_dc_fast_charge
+	// comment. TeslaMate calls this the AC/DC "type" column.
+	IsDCFastCharge bool
 	// Location - see ChargeStart.Location's doc comment.
 	Location string
 }
 
+// ChargeType returns "DC" or "AC" for display, matching TeslaMate's
+// Charging Stats dashboard terminology.
+func (c ChargeSummary) ChargeType() string {
+	if c.IsDCFastCharge {
+		return "DC"
+	}
+	return "AC"
+}
+
+// KwhPerRatedKm is charge_energy_added_kwh divided by the rated-range
+// km gained during the session, or 0 if it can't be computed.
+func (c ChargeSummary) KwhPerRatedKm() float64 {
+	gained := c.EndRangeKm - c.StartRangeKm
+	if gained <= 0 {
+		return 0
+	}
+	return c.EnergyAddedKwh / gained
+}
+
 func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) {
 	q := `
-		SELECT id, start_time, end_time, start_battery_level, end_battery_level, charge_energy_added_kwh, location
+		SELECT id, start_time, end_time, start_battery_level, end_battery_level, charge_energy_added_kwh,
+			charge_energy_used_kwh, max_charger_power_kw, cost, start_range_km, end_range_km, is_dc_fast_charge, location
 		FROM charging_sessions
 		WHERE vehicle_id = ? AND status = 'closed'
 	`
@@ -761,9 +832,11 @@ func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) 
 		var c ChargeSummary
 		var endTime sql.NullString
 		var startBattery, endBattery sql.NullInt64
-		var energy sql.NullFloat64
+		var energy, energyUsed, maxPower, cost, startRange, endRange sql.NullFloat64
+		var isDC sql.NullInt64
 		var loc sql.NullString
-		if err := rows.Scan(&c.ID, &c.StartTime, &endTime, &startBattery, &endBattery, &energy, &loc); err != nil {
+		if err := rows.Scan(&c.ID, &c.StartTime, &endTime, &startBattery, &endBattery, &energy,
+			&energyUsed, &maxPower, &cost, &startRange, &endRange, &isDC, &loc); err != nil {
 			return nil, err
 		}
 		c.Location = loc.String
@@ -771,7 +844,59 @@ func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) 
 		c.StartBattery = int(startBattery.Int64)
 		c.EndBattery = int(endBattery.Int64)
 		c.EnergyAddedKwh = energy.Float64
+		c.EnergyUsedKwh = energyUsed.Float64
+		c.MaxChargerPowerKw = maxPower.Float64
+		c.Cost = cost.Float64
+		c.StartRangeKm = startRange.Float64
+		c.EndRangeKm = endRange.Float64
+		c.IsDCFastCharge = isDC.Int64 != 0
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// LatestBatteryReading returns the most recent battery level/rated
+// range/ideal range known for a vehicle, preferring an in-progress
+// drive or charge (fresher than idle polling) over the last idle
+// battery_samples row. ok is false if nothing has been recorded yet.
+func (s *Store) LatestBatteryReading(vehicleID int64) (ok bool, level int, rangeKm, idealRangeKm float64, at string, err error) {
+	if driveID, derr := s.OpenDriveID(vehicleID); derr != nil {
+		return false, 0, 0, 0, "", derr
+	} else if driveID != 0 {
+		scanErr := s.db.QueryRow(`
+			SELECT battery_level, range_km, ideal_range_km, timestamp FROM positions
+			WHERE drive_id = ? ORDER BY timestamp DESC LIMIT 1
+		`, driveID).Scan(&level, &rangeKm, &idealRangeKm, &at)
+		if scanErr == nil {
+			return true, level, rangeKm, idealRangeKm, at, nil
+		} else if scanErr != sql.ErrNoRows {
+			return false, 0, 0, 0, "", scanErr
+		}
+	}
+
+	if chargeID, cerr := s.OpenChargingSessionID(vehicleID); cerr != nil {
+		return false, 0, 0, 0, "", cerr
+	} else if chargeID != 0 {
+		scanErr := s.db.QueryRow(`
+			SELECT battery_level, range_km, ideal_range_km, timestamp FROM charging_samples
+			WHERE charging_session_id = ? ORDER BY timestamp DESC LIMIT 1
+		`, chargeID).Scan(&level, &rangeKm, &idealRangeKm, &at)
+		if scanErr == nil {
+			return true, level, rangeKm, idealRangeKm, at, nil
+		} else if scanErr != sql.ErrNoRows {
+			return false, 0, 0, 0, "", scanErr
+		}
+	}
+
+	err = s.db.QueryRow(`
+		SELECT battery_level, battery_range_km, ideal_battery_range_km, timestamp FROM battery_samples
+		WHERE vehicle_id = ? ORDER BY timestamp DESC LIMIT 1
+	`, vehicleID).Scan(&level, &rangeKm, &idealRangeKm, &at)
+	if err == sql.ErrNoRows {
+		return false, 0, 0, 0, "", nil
+	}
+	if err != nil {
+		return false, 0, 0, 0, "", err
+	}
+	return true, level, rangeKm, idealRangeKm, at, nil
 }

@@ -213,3 +213,50 @@ func TestIndexShowsRecentDrivesWithLocations(t *testing.T) {
 		t.Fatalf("expected a 'Recent drives' section, got: %s", body)
 	}
 }
+
+func TestIndexShowsBatteryAndRecentCharges(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	vehicleID, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN2", DisplayName: "My Model Y"})
+	if err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.InsertBatterySample(vehicleID, now, 62, 245, 255, "poll"); err != nil {
+		t.Fatalf("insert battery sample: %v", err)
+	}
+
+	chargeID, err := store.OpenChargingSession(storage.ChargeStart{VehicleID: vehicleID, Time: now, BatteryLevel: 20, RangeKm: 80, Location: "Supercharger"})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+	if err := store.AppendChargingSample(storage.ChargingSample{
+		ChargingSessionID: chargeID, VehicleID: vehicleID, Time: now.Add(time.Minute), FastChargerPresent: true,
+	}); err != nil {
+		t.Fatalf("append charging sample: %v", err)
+	}
+	if err := store.CloseChargingSession(storage.ChargeEnd{
+		ChargingSessionID: chargeID, Time: now.Add(20 * time.Minute), BatteryLevel: 80, RangeKm: 320, EnergyAddedKwh: 40,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	srv := New(store, dbPath, nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "62%") {
+		t.Fatalf("expected battery level 62%% on the page, got: %s", body)
+	}
+	if !strings.Contains(body, "Recent charges") || !strings.Contains(body, "Supercharger") || !strings.Contains(body, "DC") {
+		t.Fatalf("expected a 'Recent charges' section with the DC Supercharger session, got: %s", body)
+	}
+}

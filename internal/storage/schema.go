@@ -176,6 +176,11 @@ CREATE TABLE IF NOT EXISTS charging_sessions (
 	longitude                REAL,
 	-- Same resolution as drives.start_location/end_location - see there.
 	location                 TEXT,
+	-- Derived at close time from whether any sample in this session had
+	-- fast_charger_present set - i.e. Supercharger/CCS/CHAdeMO (DC) vs a
+	-- wall connector/mobile connector (AC). TeslaMate's own dashboards
+	-- surface this same AC/DC split for its "Charging Stats" panel.
+	is_dc_fast_charge        INTEGER,
 	status                   TEXT NOT NULL DEFAULT 'open'
 );
 CREATE INDEX IF NOT EXISTS idx_charging_sessions_vehicle_start ON charging_sessions(vehicle_id, start_time);

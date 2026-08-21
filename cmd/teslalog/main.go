@@ -435,12 +435,16 @@ func runExport(configPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		cw.Write([]string{"id", "start_time", "end_time", "start_location", "end_location", "distance_km", "duration_min", "start_battery_pct", "end_battery_pct"})
+		cw.Write([]string{
+			"id", "start_time", "end_time", "start_location", "end_location", "distance_km", "duration_min",
+			"start_battery_pct", "end_battery_pct", "max_speed_kmh", "rated_range_lost_km", "efficiency_ratio",
+		})
 		for _, d := range drives {
 			cw.Write([]string{
 				strconv.FormatInt(d.ID, 10), d.StartTime, d.EndTime, d.StartLocation, d.EndLocation,
 				fmt.Sprintf("%.2f", d.DistanceKm), fmt.Sprintf("%.1f", d.DurationMin),
 				strconv.Itoa(d.StartBattery), strconv.Itoa(d.EndBattery),
+				fmt.Sprintf("%.1f", d.MaxSpeedKmh), fmt.Sprintf("%.2f", d.RangeLostKm()), fmt.Sprintf("%.3f", d.EfficiencyRatio()),
 			})
 		}
 	case "charges":
@@ -448,12 +452,16 @@ func runExport(configPath string, args []string) error {
 		if err != nil {
 			return err
 		}
-		cw.Write([]string{"id", "start_time", "end_time", "location", "start_battery_pct", "end_battery_pct", "energy_added_kwh"})
+		cw.Write([]string{
+			"id", "start_time", "end_time", "location", "start_battery_pct", "end_battery_pct",
+			"charge_type", "energy_added_kwh", "energy_used_kwh", "max_charger_power_kw", "cost", "kwh_per_rated_km",
+		})
 		for _, c := range charges {
 			cw.Write([]string{
 				strconv.FormatInt(c.ID, 10), c.StartTime, c.EndTime, c.Location,
 				strconv.Itoa(c.StartBattery), strconv.Itoa(c.EndBattery),
-				fmt.Sprintf("%.2f", c.EnergyAddedKwh),
+				c.ChargeType(), fmt.Sprintf("%.2f", c.EnergyAddedKwh), fmt.Sprintf("%.2f", c.EnergyUsedKwh),
+				fmt.Sprintf("%.2f", c.MaxChargerPowerKw), fmt.Sprintf("%.2f", c.Cost), fmt.Sprintf("%.3f", c.KwhPerRatedKm()),
 			})
 		}
 	default:

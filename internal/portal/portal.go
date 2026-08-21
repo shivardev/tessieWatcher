@@ -86,18 +86,41 @@ type indexData struct {
 	LastChargeKwh  float64
 	LastChargeEnd  string
 	LastChargeLoc  string
-	RecentDrives   []recentDrive
-	LogLines       []string
+	// HasBattery/BatteryLevel/RatedRangeKm/IdealRangeKm/BatteryAt come
+	// from storage.Store.LatestBatteryReading - see there for which
+	// table it's sourced from and why. IdealRangeKm is Tesla's older,
+	// often-frozen range figure, shown alongside the "rated" one the
+	// same way TeslaMate's own vehicle status card does.
+	HasBattery    bool
+	BatteryLevel  int
+	RatedRangeKm  float64
+	IdealRangeKm  float64
+	BatteryAt     string
+	RecentDrives  []recentDrive
+	RecentCharges []recentCharge
+	LogLines      []string
 }
 
 type recentDrive struct {
-	StartTime    string
-	FromLoc      string
-	ToLoc        string
-	DistanceKm   float64
-	DurationMin  float64
-	StartBattery int
-	EndBattery   int
+	StartTime       string
+	FromLoc         string
+	ToLoc           string
+	DistanceKm      float64
+	DurationMin     float64
+	StartBattery    int
+	EndBattery      int
+	EfficiencyRatio float64
+}
+
+type recentCharge struct {
+	StartTime      string
+	Location       string
+	StartBattery   int
+	EndBattery     int
+	EnergyAddedKwh float64
+	ChargeType     string
+	MaxPowerKw     float64
+	Cost           float64
 }
 
 // stateBadgeClass buckets a raw states.state value into one of three CSS
@@ -194,6 +217,10 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
       </span>
     </div>
     {{if .HasState}}<div class="stat"><span class="label">Since</span><span class="value">{{.StateSince}}</span></div>{{end}}
+    {{if .HasBattery}}
+    <div class="stat"><span class="label">Battery</span><span class="value">{{.BatteryLevel}}%</span></div>
+    <div class="stat"><span class="label">Rated range</span><span class="value">{{printf "%.0f" .RatedRangeKm}} km{{if .IdealRangeKm}} <span style="color:var(--text-dim)">({{printf "%.0f" .IdealRangeKm}} km ideal)</span>{{end}}</span></div>
+    {{end}}
     <div class="stat"><span class="label">Drives today</span><span class="value">{{.TodayDrives}}</span></div>
     <div class="stat"><span class="label">Distance today</span><span class="value">{{printf "%.1f" .TodayKm}} km</span></div>
     {{if .HasLastCharge}}
@@ -210,9 +237,9 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 
   {{if .RecentDrives}}
   <h2>Recent drives</h2>
-  <div class="card" style="padding:0.5rem 1rem;">
+  <div class="card" style="padding:0.5rem 1rem; overflow-x:auto;">
     <table>
-      <tr><th>When</th><th>From</th><th>To</th><th class="num">km</th><th class="num">min</th><th class="num">%</th></tr>
+      <tr><th>When</th><th>From</th><th>To</th><th class="num">km</th><th class="num">min</th><th class="num">%</th><th class="num">eff.</th></tr>
       {{range .RecentDrives}}
       <tr>
         <td>{{.StartTime}}</td>
@@ -221,6 +248,27 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
         <td class="num">{{printf "%.1f" .DistanceKm}}</td>
         <td class="num">{{printf "%.0f" .DurationMin}}</td>
         <td class="num">{{.StartBattery}}&rarr;{{.EndBattery}}</td>
+        <td class="num">{{if .EfficiencyRatio}}{{printf "%.2f" .EfficiencyRatio}}{{else}}&mdash;{{end}}</td>
+      </tr>
+      {{end}}
+    </table>
+  </div>
+  {{end}}
+
+  {{if .RecentCharges}}
+  <h2>Recent charges</h2>
+  <div class="card" style="padding:0.5rem 1rem; overflow-x:auto;">
+    <table>
+      <tr><th>When</th><th>Where</th><th>Type</th><th class="num">%</th><th class="num">kWh</th><th class="num">max kW</th><th class="num">cost</th></tr>
+      {{range .RecentCharges}}
+      <tr>
+        <td>{{.StartTime}}</td>
+        <td>{{if .Location}}{{.Location}}{{else}}&mdash;{{end}}</td>
+        <td>{{.ChargeType}}</td>
+        <td class="num">{{.StartBattery}}&rarr;{{.EndBattery}}</td>
+        <td class="num">{{printf "%.1f" .EnergyAddedKwh}}</td>
+        <td class="num">{{printf "%.1f" .MaxPowerKw}}</td>
+        <td class="num">{{if .Cost}}{{printf "%.2f" .Cost}}{{else}}&mdash;{{end}}</td>
       </tr>
       {{end}}
     </table>
@@ -262,38 +310,52 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		FROM drives WHERE vehicle_id = ? AND status = 'closed' AND date(start_time) = ?
 	`, vehicleID, today).Scan(&data.TodayDrives, &data.TodayKm)
 
-	var lastEnd string
-	var lastLoc sql.NullString
-	err := s.store.DB().QueryRow(`
-		SELECT start_battery_level, end_battery_level, charge_energy_added_kwh, end_time, location
-		FROM charging_sessions WHERE vehicle_id = ? AND status = 'closed'
-		ORDER BY start_time DESC LIMIT 1
-	`, vehicleID).Scan(&data.LastChargeFrom, &data.LastChargeTo, &data.LastChargeKwh, &lastEnd, &lastLoc)
-	if err == nil {
+	if charges, err := s.store.ListCharges(vehicleID, 0); err != nil {
+		slog.Warn("portal: list charges failed", "error", err)
+	} else if len(charges) > 0 {
+		last := charges[0]
 		data.HasLastCharge = true
-		data.LastChargeEnd = lastEnd
-		data.LastChargeLoc = lastLoc.String
+		data.LastChargeFrom, data.LastChargeTo = last.StartBattery, last.EndBattery
+		data.LastChargeKwh = last.EnergyAddedKwh
+		data.LastChargeEnd = last.EndTime
+		data.LastChargeLoc = last.Location
+
+		max := 5
+		if len(charges) < max {
+			max = len(charges)
+		}
+		for _, c := range charges[:max] {
+			data.RecentCharges = append(data.RecentCharges, recentCharge{
+				StartTime: c.StartTime, Location: c.Location, StartBattery: c.StartBattery, EndBattery: c.EndBattery,
+				EnergyAddedKwh: c.EnergyAddedKwh, ChargeType: c.ChargeType(), MaxPowerKw: c.MaxChargerPowerKw, Cost: c.Cost,
+			})
+		}
 	}
 
-	rows, err := s.store.DB().Query(`
-		SELECT start_time, start_location, end_location, distance_km, duration_min, start_battery_level, end_battery_level
-		FROM drives WHERE vehicle_id = ? AND status = 'closed'
-		ORDER BY start_time DESC LIMIT 5
-	`, vehicleID)
-	if err != nil {
-		slog.Warn("portal: query recent drives failed", "error", err)
+	if drives, err := s.store.ListDrives(vehicleID, 0); err != nil {
+		slog.Warn("portal: list drives failed", "error", err)
 	} else {
-		defer rows.Close()
-		for rows.Next() {
-			var d recentDrive
-			var fromLoc, toLoc sql.NullString
-			if err := rows.Scan(&d.StartTime, &fromLoc, &toLoc, &d.DistanceKm, &d.DurationMin, &d.StartBattery, &d.EndBattery); err != nil {
-				slog.Warn("portal: scan recent drive failed", "error", err)
-				break
-			}
-			d.FromLoc, d.ToLoc = fromLoc.String, toLoc.String
-			data.RecentDrives = append(data.RecentDrives, d)
+		max := 5
+		if len(drives) < max {
+			max = len(drives)
 		}
+		for _, d := range drives[:max] {
+			data.RecentDrives = append(data.RecentDrives, recentDrive{
+				StartTime: d.StartTime, FromLoc: d.StartLocation, ToLoc: d.EndLocation,
+				DistanceKm: d.DistanceKm, DurationMin: d.DurationMin,
+				StartBattery: d.StartBattery, EndBattery: d.EndBattery, EfficiencyRatio: d.EfficiencyRatio(),
+			})
+		}
+	}
+
+	if ok, level, rangeKm, idealRangeKm, at, err := s.store.LatestBatteryReading(vehicleID); err != nil {
+		slog.Warn("portal: latest battery reading failed", "error", err)
+	} else if ok {
+		data.HasBattery = true
+		data.BatteryLevel = level
+		data.RatedRangeKm = rangeKm
+		data.IdealRangeKm = idealRangeKm
+		data.BatteryAt = at
 	}
 
 	var currentState, stateSince string
