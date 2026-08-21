@@ -1,0 +1,377 @@
+{
+  "id": null,
+  "uid": "teslalog-charging-stats",
+  "title": "teslalog: Charging Stats",
+  "description": "Aggregate charging stats (totals, cost, AC/DC split) - matching TeslaMate's own Charging Stats dashboard. Skips its charge heatmap and geo-map-by-kWh panels (lower value for the effort, and depend on panel types/plugins not confirmed available here) - see teslalog-charges.json for the individual-session list this aggregates.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "# of charges",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total energy added",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 5,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "rawQueryText": "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total cost",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 10,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "rawQueryText": "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Ø cost / session",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(AVG(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "rawQueryText": "SELECT COALESCE(AVG(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Ø cost / kWh",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE(SUM(cost) / SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND charge_energy_added_kwh > 0",
+          "rawQueryText": "SELECT COALESCE(SUM(cost) / SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND charge_energy_added_kwh > 0",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "AC/DC - Energy added",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM(charge_energy_added_kwh), 1) AS \"kWh\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\"",
+          "rawQueryText": "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM(charge_energy_added_kwh), 1) AS \"kWh\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\"",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "kwatth"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": true,
+          "calcs": []
+        },
+        "pieType": "pie",
+        "displayLabels": [
+          "name",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "AC/DC - Duration",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM((julianday(end_time) - julianday(start_time)) * 1440), 0) AS \"Minutes\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\"",
+          "rawQueryText": "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM((julianday(end_time) - julianday(start_time)) * 1440), 0) AS \"Minutes\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\"",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": true,
+          "calcs": []
+        },
+        "pieType": "pie",
+        "displayLabels": [
+          "name",
+          "value"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    }
+  ]
+}
