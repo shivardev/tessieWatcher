@@ -10,7 +10,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,7 +24,7 @@ import (
 	"teslalog/internal/tesla"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -169,7 +168,7 @@ func runAuth(configPath string) error {
 		return err
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := tesla.NewHardenedClient(30 * time.Second)
 	tokens, err := tesla.ExchangeCode(httpClient, cfg.API, p, code)
 	if err != nil {
 		return fmt.Errorf("exchange code for tokens: %w", err)

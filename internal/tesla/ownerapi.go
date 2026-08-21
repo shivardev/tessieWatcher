@@ -49,7 +49,7 @@ func NewClient(api config.APIConfig, store TokenStore) (*Client, error) {
 		return nil, fmt.Errorf("load tokens (run `teslalog auth` first): %w", err)
 	}
 	return &Client{
-		http:   &http.Client{Timeout: 30 * time.Second},
+		http:   NewHardenedClient(30 * time.Second),
 		api:    api,
 		store:  store,
 		tokens: ts,

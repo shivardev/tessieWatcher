@@ -459,6 +459,49 @@ That's precisely why `internal/tesla/` is isolated from everything else —
 swapping to a different Tesla API surface later doesn't touch your
 database, drive detection, or backups.
 
+### Troubleshooting: `HTTP 403 forbidden, see fleet-api docs`
+
+If `journalctl -u teslalog` shows `select vehicle: list vehicles: HTTP 403:
+{"response":null,"error":"forbidden, see https://developer.tesla.com/docs/fleet-api"...}`,
+this is **not** teslalog calling the Fleet API (it never does — always
+`owner-api.teslamotors.com` with `client_id=ownerapi`, same as TeslaMate),
+and it's usually not your token being simply expired either — you can
+confirm which by curling both a trivial endpoint and the failing one with
+your own token straight from `/var/lib/teslalog/tokens.json`:
+
+```sh
+TOKEN=$(sudo grep -o '"access_token": *"[^"]*"' /var/lib/teslalog/tokens.json | cut -d'"' -f4)
+curl -s -w "\nHTTP %{http_code}\n" -H "Authorization: Bearer $TOKEN" https://owner-api.teslamotors.com/api/1/users/me
+curl -s -w "\nHTTP %{http_code}\n" -H "Authorization: Bearer $TOKEN" https://owner-api.teslamotors.com/api/1/products
+```
+
+If **both** fail with the identical error (even via plain `curl`, not just
+teslalog), it's Tesla's edge fingerprinting the TLS handshake used to
+*mint or refresh* the token, and rejecting every later call made with a
+token minted that way — regardless of what makes the later call. TeslaMate
+hit and fixed this exact symptom in June 2026
+([teslamate-org/teslamate#5399](https://github.com/teslamate-org/teslamate/issues/5399),
+fixed by [#5406](https://github.com/teslamate-org/teslamate/pull/5406):
+forcing HTTP/2 + TLS 1.3 for the token-minting client); a Home Assistant
+integration maintainer described the mechanism directly in
+[alandtse/tesla#1200](https://github.com/alandtse/tesla/pull/1200): *"the
+403 is not the API dying and not the token being invalid, it is Tesla
+refusing the client that minted it."* `internal/tesla/httpclient.go`'s
+`NewHardenedClient` (used for every Tesla API call and token
+exchange/refresh, v0.2.2+) forces TLS 1.3 for exactly this reason. If
+you're already on v0.2.2+ and still hit this:
+
+1. `sudo teslalog update -config /etc/teslalog/config.toml` to make sure
+   you're on the latest (Tesla has adjusted this fingerprint check more
+   than once — see the GitHub issues above for the ongoing pattern).
+2. Re-run `teslalog auth` for a completely fresh token pair minted through
+   the fixed client — a token already flagged by the old client's
+   fingerprint may not "heal" itself via refresh alone.
+3. If it's still happening after both, it may be a genuinely new
+   fingerprint requirement beyond TLS version/ALPN (cipher suite order,
+   extensions, etc.) — check for a newer TeslaMate/alandtse-tesla fix
+   first, since they hit these before we would.
+
 ## Configuration
 
 See `config.example.toml` for every field with inline docs. Key ones:
