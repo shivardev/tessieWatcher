@@ -1,0 +1,303 @@
+{
+  "id": null,
+  "uid": "teslalog-overview",
+  "title": "teslalog: Overview",
+  "description": "A landing dashboard combining lifetime/today stats already computed elsewhere - matching TeslaMate's own Overview dashboard's role. teslalog's built-in portal already covers this same ground for a quick phone/laptop check (and needs no Grafana at all) - this exists for people who'd rather start from Grafana every time.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Vehicle",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT display_name AS \"Name\", model AS \"Model\" FROM vehicles LIMIT 1",
+          "rawQueryText": "SELECT display_name AS \"Name\", model AS \"Model\" FROM vehicles LIMIT 1",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Lifetime odometer",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT end_odometer_km AS value FROM drives WHERE status = 'closed' ORDER BY end_time DESC LIMIT 1",
+          "rawQueryText": "SELECT end_odometer_km AS value FROM drives WHERE status = 'closed' ORDER BY end_time DESC LIMIT 1",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "lengthkm",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Total drives",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Total charges",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Software updates",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM software_updates",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Where to look next",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT 'Drives' AS \"Dashboard\", 'Every closed drive, click a date for the route map' AS \"What it shows\"\nUNION ALL SELECT 'Charges', 'Every closed charging session'\nUNION ALL SELECT 'Charging Stats', 'AC/DC split, totals, cost'\nUNION ALL SELECT 'Timeline', 'State-machine history as colored bands'\nUNION ALL SELECT 'Statistics', 'Per-month driving trends'\nUNION ALL SELECT 'Locations', 'Most-visited places'\nUNION ALL SELECT 'Vampire Drain', 'Battery lost while parked'\nUNION ALL SELECT 'Projected Range', 'Range at 100% vs mileage - battery health trend'\nUNION ALL SELECT 'Efficiency', 'Derived efficiency figures'\nUNION ALL SELECT 'Mileage', 'Cumulative odometer'\nUNION ALL SELECT 'Updates', 'Software update history'",
+          "rawQueryText": "SELECT 'Drives' AS \"Dashboard\", 'Every closed drive, click a date for the route map' AS \"What it shows\"\nUNION ALL SELECT 'Charges', 'Every closed charging session'\nUNION ALL SELECT 'Charging Stats', 'AC/DC split, totals, cost'\nUNION ALL SELECT 'Timeline', 'State-machine history as colored bands'\nUNION ALL SELECT 'Statistics', 'Per-month driving trends'\nUNION ALL SELECT 'Locations', 'Most-visited places'\nUNION ALL SELECT 'Vampire Drain', 'Battery lost while parked'\nUNION ALL SELECT 'Projected Range', 'Range at 100% vs mileage - battery health trend'\nUNION ALL SELECT 'Efficiency', 'Derived efficiency figures'\nUNION ALL SELECT 'Mileage', 'Cumulative odometer'\nUNION ALL SELECT 'Updates', 'Software update history'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
