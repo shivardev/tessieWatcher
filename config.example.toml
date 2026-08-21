@@ -51,6 +51,12 @@ interval       = "24h"
 # vehicle has been and when. Do not port-forward this address.
 enabled = true
 addr    = ":8083"
+# "metric" (default) or "imperial" - only changes how this page
+# displays distances (km vs mi). Every distance value in the database
+# itself is always stored in km regardless of this setting, so
+# changing it later never reinterprets existing data - it only changes
+# what this page shows.
+units   = "metric"
 
 [geocoding]
 # Off by default. If enabled, a drive/charge location that doesn't match

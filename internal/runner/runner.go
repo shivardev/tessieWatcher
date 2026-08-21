@@ -81,7 +81,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		logBuf = portal.NewLogBuffer(200)
 		slog.SetDefault(slog.New(teeHandler{slog.NewTextHandler(os.Stderr, nil), logBuf.Handler()}))
 
-		srv := portal.New(store, cfg.Database, logBuf)
+		srv := portal.New(store, cfg.Database, logBuf, cfg.Portal.Units)
 		go func() {
 			if err := srv.Run(ctx, cfg.Portal.Addr); err != nil {
 				slog.Error("portal server failed", "error", err)

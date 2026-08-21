@@ -76,6 +76,12 @@ type PortalConfig struct {
 	// interfaces - reachable from other devices on the LAN) or
 	// "127.0.0.1:8083" (this machine only).
 	Addr string
+	// Units is "metric" (default, matching every distance value stored
+	// in the database, which is always km regardless of this setting)
+	// or "imperial" - only ever affects how the portal's own HTML page
+	// displays numbers; it never changes what's written to storage, so
+	// switching it later doesn't reinterpret any existing data.
+	Units string
 }
 
 // VehicleConfig holds user-supplied (not API-reported) vehicle facts.
@@ -187,6 +193,7 @@ type rawConfig struct {
 	Portal struct {
 		Enabled *bool  `toml:"enabled"`
 		Addr    string `toml:"addr"`
+		Units   string `toml:"units"`
 	} `toml:"portal"`
 
 	Geocoding struct {
@@ -253,6 +260,7 @@ func Default() Config {
 			// config.toml if this box isn't on a network you trust.
 			Enabled: true,
 			Addr:    ":8083",
+			Units:   "metric",
 		},
 		Geocoding: GeocodingConfig{
 			Enabled:   false, // opt-in: a third-party network dependency, see GeocodingConfig's doc comment
@@ -356,6 +364,14 @@ func Load(path string) (Config, error) {
 	}
 	if raw.Portal.Addr != "" {
 		cfg.Portal.Addr = raw.Portal.Addr
+	}
+	if raw.Portal.Units != "" {
+		switch raw.Portal.Units {
+		case "metric", "imperial":
+			cfg.Portal.Units = raw.Portal.Units
+		default:
+			return cfg, fmt.Errorf(`portal.units: must be "metric" or "imperial", got %q`, raw.Portal.Units)
+		}
 	}
 
 	if raw.Geocoding.Enabled != nil {

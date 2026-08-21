@@ -39,17 +39,41 @@ import (
 // "/download" (a fresh database snapshot), "/api/status" (cheap live
 // status JSON), and "/api/meta" (cheap freshness-check JSON).
 type Server struct {
-	store  *storage.Store
-	dbPath string
-	logs   *LogBuffer
+	store    *storage.Store
+	dbPath   string
+	logs     *LogBuffer
+	imperial bool
 }
 
 // New constructs a Server. store is used read-only, for the status line
 // on "/"; dbPath is snapshotted fresh on every "/download" request. logs
 // is optional (nil is fine, e.g. in tests) - when provided, its recent
-// lines render in a "Recent activity" section on "/".
-func New(store *storage.Store, dbPath string, logs *LogBuffer) *Server {
-	return &Server{store: store, dbPath: dbPath, logs: logs}
+// lines render in a "Recent activity" section on "/". units is
+// config.PortalConfig.Units ("metric" or "imperial", anything else -
+// including "" - behaves as "metric"); it only ever changes how "/"
+// displays numbers (mi instead of km) - stored values, /download's
+// snapshot, and /api/status's JSON are always km, matching every other
+// distance value in the database.
+func New(store *storage.Store, dbPath string, logs *LogBuffer, units string) *Server {
+	return &Server{store: store, dbPath: dbPath, logs: logs, imperial: units == "imperial"}
+}
+
+const kmPerMi = 1.609344
+
+func (s *Server) distanceUnit() string {
+	if s.imperial {
+		return "mi"
+	}
+	return "km"
+}
+
+// toDisplayDistance converts a stored km value to the unit the portal
+// page should show, given s.imperial.
+func (s *Server) toDisplayDistance(km float64) float64 {
+	if s.imperial {
+		return km / kmPerMi
+	}
+	return km
 }
 
 func (s *Server) handler() http.Handler {
@@ -103,7 +127,13 @@ func (s *Server) Run(ctx context.Context, addr string) error {
 }
 
 type indexData struct {
-	VehicleName    string
+	VehicleName string
+	// DistanceUnit is "km" or "mi" (see Server.imperial) - every *Km-
+	// suffixed field below is already converted to whichever this is
+	// by the time it lands in this struct; the field names keep the
+	// Km suffix because that's what they're computed from, not
+	// necessarily what they're displayed as.
+	DistanceUnit   string
 	HasState       bool
 	CurrentState   string
 	StateSince     string
@@ -265,10 +295,10 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
     {{if .HasSleepStats}}<div class="stat"><span class="label">Asleep (last 24h)</span><span class="value">{{printf "%.0f" .AsleepPct24h}}%</span></div>{{end}}
     {{if .HasBattery}}
     <div class="stat"><span class="label">Battery</span><span class="value">{{.BatteryLevel}}%</span></div>
-    <div class="stat"><span class="label">Rated range</span><span class="value">{{printf "%.0f" .RatedRangeKm}} km{{if .IdealRangeKm}} <span style="color:var(--text-dim)">({{printf "%.0f" .IdealRangeKm}} km ideal)</span>{{end}}</span></div>
+    <div class="stat"><span class="label">Rated range</span><span class="value">{{printf "%.0f" .RatedRangeKm}} {{.DistanceUnit}}{{if .IdealRangeKm}} <span style="color:var(--text-dim)">({{printf "%.0f" .IdealRangeKm}} {{.DistanceUnit}} ideal)</span>{{end}}</span></div>
     {{end}}
     <div class="stat"><span class="label">Drives today</span><span class="value">{{.TodayDrives}}</span></div>
-    <div class="stat"><span class="label">Distance today</span><span class="value">{{printf "%.1f" .TodayKm}} km</span></div>
+    <div class="stat"><span class="label">Distance today</span><span class="value">{{printf "%.1f" .TodayKm}} {{.DistanceUnit}}</span></div>
     {{if .HasLastCharge}}
     <div class="stat">
       <span class="label">Last charge</span>
@@ -283,8 +313,8 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 
   {{if .HasLifetime}}
   <div class="card">
-    <div class="stat"><span class="label">Lifetime odometer</span><span class="value">{{printf "%.0f" .OdometerKm}} km</span></div>
-    <div class="stat"><span class="label">Lifetime drives</span><span class="value">{{.TotalDrives}} &middot; {{printf "%.0f" .TotalKm}} km</span></div>
+    <div class="stat"><span class="label">Lifetime odometer</span><span class="value">{{printf "%.0f" .OdometerKm}} {{.DistanceUnit}}</span></div>
+    <div class="stat"><span class="label">Lifetime drives</span><span class="value">{{.TotalDrives}} &middot; {{printf "%.0f" .TotalKm}} {{.DistanceUnit}}</span></div>
     <div class="stat"><span class="label">Lifetime charging</span><span class="value">{{.TotalCharges}} &middot; {{printf "%.0f" .TotalKwh}} kWh</span></div>
   </div>
   {{end}}
@@ -293,7 +323,7 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
   <h2>Recent drives</h2>
   <div class="card" style="padding:0.5rem 1rem; overflow-x:auto;">
     <table>
-      <tr><th>When</th><th>From</th><th>To</th><th class="num">km</th><th class="num">min</th><th class="num">%</th><th class="num">eff.</th></tr>
+      <tr><th>When</th><th>From</th><th>To</th><th class="num">{{.DistanceUnit}}</th><th class="num">min</th><th class="num">%</th><th class="num">eff.</th></tr>
       {{range .RecentDrives}}
       <tr>
         <td>{{.StartTime}}</td>
@@ -443,7 +473,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data := indexData{VehicleName: "Vehicle"}
+	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit()}
 
 	var vehicleID int64
 	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)
@@ -464,18 +494,20 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("portal: lifetime stats failed", "error", err)
 	} else {
 		data.HasLifetime = lt.TotalDrives > 0 || lt.OdometerKm > 0
-		data.OdometerKm = lt.OdometerKm
+		data.OdometerKm = s.toDisplayDistance(lt.OdometerKm)
 		data.TotalDrives = lt.TotalDrives
-		data.TotalKm = lt.TotalKm
+		data.TotalKm = s.toDisplayDistance(lt.TotalKm)
 		data.TotalCharges = lt.TotalCharges
 		data.TotalKwh = lt.TotalKwh
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
+	var todayKm float64
 	_ = s.store.DB().QueryRow(`
 		SELECT COUNT(*), COALESCE(SUM(distance_km), 0)
 		FROM drives WHERE vehicle_id = ? AND status = 'closed' AND date(start_time) = ?
-	`, vehicleID, today).Scan(&data.TodayDrives, &data.TodayKm)
+	`, vehicleID, today).Scan(&data.TodayDrives, &todayKm)
+	data.TodayKm = s.toDisplayDistance(todayKm)
 
 	if charges, err := s.store.ListCharges(vehicleID, 0); err != nil {
 		slog.Warn("portal: list charges failed", "error", err)
@@ -509,7 +541,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		for _, d := range drives[:max] {
 			data.RecentDrives = append(data.RecentDrives, recentDrive{
 				StartTime: d.StartTime, FromLoc: d.StartLocation, ToLoc: d.EndLocation,
-				DistanceKm: d.DistanceKm, DurationMin: d.DurationMin,
+				DistanceKm: s.toDisplayDistance(d.DistanceKm), DurationMin: d.DurationMin,
 				StartBattery: d.StartBattery, EndBattery: d.EndBattery, EfficiencyRatio: d.EfficiencyRatio(),
 			})
 		}
@@ -520,8 +552,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	} else if ok {
 		data.HasBattery = true
 		data.BatteryLevel = level
-		data.RatedRangeKm = rangeKm
-		data.IdealRangeKm = idealRangeKm
+		data.RatedRangeKm = s.toDisplayDistance(rangeKm)
+		data.IdealRangeKm = s.toDisplayDistance(idealRangeKm)
 		data.BatteryAt = at
 	}
 

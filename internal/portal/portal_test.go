@@ -44,7 +44,7 @@ func TestIndexShowsVehicleAndTodayStats(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -64,9 +64,50 @@ func TestIndexShowsVehicleAndTodayStats(t *testing.T) {
 	}
 }
 
+func TestIndexShowsMilesWhenUnitsIsImperial(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	vehicleID, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN1", DisplayName: "My Model 3"})
+	if err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	now := time.Now().UTC()
+	// 16.09344 km is exactly 10 mi - an unambiguous round-trip check
+	// that the conversion (not just the unit label) actually happened.
+	driveID, err := store.OpenDrive(storage.DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 100, BatteryLevel: 80})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 116.09344, BatteryLevel: 75}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+
+	srv := New(store, dbPath, nil, "imperial")
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, " km") {
+		t.Fatalf("expected no km units on an imperial-mode page, got: %s", body)
+	}
+	if !strings.Contains(body, "10.0 mi") {
+		t.Fatalf("expected today's 10.0 mi distance in page, got: %s", body)
+	}
+}
+
 func TestIndexWithNoVehicleYetDoesNotError(t *testing.T) {
 	store := openTestStore(t)
-	srv := New(store, "unused.db", nil)
+	srv := New(store, "unused.db", nil, "metric")
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -90,7 +131,7 @@ func TestDownloadServesAValidSQLiteSnapshot(t *testing.T) {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/download", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -144,7 +185,7 @@ func TestIndexShowsCurrentStateAndRecentActivity(t *testing.T) {
 	logger := slog.New(logs.Handler())
 	logger.Info("drive started", "drive_id", 1)
 
-	srv := New(store, dbPath, logs)
+	srv := New(store, dbPath, logs, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -164,7 +205,7 @@ func TestIndexWithNoStateYetShowsPlaceholder(t *testing.T) {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
 
-	srv := New(store, "unused.db", nil)
+	srv := New(store, "unused.db", nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -200,7 +241,7 @@ func TestIndexShowsRecentDrivesWithLocations(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -247,7 +288,7 @@ func TestIndexShowsBatteryAndRecentCharges(t *testing.T) {
 		t.Fatalf("close charging session: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -287,7 +328,7 @@ func TestIndexShowsFirmwareAndLifetimeTotals(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -320,7 +361,7 @@ func TestIndexShowsAsleepPercentage(t *testing.T) {
 		t.Fatalf("open asleep state: %v", err)
 	}
 
-	srv := New(store, dbPath, nil)
+	srv := New(store, dbPath, nil, "metric")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)

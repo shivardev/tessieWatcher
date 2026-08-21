@@ -72,6 +72,35 @@ func TestLoadOmittedBooleansKeepDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPortalUnitsOverride(t *testing.T) {
+	path := writeTemp(t, "[portal]\nunits = \"imperial\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Portal.Units != "imperial" {
+		t.Fatalf("expected portal.units override to apply, got %q", cfg.Portal.Units)
+	}
+}
+
+func TestLoadPortalUnitsOmittedKeepsMetricDefault(t *testing.T) {
+	path := writeTemp(t, "database = \"/tmp/custom.db\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Portal.Units != "metric" {
+		t.Fatalf("expected default portal.units \"metric\", got %q", cfg.Portal.Units)
+	}
+}
+
+func TestLoadPortalUnitsRejectsInvalidValue(t *testing.T) {
+	path := writeTemp(t, "[portal]\nunits = \"furlongs\"\n")
+	if _, err := Load(path); err == nil {
+		t.Fatalf("expected an error for an invalid portal.units value, got none")
+	}
+}
+
 func TestLoadVehicleAndChargingOverrides(t *testing.T) {
 	path := writeTemp(t, `
 [vehicle]
