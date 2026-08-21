@@ -139,7 +139,16 @@ CREATE TABLE IF NOT EXISTS positions (
 	tpms_pressure_fr         REAL,
 	tpms_pressure_rl         REAL,
 	tpms_pressure_rr         REAL,
-	shift_state              TEXT
+	shift_state              TEXT,
+	-- Not tracked by TeslaMate at all (it reads these live off
+	-- vehicle_state only to decide sleep-safety, never persists them) -
+	-- useful here for diagnosing "why won't my car sleep" after the
+	-- fact, independent of any real-time decision.
+	sentry_mode              INTEGER,
+	is_user_present          INTEGER,
+	valet_mode               INTEGER,
+	-- "off"/"dog"/"camp"/"on" - also not tracked by TeslaMate.
+	climate_keeper_mode      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_positions_drive ON positions(drive_id, timestamp);
 
@@ -194,7 +203,11 @@ CREATE TABLE IF NOT EXISTS charging_samples (
 	ideal_range_km           REAL,
 	battery_heater_on        INTEGER,
 	not_enough_power_to_heat INTEGER,
-	outside_temp_c           REAL
+	outside_temp_c           REAL,
+	-- Not tracked by TeslaMate at all - distinguishes "charging stopped
+	-- because it hit the limit" from "unplugged", which TeslaMate's own
+	-- data can't tell apart.
+	charge_limit_soc         INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_charging_samples_session ON charging_samples(charging_session_id, timestamp);
 

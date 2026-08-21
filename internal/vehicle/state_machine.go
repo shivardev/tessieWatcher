@@ -61,14 +61,16 @@ type Snapshot struct {
 	// as three separate figures (they diverge, especially on packs
 	// where "ideal" range is deprecated/frozen) plus raw vs. usable
 	// battery percentage.
-	BatteryLevel         int
-	UsableBatteryLevel   int
-	RangeKm              float64 // rated_battery_range_km
-	IdealRangeKm         float64
-	EstRangeKm           float64
-	BatteryHeater        bool
-	BatteryHeaterOn      bool
-	BatteryHeaterNoPower bool
+	BatteryLevel       int
+	UsableBatteryLevel int
+	RangeKm            float64 // rated_battery_range_km
+	IdealRangeKm       float64
+	EstRangeKm         float64
+	// BatteryHeaterOn is the only real API field here - Tesla's actual
+	// charge_state has no separate bare "battery_heater" (confirmed
+	// against the community API reference); "no power to heat" is
+	// NotEnoughPowerToHeat below, a genuinely distinct real field.
+	BatteryHeaterOn bool
 
 	// Charging-specific.
 	ChargeEnergyAddedKwh float64
@@ -82,6 +84,9 @@ type Snapshot struct {
 	FastChargerBrand     string
 	FastChargerType      string
 	NotEnoughPowerToHeat bool
+	// ChargeLimitSoc distinguishes "charging stopped because it hit the
+	// limit" from "unplugged" - not tracked by TeslaMate at all.
+	ChargeLimitSoc int
 
 	// Climate.
 	OutsideTempC          float64
@@ -92,9 +97,19 @@ type Snapshot struct {
 	IsClimateOn           bool
 	IsRearDefrosterOn     bool
 	IsFrontDefrosterOn    bool
+	// ClimateKeeperMode: "off"/"dog"/"camp"/"on" - not tracked by TeslaMate.
+	ClimateKeeperMode string
 
 	// Tire pressures (bar), from vehicle_state.tpms_pressure_*.
 	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR float64
+
+	// SentryMode/IsUserPresent/ValetMode: TeslaMate reads these live only
+	// to decide sleep-safety, never persists them. Stored here so the
+	// data itself can explain "why won't my car sleep" independent of
+	// any real-time decision - see rawVehicleData's doc comments.
+	SentryMode    bool
+	IsUserPresent bool
+	ValetMode     bool
 
 	// Optional software-update tracking.
 	UpdateStatus  string // "", "available", "downloading", "installing"

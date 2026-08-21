@@ -307,6 +307,12 @@ type rawVehicleData struct {
 			FastChargerBrand     string  `json:"fast_charger_brand"`
 			FastChargerType      string  `json:"fast_charger_type"`
 			NotEnoughPowerToHeat bool    `json:"not_enough_power_to_heat"`
+			// ChargeLimitSoc: TeslaMate itself never stores this (checked
+			// its real schemas), but it's part of the same charge_state
+			// object already being polled - storing it distinguishes
+			// "charging stopped because it hit the limit" from "unplugged",
+			// which TeslaMate's own data can't tell apart.
+			ChargeLimitSoc int `json:"charge_limit_soc"`
 		} `json:"charge_state"`
 		ClimateState struct {
 			InsideTemp           float64 `json:"inside_temp"`
@@ -317,6 +323,9 @@ type rawVehicleData struct {
 			FanStatus            int     `json:"fan_status"`
 			IsRearDefrosterOn    bool    `json:"is_rear_defroster_on"`
 			IsFrontDefrosterOn   bool    `json:"is_front_defroster_on"`
+			// ClimateKeeperMode: "off"/"dog"/"camp"/"on" - not tracked by
+			// TeslaMate at all, but it's in the same climate_state object.
+			ClimateKeeperMode string `json:"climate_keeper_mode"`
 		} `json:"climate_state"`
 		VehicleState struct {
 			Odometer       float64 `json:"odometer"`
@@ -325,6 +334,15 @@ type rawVehicleData struct {
 			TpmsPressureFR float64 `json:"tpms_pressure_fr"`
 			TpmsPressureRL float64 `json:"tpms_pressure_rl"`
 			TpmsPressureRR float64 `json:"tpms_pressure_rr"`
+			// SentryMode/IsUserPresent/ValetMode: TeslaMate reads these off
+			// vehicle_state only to decide whether it's safe to let the
+			// car sleep, but never persists them anywhere. teslalog stores
+			// them - useful for diagnosing "why won't my car sleep"
+			// (sentry mode legitimately keeps it awake) independent of any
+			// live decision-making, which is a gap TeslaMate itself has.
+			SentryMode     bool `json:"sentry_mode"`
+			IsUserPresent  bool `json:"is_user_present"`
+			ValetMode      bool `json:"valet_mode"`
 			SoftwareUpdate struct {
 				Status  string `json:"status"`
 				Version string `json:"version"`
@@ -415,6 +433,7 @@ func (c *Client) VehicleData(ctx context.Context, id int64) (vehicle.Snapshot, V
 		FastChargerPresent:   cs.FastChargerPresent,
 		FastChargerBrand:     cs.FastChargerBrand,
 		FastChargerType:      cs.FastChargerType,
+		ChargeLimitSoc:       cs.ChargeLimitSoc,
 
 		OutsideTempC:          cl.OutsideTemp,
 		InsideTempC:           cl.InsideTemp,
@@ -424,11 +443,16 @@ func (c *Client) VehicleData(ctx context.Context, id int64) (vehicle.Snapshot, V
 		IsClimateOn:           cl.IsClimateOn,
 		IsRearDefrosterOn:     cl.IsRearDefrosterOn,
 		IsFrontDefrosterOn:    cl.IsFrontDefrosterOn,
+		ClimateKeeperMode:     cl.ClimateKeeperMode,
 
 		TpmsPressureFL: vs.TpmsPressureFL,
 		TpmsPressureFR: vs.TpmsPressureFR,
 		TpmsPressureRL: vs.TpmsPressureRL,
 		TpmsPressureRR: vs.TpmsPressureRR,
+
+		SentryMode:    vs.SentryMode,
+		IsUserPresent: vs.IsUserPresent,
+		ValetMode:     vs.ValetMode,
 
 		UpdateStatus:  vs.SoftwareUpdate.Status,
 		UpdateVersion: vs.SoftwareUpdate.Version,

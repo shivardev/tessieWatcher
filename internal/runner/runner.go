@@ -432,7 +432,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				FastChargerType: s.FastChargerType,
 				EnergyAddedKwh:  s.ChargeEnergyAddedKwh, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
 				BatteryHeaterOn: s.BatteryHeaterOn, NotEnoughPowerToHeat: s.NotEnoughPowerToHeat,
-				OutsideTempC: s.OutsideTempC,
+				OutsideTempC: s.OutsideTempC, ChargeLimitSoc: s.ChargeLimitSoc,
 			}); err != nil {
 				return fmt.Errorf("append charging sample: %w", err)
 			}
@@ -572,6 +572,9 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 		TpmsPressureRL: s.TpmsPressureRL, TpmsPressureRR: s.TpmsPressureRR,
 
 		ShiftState: s.ShiftState,
+
+		SentryMode: s.SentryMode, IsUserPresent: s.IsUserPresent, ValetMode: s.ValetMode,
+		ClimateKeeperMode: s.ClimateKeeperMode,
 	}
 }
 

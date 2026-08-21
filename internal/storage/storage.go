@@ -80,6 +80,11 @@ var columnMigrations = []string{
 	`ALTER TABLE drives ADD COLUMN start_location TEXT`,
 	`ALTER TABLE drives ADD COLUMN end_location TEXT`,
 	`ALTER TABLE charging_sessions ADD COLUMN location TEXT`,
+	`ALTER TABLE positions ADD COLUMN sentry_mode INTEGER`,
+	`ALTER TABLE positions ADD COLUMN is_user_present INTEGER`,
+	`ALTER TABLE positions ADD COLUMN valet_mode INTEGER`,
+	`ALTER TABLE positions ADD COLUMN climate_keeper_mode TEXT`,
+	`ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -305,6 +310,13 @@ type PositionSample struct {
 	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR float64
 
 	ShiftState string
+
+	// Not tracked by TeslaMate at all - see schema.go's positions table
+	// comment for why they're here anyway.
+	SentryMode        bool
+	IsUserPresent     bool
+	ValetMode         bool
+	ClimateKeeperMode string
 }
 
 // AppendPosition records one GPS/telemetry sample for an open drive.
@@ -317,15 +329,15 @@ func (s *Store) AppendPosition(p PositionSample) error {
 			outside_temp_c, inside_temp_c, fan_status, driver_temp_setting_c, passenger_temp_setting_c,
 			is_climate_on, is_rear_defroster_on, is_front_defroster_on,
 			tpms_pressure_fl, tpms_pressure_fr, tpms_pressure_rl, tpms_pressure_rr,
-			shift_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			shift_state, sentry_mode, is_user_present, valet_mode, climate_keeper_mode
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, p.DriveID, p.VehicleID, fmtTime(p.Time), p.Lat, p.Lng, p.SpeedKmh,
 		p.Heading, p.ElevationM, p.PowerKw, p.OdometerKm,
 		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm, boolToInt(p.BatteryHeaterOn),
 		p.OutsideTempC, p.InsideTempC, p.FanStatus, p.DriverTempSettingC, p.PassengerTempSettingC,
 		boolToInt(p.IsClimateOn), boolToInt(p.IsRearDefrosterOn), boolToInt(p.IsFrontDefrosterOn),
 		p.TpmsPressureFL, p.TpmsPressureFR, p.TpmsPressureRL, p.TpmsPressureRR,
-		p.ShiftState)
+		p.ShiftState, boolToInt(p.SentryMode), boolToInt(p.IsUserPresent), boolToInt(p.ValetMode), nullIfEmpty(p.ClimateKeeperMode))
 	if err != nil {
 		return fmt.Errorf("append position: %w", err)
 	}
@@ -501,6 +513,9 @@ type ChargingSample struct {
 	BatteryHeaterOn      bool
 	NotEnoughPowerToHeat bool
 	OutsideTempC         float64
+	// ChargeLimitSoc - not tracked by TeslaMate at all, see schema.go's
+	// charging_samples table comment for why it's worth having anyway.
+	ChargeLimitSoc int
 }
 
 func (s *Store) AppendChargingSample(c ChargingSample) error {
@@ -511,14 +526,14 @@ func (s *Store) AppendChargingSample(c ChargingSample) error {
 			charger_power_kw, charger_voltage, charger_actual_current, charger_pilot_current,
 			charger_phases, conn_charge_cable, fast_charger_present, fast_charger_brand, fast_charger_type,
 			charge_energy_added_kwh, range_km, ideal_range_km,
-			battery_heater_on, not_enough_power_to_heat, outside_temp_c
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			battery_heater_on, not_enough_power_to_heat, outside_temp_c, charge_limit_soc
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, c.ChargingSessionID, c.VehicleID, fmtTime(c.Time),
 		c.BatteryLevel, c.UsableBatteryLevel,
 		c.ChargerPowerKw, c.ChargerVoltage, c.ChargerCurrent, c.ChargerPilotCurrent,
 		c.ChargerPhases, c.ConnChargeCable, boolToInt(c.FastChargerPresent), c.FastChargerBrand, c.FastChargerType,
 		c.EnergyAddedKwh, c.RangeKm, c.IdealRangeKm,
-		boolToInt(c.BatteryHeaterOn), boolToInt(c.NotEnoughPowerToHeat), c.OutsideTempC)
+		boolToInt(c.BatteryHeaterOn), boolToInt(c.NotEnoughPowerToHeat), c.OutsideTempC, c.ChargeLimitSoc)
 	return err
 }
 

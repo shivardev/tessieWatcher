@@ -226,3 +226,54 @@ func TestBatterySamplesAndSoftwareUpdates(t *testing.T) {
 		t.Fatalf("expected status 'installed', got %q", status)
 	}
 }
+
+func TestPositionCarriesSentryValetKeeperModeFields(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN5", TeslaID: "5", DisplayName: "Car"})
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: time.Now().UTC(), OdometerKm: 10})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+
+	if err := s.AppendPosition(PositionSample{
+		DriveID: driveID, VehicleID: vehicleID, Time: time.Now().UTC(),
+		SentryMode: true, IsUserPresent: true, ValetMode: false, ClimateKeeperMode: "dog",
+	}); err != nil {
+		t.Fatalf("append position: %v", err)
+	}
+
+	var sentry, present, valet int
+	var keeper string
+	if err := s.db.QueryRow(`
+		SELECT sentry_mode, is_user_present, valet_mode, climate_keeper_mode FROM positions WHERE drive_id = ?
+	`, driveID).Scan(&sentry, &present, &valet, &keeper); err != nil {
+		t.Fatalf("query position: %v", err)
+	}
+	if sentry != 1 || present != 1 || valet != 0 || keeper != "dog" {
+		t.Fatalf("unexpected values: sentry=%d present=%d valet=%d keeper=%q", sentry, present, valet, keeper)
+	}
+}
+
+func TestChargingSampleCarriesChargeLimitSoc(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN6", TeslaID: "6", DisplayName: "Car"})
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: time.Now().UTC(), BatteryLevel: 50})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+
+	if err := s.AppendChargingSample(ChargingSample{
+		ChargingSessionID: sessionID, VehicleID: vehicleID, Time: time.Now().UTC(),
+		BatteryLevel: 60, ChargeLimitSoc: 80,
+	}); err != nil {
+		t.Fatalf("append charging sample: %v", err)
+	}
+
+	var limit int
+	if err := s.db.QueryRow(`SELECT charge_limit_soc FROM charging_samples WHERE charging_session_id = ?`, sessionID).Scan(&limit); err != nil {
+		t.Fatalf("query charging sample: %v", err)
+	}
+	if limit != 80 {
+		t.Fatalf("expected charge_limit_soc 80, got %d", limit)
+	}
+}
