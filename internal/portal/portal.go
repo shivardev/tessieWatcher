@@ -96,6 +96,13 @@ type indexData struct {
 	RatedRangeKm  float64
 	IdealRangeKm  float64
 	BatteryAt     string
+	Firmware      string
+	HasLifetime   bool
+	OdometerKm    float64
+	TotalDrives   int
+	TotalKm       float64
+	TotalCharges  int
+	TotalKwh      float64
 	RecentDrives  []recentDrive
 	RecentCharges []recentCharge
 	LogLines      []string
@@ -206,7 +213,7 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 </head>
 <body>
   <h1>{{.VehicleName}}</h1>
-  <div class="subtitle">teslalog</div>
+  <div class="subtitle">teslalog{{if .Firmware}} &middot; firmware {{.Firmware}}{{end}}</div>
   <div class="warn">This page has no login - only reachable on your local network. Anyone on this Wi-Fi/LAN can see this page and download the database.</div>
 
   <div class="card">
@@ -234,6 +241,14 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
   <form action="/download" method="get">
     <button type="submit">⬇ Download database (tesla.db)</button>
   </form>
+
+  {{if .HasLifetime}}
+  <div class="card">
+    <div class="stat"><span class="label">Lifetime odometer</span><span class="value">{{printf "%.0f" .OdometerKm}} km</span></div>
+    <div class="stat"><span class="label">Lifetime drives</span><span class="value">{{.TotalDrives}} &middot; {{printf "%.0f" .TotalKm}} km</span></div>
+    <div class="stat"><span class="label">Lifetime charging</span><span class="value">{{.TotalCharges}} &middot; {{printf "%.0f" .TotalKwh}} kWh</span></div>
+  </div>
+  {{end}}
 
   {{if .RecentDrives}}
   <h2>Recent drives</h2>
@@ -290,9 +305,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{VehicleName: "Vehicle"}
 
 	var vehicleID int64
-	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, '') FROM vehicles ORDER BY id LIMIT 1`)
+	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)
 	var displayName string
-	if err := row.Scan(&vehicleID, &displayName); err != nil {
+	if err := row.Scan(&vehicleID, &displayName, &data.Firmware); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("portal: query vehicle failed", "error", err)
 		}
@@ -302,6 +317,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	if displayName != "" {
 		data.VehicleName = displayName
+	}
+
+	if lt, err := s.store.Lifetime(vehicleID); err != nil {
+		slog.Warn("portal: lifetime stats failed", "error", err)
+	} else {
+		data.HasLifetime = lt.TotalDrives > 0 || lt.OdometerKm > 0
+		data.OdometerKm = lt.OdometerKm
+		data.TotalDrives = lt.TotalDrives
+		data.TotalKm = lt.TotalKm
+		data.TotalCharges = lt.TotalCharges
+		data.TotalKwh = lt.TotalKwh
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")

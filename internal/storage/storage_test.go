@@ -361,6 +361,64 @@ func TestDriveSummaryEfficiencyRatio(t *testing.T) {
 	}
 }
 
+func TestUpdateVehicleFirmwareIgnoresEmptyVersion(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN10", TeslaID: "10", DisplayName: "Car"})
+
+	if err := s.UpdateVehicleFirmware(vehicleID, "2026.20.1"); err != nil {
+		t.Fatalf("update firmware: %v", err)
+	}
+	// An empty version (some vehicle_data responses omit car_version)
+	// must not clobber the last known value.
+	if err := s.UpdateVehicleFirmware(vehicleID, ""); err != nil {
+		t.Fatalf("update firmware with empty version: %v", err)
+	}
+
+	var version string
+	if err := s.db.QueryRow(`SELECT firmware_version FROM vehicles WHERE id = ?`, vehicleID).Scan(&version); err != nil {
+		t.Fatalf("query firmware_version: %v", err)
+	}
+	if version != "2026.20.1" {
+		t.Fatalf("expected firmware_version to survive an empty update, got %q", version)
+	}
+}
+
+func TestLifetimeAggregatesDrivesAndCharges(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN11", TeslaID: "11", DisplayName: "Car"})
+
+	now := time.Now().UTC()
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 1000})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 1020}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+
+	chargeID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: now, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charge: %v", err)
+	}
+	if err := s.CloseChargingSession(ChargeEnd{ChargingSessionID: chargeID, Time: now.Add(20 * time.Minute), BatteryLevel: 80, EnergyAddedKwh: 30}); err != nil {
+		t.Fatalf("close charge: %v", err)
+	}
+
+	lt, err := s.Lifetime(vehicleID)
+	if err != nil {
+		t.Fatalf("lifetime: %v", err)
+	}
+	if lt.OdometerKm != 1020 {
+		t.Fatalf("expected lifetime odometer 1020, got %.1f", lt.OdometerKm)
+	}
+	if lt.TotalDrives != 1 || lt.TotalKm != 20 {
+		t.Fatalf("expected 1 drive / 20km, got %d drives / %.1fkm", lt.TotalDrives, lt.TotalKm)
+	}
+	if lt.TotalCharges != 1 || lt.TotalKwh != 30 {
+		t.Fatalf("expected 1 charge / 30kWh, got %d charges / %.1fkWh", lt.TotalCharges, lt.TotalKwh)
+	}
+}
+
 func TestLatestBatteryReadingPrefersOpenSessionOverIdleSample(t *testing.T) {
 	s := openTestStore(t)
 	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN9", TeslaID: "9", DisplayName: "Car"})

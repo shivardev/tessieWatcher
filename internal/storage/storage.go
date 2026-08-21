@@ -86,6 +86,7 @@ var columnMigrations = []string{
 	`ALTER TABLE positions ADD COLUMN climate_keeper_mode TEXT`,
 	`ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER`,
 	`ALTER TABLE charging_sessions ADD COLUMN is_dc_fast_charge INTEGER`,
+	`ALTER TABLE vehicles ADD COLUMN firmware_version TEXT`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -178,6 +179,18 @@ func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 // battery percentage.
 func (s *Store) SetVehicleEfficiency(vehicleID int64, whPerKm float64) error {
 	_, err := s.db.Exec(`UPDATE vehicles SET efficiency_wh_km = ? WHERE id = ?`, whPerKm, vehicleID)
+	return err
+}
+
+// UpdateVehicleFirmware records the car's currently-installed software
+// version (vehicle_state.car_version - see vehicle.Snapshot.Firmware's
+// doc comment). Call opportunistically on any poll that reports one;
+// a no-op if version is empty (some vehicle_data responses omit it).
+func (s *Store) UpdateVehicleFirmware(vehicleID int64, version string) error {
+	if version == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE vehicles SET firmware_version = ? WHERE id = ?`, version, vehicleID)
 	return err
 }
 
@@ -853,6 +866,50 @@ func (s *Store) ListCharges(vehicleID int64, year int) ([]ChargeSummary, error) 
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// LifetimeStats is a handful of all-time totals cheap to show
+// alongside "today" stats - the odometer reading in particular is the
+// same figure TeslaMate's own vehicle status widget shows prominently.
+type LifetimeStats struct {
+	OdometerKm   float64
+	TotalDrives  int
+	TotalKm      float64
+	TotalCharges int
+	TotalKwh     float64
+}
+
+// Lifetime aggregates all-time totals for a vehicle. Cheap even on a
+// long-running Pi: each is a single indexed aggregate query, run once
+// per portal page load, not on any hot polling path.
+func (s *Store) Lifetime(vehicleID int64) (LifetimeStats, error) {
+	var out LifetimeStats
+	var odometer sql.NullFloat64
+	if err := s.db.QueryRow(`
+		SELECT end_odometer_km FROM drives WHERE vehicle_id = ? AND status = 'closed' AND end_odometer_km IS NOT NULL
+		ORDER BY end_time DESC LIMIT 1
+	`, vehicleID).Scan(&odometer); err != nil && err != sql.ErrNoRows {
+		return out, err
+	}
+	out.OdometerKm = odometer.Float64
+
+	var totalKm sql.NullFloat64
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(SUM(distance_km), 0) FROM drives WHERE vehicle_id = ? AND status = 'closed'
+	`, vehicleID).Scan(&out.TotalDrives, &totalKm); err != nil {
+		return out, err
+	}
+	out.TotalKm = totalKm.Float64
+
+	var totalKwh sql.NullFloat64
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(SUM(charge_energy_added_kwh), 0) FROM charging_sessions WHERE vehicle_id = ? AND status = 'closed'
+	`, vehicleID).Scan(&out.TotalCharges, &totalKwh); err != nil {
+		return out, err
+	}
+	out.TotalKwh = totalKwh.Float64
+
+	return out, nil
 }
 
 // LatestBatteryReading returns the most recent battery level/rated

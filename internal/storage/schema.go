@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS vehicles (
 	-- User-supplied estimate (Wh/km), not reported by the API. TeslaMate
 	-- uses this the same way: to project range from battery %.
 	efficiency_wh_km REAL,
+	-- Currently-installed firmware (vehicle_state.car_version), kept
+	-- fresh opportunistically on every poll - see
+	-- Store.UpdateVehicleFirmware.
+	firmware_version TEXT,
 	created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 

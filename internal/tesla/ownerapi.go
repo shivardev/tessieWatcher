@@ -456,6 +456,7 @@ func (c *Client) VehicleData(ctx context.Context, id int64) (vehicle.Snapshot, V
 
 		UpdateStatus:  vs.SoftwareUpdate.Status,
 		UpdateVersion: vs.SoftwareUpdate.Version,
+		Firmware:      vs.CarVersion,
 	}
 
 	model, trimBadging, marketingName := IdentifyVehicle(

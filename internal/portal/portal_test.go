@@ -260,3 +260,43 @@ func TestIndexShowsBatteryAndRecentCharges(t *testing.T) {
 		t.Fatalf("expected a 'Recent charges' section with the DC Supercharger session, got: %s", body)
 	}
 }
+
+func TestIndexShowsFirmwareAndLifetimeTotals(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	vehicleID, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN3", DisplayName: "My Model X"})
+	if err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	if err := store.UpdateVehicleFirmware(vehicleID, "2026.20.1"); err != nil {
+		t.Fatalf("update firmware: %v", err)
+	}
+
+	now := time.Now().UTC()
+	driveID, err := store.OpenDrive(storage.DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 1000})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 1020}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+
+	srv := New(store, dbPath, nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "2026.20.1") {
+		t.Fatalf("expected firmware version on the page, got: %s", body)
+	}
+	if !strings.Contains(body, "Lifetime odometer") || !strings.Contains(body, "1020") {
+		t.Fatalf("expected lifetime odometer 1020 km on the page, got: %s", body)
+	}
+}

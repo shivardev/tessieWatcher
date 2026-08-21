@@ -114,6 +114,14 @@ type Snapshot struct {
 	// Optional software-update tracking.
 	UpdateStatus  string // "", "available", "downloading", "installing"
 	UpdateVersion string
+
+	// Firmware is the car's currently *installed* software version
+	// (vehicle_state.car_version), e.g. "2026.20.1" - distinct from
+	// UpdateVersion, which is the version an in-progress update is
+	// installing *to*. TeslaMate doesn't track this on the vehicle
+	// itself either, only via software_updates rows; teslalog also
+	// keeps it on vehicles for a cheap "what's currently running" read.
+	Firmware string
 }
 
 func (s Snapshot) isDriving() bool {

@@ -205,7 +205,12 @@ checked against TeslaMate's real source rather than approximate. Per table:
   is genuinely the same derived value, not just the same raw string.
   Also carries the optional user-supplied `efficiency_wh_km`
   (config-only, like TeslaMate's — not derived, just stored for
-  whatever reads the DB to use).
+  whatever reads the DB to use), and `firmware_version` — the car's
+  currently-installed software (`vehicle_state.car_version`), kept
+  fresh on every idle poll. TeslaMate only ever records this
+  transiently (as a row in its own `software_updates`-equivalent
+  table mid-update); teslalog also keeps the latest one directly on
+  the vehicle row for a cheap "what's it currently running" read.
 - **software_updates**: start/end/version, same as TeslaMate.
 
 **Polling cadence**: `driving_interval`/`charging_interval`/
@@ -498,8 +503,9 @@ doesn't do off-box replication itself.
 Set `[portal] enabled = true` (the default) in config.toml and teslalog
 serves a tiny read-only dark-mode page at `addr` (default `:8083`, e.g.
 `http://<pi-hostname-or-ip>:8083`): current battery %/rated range,
-today's drive count/distance, the last five drives and charges (with
-the AC/DC type and derived efficiency figures from
+installed firmware version, today's and lifetime drive/charge totals
+(odometer included), the last five drives and charges (with the AC/DC
+type and derived efficiency figures from
 [Data model & TeslaMate parity](#data-model--teslamate-parity) above),
 a live tail of recent log activity, and a "Download database" button.
 That button takes a fresh, consistent snapshot of the live database

@@ -81,6 +81,7 @@ func buildScript() []fixture {
 		f.DisplayName = "Test Model 3"
 		f.State = "online"
 		f.VehicleConfig.CarType = "model3"
+		f.VehicleState.CarVersion = "2026.20.1"
 		return f
 	}
 
@@ -273,6 +274,22 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 	}
 	if diff := c.EnergyAddedKwh - 34.8; diff > 0.01 || diff < -0.01 {
 		t.Fatalf("expected 34.8 kWh added, got %.2f", c.EnergyAddedKwh)
+	}
+
+	var firmware sql.NullString
+	if err := store.DB().QueryRow(`SELECT firmware_version FROM vehicles WHERE id = ?`, vehicleID).Scan(&firmware); err != nil {
+		t.Fatalf("query firmware_version: %v", err)
+	}
+	if firmware.String != "2026.20.1" {
+		t.Fatalf("expected firmware_version %q recorded from an idle poll's car_version, got %q", "2026.20.1", firmware.String)
+	}
+
+	lifetime, err := store.Lifetime(vehicleID)
+	if err != nil {
+		t.Fatalf("lifetime stats: %v", err)
+	}
+	if diff := lifetime.OdometerKm - 1013.7; diff > 0.05 || diff < -0.05 {
+		t.Fatalf("expected lifetime odometer ~1013.7 km (the drive's end odometer), got %.2f", lifetime.OdometerKm)
 	}
 
 	t.Logf("OK: drive %.1f km (%d%%->%d%%), charge %d%%->%d%% (%.1f kWh), %d vehicle_data calls total, suspended after idle timeout",

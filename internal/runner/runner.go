@@ -457,6 +457,9 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			if err := l.store.InsertBatterySample(l.vehicleDBID, ev.At, s.BatteryLevel, s.RangeKm, s.IdealRangeKm, "poll"); err != nil {
 				return fmt.Errorf("insert battery sample: %w", err)
 			}
+			if err := l.store.UpdateVehicleFirmware(l.vehicleDBID, s.Firmware); err != nil {
+				return fmt.Errorf("update vehicle firmware: %w", err)
+			}
 
 		case vehicle.EvSoftwareUpdateBeg:
 			if err := l.store.UpsertSoftwareUpdateStart(l.vehicleDBID, ev.Snapshot.UpdateVersion, ev.At); err != nil {
@@ -467,6 +470,17 @@ func (l *loopState) persist(events []vehicle.Event) error {
 		case vehicle.EvSoftwareUpdateEnd:
 			if err := l.store.CompleteSoftwareUpdate(l.vehicleDBID, ev.Snapshot.UpdateVersion, ev.At); err != nil {
 				return fmt.Errorf("record software update end: %w", err)
+			}
+			// The car reports its new car_version fairly quickly after an
+			// update finishes, but not necessarily in this exact snapshot -
+			// fall back to the version we just watched it install to, so
+			// the vehicles row doesn't lag behind by a full poll interval.
+			firmware := ev.Snapshot.Firmware
+			if firmware == "" {
+				firmware = ev.Snapshot.UpdateVersion
+			}
+			if err := l.store.UpdateVehicleFirmware(l.vehicleDBID, firmware); err != nil {
+				return fmt.Errorf("update vehicle firmware: %w", err)
 			}
 			slog.Info("software update finished", "version", ev.Snapshot.UpdateVersion)
 		}
