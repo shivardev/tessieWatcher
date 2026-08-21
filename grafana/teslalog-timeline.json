@@ -1,0 +1,169 @@
+{
+  "id": null,
+  "uid": "teslalog-timeline",
+  "title": "teslalog: Timeline",
+  "description": "Visual state-machine history (asleep/offline/online/driving/charging/idle/suspended) as colored bands over time - matching TeslaMate's own Timeline dashboard, but over teslalog's superset of states (see main README's Data model section).",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "state-timeline",
+      "title": "State timeline",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT started_at AS time, state AS \"State\" FROM states ORDER BY started_at",
+          "rawQueryText": "SELECT started_at AS time, state AS \"State\" FROM states ORDER BY started_at",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 80
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "driving": {
+                  "color": "#3ea6ff",
+                  "index": 0
+                },
+                "charging": {
+                  "color": "#4ade80",
+                  "index": 1
+                },
+                "online": {
+                  "color": "#fbbf24",
+                  "index": 2
+                },
+                "idle": {
+                  "color": "#f59e0b",
+                  "index": 3
+                },
+                "suspended": {
+                  "color": "#6b7280",
+                  "index": 4
+                },
+                "asleep": {
+                  "color": "#374151",
+                  "index": 5
+                },
+                "offline": {
+                  "color": "#1f2937",
+                  "index": 6
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "always",
+        "alignValue": "left",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "tooltip": {
+          "mode": "single"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Time in each state (7d)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 10,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  state AS \"State\",\n  COUNT(*) AS \"Transitions\",\n  ROUND(SUM((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))) - julianday(started_at)) * 24), 1) AS \"Total hours\"\nFROM states\nWHERE started_at >= datetime('now', '-7 days')\nGROUP BY state\nORDER BY \"Total hours\" DESC",
+          "rawQueryText": "SELECT\n  state AS \"State\",\n  COUNT(*) AS \"Transitions\",\n  ROUND(SUM((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))) - julianday(started_at)) * 24), 1) AS \"Total hours\"\nFROM states\nWHERE started_at >= datetime('now', '-7 days')\nGROUP BY state\nORDER BY \"Total hours\" DESC",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "id": null,
+  "uid": "teslalog-updates",
+  "title": "teslalog: Updates",
+  "description": "Software update history - matching TeslaMate's own Updates dashboard.",
+  "tags": [
+    "teslalog"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "time": {
+    "from": "now-1y",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "SQLite",
+          "value": "sqlite"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_SQLITE",
+        "options": [],
+        "query": "frser-sqlite-datasource",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Updates",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COUNT(*) AS value FROM software_updates",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Ø days between updates",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL",
+          "rawQueryText": "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Update history",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC",
+          "rawQueryText": "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ]
+}
