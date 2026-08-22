@@ -283,6 +283,246 @@ func TestCloseDriveDiscardsTrivialDrives(t *testing.T) {
 	})
 }
 
+// TestRecalculateEfficiencyDerivesFromRealChargingHistory pins
+// TeslaMate's own recalculate_efficiency behavior (verified directly
+// against lib/teslamate/log.ex): the car's real Wh/km is derived from
+// its own charging history - the most-agreed-upon kWh-per-km ratio
+// across qualifying charges - rather than depending forever on a
+// number the user guessed once in config.
+func TestRecalculateEfficiencyDerivesFromRealChargingHistory(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-EFF", TeslaID: "15", DisplayName: "Car"})
+
+	// Seed the user's initial guess - the derivation must override it.
+	if err := s.SetVehicleEfficiency(vehicleID, 999); err != nil {
+		t.Fatalf("set initial efficiency: %v", err)
+	}
+
+	// 8 qualifying charges all agreeing on 0.15 kWh/km (= 150 Wh/km):
+	// 30 kWh added over 200 km of range gained, each lasting well over
+	// 10 minutes and ending under 95%.
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		start := base.AddDate(0, 0, i)
+		id, err := s.OpenChargingSession(ChargeStart{
+			VehicleID: vehicleID, Time: start, BatteryLevel: 30, RangeKm: 100,
+		})
+		if err != nil {
+			t.Fatalf("open charging session %d: %v", i, err)
+		}
+		if err := s.CloseChargingSession(ChargeEnd{
+			ChargingSessionID: id, Time: start.Add(90 * time.Minute),
+			BatteryLevel: 80, RangeKm: 300, EnergyAddedKwh: 30,
+		}); err != nil {
+			t.Fatalf("close charging session %d: %v", i, err)
+		}
+	}
+
+	whPerKm, ok, err := s.RecalculateEfficiency(vehicleID)
+	if err != nil {
+		t.Fatalf("recalculate efficiency: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected an efficiency to be derived from 8 agreeing charges")
+	}
+	if diff := whPerKm - 150; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("expected ~150 Wh/km derived (30 kWh / 200 km), got %.1f", whPerKm)
+	}
+
+	var stored float64
+	if err := s.db.QueryRow(`SELECT efficiency_wh_km FROM vehicles WHERE id = ?`, vehicleID).Scan(&stored); err != nil {
+		t.Fatalf("query stored efficiency: %v", err)
+	}
+	if diff := stored - 150; diff > 0.5 || diff < -0.5 {
+		t.Fatalf("expected the derived value to replace the configured guess, got %.1f", stored)
+	}
+}
+
+func TestRecalculateEfficiencyIgnoresUnqualifyingCharges(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-EFF2", TeslaID: "16", DisplayName: "Car"})
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+
+	// All of these are excluded by TeslaMate's own filters, so no
+	// efficiency should be derivable from them at all:
+	//   - too short (<= 10 min)
+	//   - ending above 95% (charge taper skews the ratio)
+	//   - no energy added
+	cases := []struct {
+		dur        time.Duration
+		endBattery int
+		energy     float64
+	}{
+		{5 * time.Minute, 80, 30},  // too short
+		{90 * time.Minute, 99, 30}, // ends too high
+		{90 * time.Minute, 80, 0},  // no energy added
+	}
+	for i, c := range cases {
+		start := base.AddDate(0, 0, i)
+		id, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 30, RangeKm: 100})
+		if err != nil {
+			t.Fatalf("open charging session %d: %v", i, err)
+		}
+		if err := s.CloseChargingSession(ChargeEnd{
+			ChargingSessionID: id, Time: start.Add(c.dur),
+			BatteryLevel: c.endBattery, RangeKm: 300, EnergyAddedKwh: c.energy,
+		}); err != nil {
+			t.Fatalf("close charging session %d: %v", i, err)
+		}
+	}
+
+	if _, ok, err := s.RecalculateEfficiency(vehicleID); err != nil {
+		t.Fatalf("recalculate efficiency: %v", err)
+	} else if ok {
+		t.Fatalf("expected no efficiency to be derived from only unqualifying charges")
+	}
+}
+
+func TestRecalculateEfficiencyIsANoOpWithTooFewCharges(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-EFF3", TeslaID: "17", DisplayName: "Car"})
+
+	// A single qualifying charge is below even the loosest threshold
+	// (2 agreeing charges at 2 decimal places).
+	start := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	id, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 30, RangeKm: 100})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: id, Time: start.Add(90 * time.Minute),
+		BatteryLevel: 80, RangeKm: 300, EnergyAddedKwh: 30,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	if _, ok, err := s.RecalculateEfficiency(vehicleID); err != nil {
+		t.Fatalf("recalculate efficiency: %v", err)
+	} else if ok {
+		t.Fatalf("expected no derivation from a single charge - not enough evidence yet")
+	}
+}
+
+// TestEnergyUsedIsIntegratedFromMeasuredPower pins TeslaMate's own
+// calculate_energy_used behavior (verified directly against
+// lib/teslamate/log.ex): energy drawn from the wall is the measured
+// charger power integrated over time across the session's samples -
+// NOT the energy added divided by a flat guessed efficiency factor,
+// which is all teslalog used to do (its own code comment even wrongly
+// claimed TeslaMate worked that way).
+func TestEnergyUsedIsIntegratedFromMeasuredPower(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-ENERGY", TeslaID: "12", DisplayName: "Car"})
+	start := time.Date(2026, 8, 21, 20, 0, 0, 0, time.UTC)
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+
+	// A steady 10 kW for 2 hours = 20 kWh drawn. Samples every 30min:
+	// the first sample has no predecessor so contributes nothing, then
+	// 4 x (10 kW x 0.5h) = 20 kWh.
+	for i := 0; i <= 4; i++ {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID,
+			Time:           start.Add(time.Duration(i) * 30 * time.Minute),
+			BatteryLevel:   20 + i*10,
+			ChargerPowerKw: 10,
+			EnergyAddedKwh: float64(i) * 4.5,
+		}); err != nil {
+			t.Fatalf("append charging sample %d: %v", i, err)
+		}
+	}
+
+	// A deliberately wrong flat efficiency is configured - the real
+	// integration must win over it.
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: sessionID, Time: start.Add(2 * time.Hour),
+		BatteryLevel: 60, EnergyAddedKwh: 18, ChargingEfficiency: 0.5,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	var energyUsed float64
+	if err := s.db.QueryRow(`SELECT charge_energy_used_kwh FROM charging_sessions WHERE id = ?`, sessionID).Scan(&energyUsed); err != nil {
+		t.Fatalf("query charging session: %v", err)
+	}
+	if diff := energyUsed - 20.0; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("expected 20 kWh integrated from 10 kW over 2h, got %.2f (the flat-efficiency fallback would have given 36)", energyUsed)
+	}
+}
+
+func TestEnergyUsedPrefersPerPhaseReadingsOverReportedPower(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-PHASES", TeslaID: "13", DisplayName: "Car"})
+	start := time.Date(2026, 8, 21, 20, 0, 0, 0, time.UTC)
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+
+	// 3 phases x 16 A x 230 V = 11.04 kW, vs a coarser reported 11 kW.
+	// Over 1 hour that's 11.04 kWh - proving the finer-grained
+	// per-phase figure was used, not the rounded charger_power.
+	for i := 0; i <= 1; i++ {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID,
+			Time: start.Add(time.Duration(i) * time.Hour), BatteryLevel: 20 + i*10,
+			ChargerPowerKw: 11, ChargerCurrent: 16, ChargerVoltage: 230, ChargerPhases: 3,
+		}); err != nil {
+			t.Fatalf("append charging sample %d: %v", i, err)
+		}
+	}
+
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: sessionID, Time: start.Add(time.Hour), BatteryLevel: 30, EnergyAddedKwh: 10,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	var energyUsed float64
+	if err := s.db.QueryRow(`SELECT charge_energy_used_kwh FROM charging_sessions WHERE id = ?`, sessionID).Scan(&energyUsed); err != nil {
+		t.Fatalf("query charging session: %v", err)
+	}
+	if diff := energyUsed - 11.04; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("expected 11.04 kWh from 3 x 16A x 230V over 1h, got %.2f", energyUsed)
+	}
+}
+
+func TestEnergyUsedFallsBackToEfficiencyWhenNoPowerReadings(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-NOPOWER", TeslaID: "14", DisplayName: "Car"})
+	start := time.Now().UTC()
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+	// Samples exist but carry no usable power readings at all.
+	for i := 0; i <= 1; i++ {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID,
+			Time: start.Add(time.Duration(i) * time.Hour), BatteryLevel: 20 + i*10,
+		}); err != nil {
+			t.Fatalf("append charging sample %d: %v", i, err)
+		}
+	}
+
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: sessionID, Time: start.Add(time.Hour),
+		BatteryLevel: 30, EnergyAddedKwh: 18, ChargingEfficiency: 0.9,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	var energyUsed float64
+	if err := s.db.QueryRow(`SELECT charge_energy_used_kwh FROM charging_sessions WHERE id = ?`, sessionID).Scan(&energyUsed); err != nil {
+		t.Fatalf("query charging session: %v", err)
+	}
+	if diff := energyUsed - 20.0; diff > 0.01 || diff < -0.01 {
+		t.Fatalf("expected the 18/0.9 = 20 kWh flat-efficiency fallback when no power was measurable, got %.2f", energyUsed)
+	}
+}
+
 // TestCloseChargingSessionFallsBackToMaxEnergyAddedWhenLastReadIsZero
 // is a regression test matching a known Tesla API quirk TeslaMate's
 // own complete_charging_process explicitly guards against (verified

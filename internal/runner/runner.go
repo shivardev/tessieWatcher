@@ -530,6 +530,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			}
 			slog.Info("charging ended", "session_id", l.chargeID, "energy_added_kwh", s.ChargeEnergyAddedKwh)
 			l.chargeID = 0
+			l.refreshDerivedEfficiency()
 
 		case vehicle.EvDriveAbandoned:
 			if l.driveID == 0 {
@@ -599,6 +600,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				"session_id", id, "battery", fmt.Sprintf("%d%%->%d%%", before.BatteryLevel, after.BatteryLevel),
 				"ideal_range_gained_km", after.IdealRangeKm-before.IdealRangeKm,
 				"offline_minutes", int(after.Time.Sub(before.Time).Minutes()))
+			l.refreshDerivedEfficiency()
 
 		case vehicle.EvBatterySample:
 			s := ev.Snapshot
@@ -743,6 +745,22 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 
 		SentryMode: boolPtr(s.SentryMode), IsUserPresent: boolPtr(s.IsUserPresent), ValetMode: boolPtr(s.ValetMode),
 		ClimateKeeperMode: s.ClimateKeeperMode,
+	}
+}
+
+// refreshDerivedEfficiency re-derives the vehicle's real Wh/km from
+// its own charging history and stores it, called after every charging
+// session closes - the same point TeslaMate does it (inside
+// complete_charging_process). Non-fatal: a failure here only means
+// range projections keep using the previous figure.
+func (l *loopState) refreshDerivedEfficiency() {
+	whPerKm, ok, err := l.store.RecalculateEfficiency(l.vehicleDBID)
+	if err != nil {
+		slog.Warn("recalculate efficiency failed", "error", err)
+		return
+	}
+	if ok {
+		slog.Info("derived efficiency from charging history", "wh_per_km", fmt.Sprintf("%.1f", whPerKm))
 	}
 }
 

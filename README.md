@@ -552,7 +552,7 @@ See `config.example.toml` for every field with inline docs. Key ones:
 | `polling.asleep_interval` | `30s` | how often we check "is it awake yet" while asleep/offline (matches TeslaMate's `@asleep_interval`) |
 | `polling.drive_timeout` | `15m` | how long a drive can go OFFLINE before it's abandoned/closed (matches TeslaMate's `@drive_timeout_min`) |
 | `backup.retention_days` | `30` | days of nightly backups to keep |
-| `vehicle.efficiency_wh_km` | `0` (off) | stored on the vehicle row, informational only |
+| `vehicle.efficiency_wh_km` | `0` (off) | starting estimate only — teslalog derives the real figure from your own charging history and overwrites it, as TeslaMate does |
 | `charging.efficiency` | `0` (off) | if set, estimates `charge_energy_used_kwh` from energy added |
 | `charging.price_per_kwh` | `0` (off) | if set, computes `charging_sessions.cost` |
 

@@ -112,9 +112,14 @@ client_id            = "ownerapi"
 user_agent           = "teslalog/0.2"
 
 [vehicle]
-# Wh/km consumption estimate, purely informational (stored on the
-# vehicle row for whatever reads the DB - e.g. Grafana - to use in its
-# own range projections). Not reported by the API. Leave 0 to skip.
+# Wh/km consumption estimate - only a STARTING POINT. Not reported by
+# the API, so teslalog begins with whatever you put here, then derives
+# the real figure from your own charging history (the most-agreed-upon
+# kWh-per-km across real charges) and overwrites this, exactly as
+# TeslaMate does. So a rough guess, or 0, is fine: it self-corrects
+# once there are enough real charges to be confident. Stored on the
+# vehicle row for whatever reads the DB (Grafana, the frontend) to use
+# in range projections.
 efficiency_wh_km = 0
 
 [charging]

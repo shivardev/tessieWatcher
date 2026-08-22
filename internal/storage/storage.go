@@ -188,10 +188,81 @@ func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 // SetVehicleEfficiency stores a user-configured Wh/km efficiency
 // estimate (config.toml's [vehicle].efficiency_wh_km) — not reported by
 // the API, used the same way TeslaMate uses it: to project range from
-// battery percentage.
+// battery percentage. Note this is only a starting point;
+// RecalculateEfficiency derives a real one from actual charging
+// history as soon as there's enough of it.
 func (s *Store) SetVehicleEfficiency(vehicleID int64, whPerKm float64) error {
 	_, err := s.db.Exec(`UPDATE vehicles SET efficiency_wh_km = ? WHERE id = ?`, whPerKm, vehicleID)
 	return err
+}
+
+// efficiencyPrecisionThresholds mirrors TeslaMate's own
+// recalculate_efficiency opts list exactly (verified directly against
+// lib/teslamate/log.ex: `[{5, 8}, {4, 5}, {3, 3}, {2, 2}]`): try to
+// find a kWh-per-km figure that at least `count` separate charges
+// agree on when rounded to `decimals` places, starting strict and
+// loosening until one qualifies. Strict agreement across many charges
+// is the strongest evidence; a looser match across fewer is accepted
+// only if nothing better exists.
+var efficiencyPrecisionThresholds = []struct{ decimals, count int }{
+	{5, 8}, {4, 5}, {3, 3}, {2, 2},
+}
+
+// RecalculateEfficiency derives the vehicle's real Wh/km efficiency
+// from its own charging history and stores it, replacing whatever
+// estimate was there before. This is what makes range projections
+// actually correct for a specific car in its specific climate and
+// usage, rather than depending on a figure the user guessed once.
+//
+// Mirrors TeslaMate's own recalculate_efficiency (verified directly
+// against its source), including its filters: only charges lasting
+// more than 10 minutes, ending at 95% battery or below (the taper
+// above that would skew the ratio), with a real positive energy-added
+// figure and known start/end range. The most-agreed-upon ratio wins -
+// see efficiencyPrecisionThresholds.
+//
+// A no-op (leaving the existing value alone) until enough qualifying
+// charges exist to be confident, so a brand-new install keeps using
+// the configured estimate until real data overtakes it.
+func (s *Store) RecalculateEfficiency(vehicleID int64) (float64, bool, error) {
+	for _, pt := range efficiencyPrecisionThresholds {
+		var factor sql.NullFloat64
+		var n int
+		// charge_energy_added_kwh / range gained, rounded to the
+		// current precision, grouped so the most frequently occurring
+		// value across qualifying charges comes first.
+		err := s.db.QueryRow(`
+			SELECT ROUND(charge_energy_added_kwh / (end_range_km - start_range_km), ?) AS factor, COUNT(*) AS n
+			FROM charging_sessions
+			WHERE vehicle_id = ?
+			  AND status = 'closed'
+			  AND end_range_km IS NOT NULL AND start_range_km IS NOT NULL
+			  AND end_range_km - start_range_km > 0
+			  AND charge_energy_added_kwh > 0
+			  AND end_battery_level <= 95
+			  AND (julianday(end_time) - julianday(start_time)) * 24 * 60 > 10
+			GROUP BY factor
+			ORDER BY n DESC
+			LIMIT 1
+		`, pt.decimals, vehicleID).Scan(&factor, &n)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return 0, false, fmt.Errorf("derive efficiency for vehicle %d: %w", vehicleID, err)
+		}
+		if !factor.Valid || factor.Float64 <= 0 || n < pt.count {
+			continue
+		}
+
+		// factor is kWh per km; the column stores Wh per km.
+		whPerKm := factor.Float64 * 1000
+		if err := s.SetVehicleEfficiency(vehicleID, whPerKm); err != nil {
+			return 0, false, err
+		}
+		return whPerKm, true, nil
+	}
+	return 0, false, nil
 }
 
 // UpdateVehicleFirmware records the car's currently-installed software
@@ -672,11 +743,18 @@ type ChargeEnd struct {
 	IdealRangeKm      float64
 	EnergyAddedKwh    float64
 
-	// ChargingEfficiency (0-1), if > 0, is used to estimate
-	// charge_energy_used_kwh = EnergyAddedKwh / ChargingEfficiency —
-	// the API only reports energy *added* to the battery, not energy
-	// drawn from the wall; TeslaMate models the difference the same
-	// way, via a configurable loss factor. Leave 0 to skip.
+	// ChargingEfficiency (0-1) is a FALLBACK only, used to estimate
+	// charge_energy_used_kwh = EnergyAddedKwh / ChargingEfficiency
+	// when the session's samples don't support a real calculation
+	// (see calculateEnergyUsed). The API only reports energy *added*
+	// to the battery, not energy drawn from the wall.
+	//
+	// Preferred, and what TeslaMate actually does (verified directly
+	// against lib/teslamate/log.ex's calculate_energy_used): integrate
+	// the measured charger power over time across the session's own
+	// samples, rather than applying a flat guessed loss factor to the
+	// added figure. Leave 0 to skip the fallback entirely (the column
+	// then stays NULL when no real calculation is possible).
 	ChargingEfficiency float64
 
 	// PricePerKwh, if > 0, is used to compute cost = EnergyAddedKwh *
@@ -706,8 +784,14 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		energyAdded = maxEnergyAdded.Float64
 	}
 
-	var energyUsed sql.NullFloat64
-	if e.ChargingEfficiency > 0 {
+	// Prefer a real integration of measured power over the session's
+	// samples; fall back to the configured flat efficiency factor only
+	// if that isn't possible (too few samples, no power readings).
+	energyUsed, err := s.calculateEnergyUsed(e.ChargingSessionID)
+	if err != nil {
+		return fmt.Errorf("calculate energy used for session %d: %w", e.ChargingSessionID, err)
+	}
+	if !energyUsed.Valid && e.ChargingEfficiency > 0 {
 		energyUsed = sql.NullFloat64{Float64: energyAdded / e.ChargingEfficiency, Valid: true}
 	}
 	var cost sql.NullFloat64
@@ -715,7 +799,7 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		cost = sql.NullFloat64{Float64: energyAdded * e.PricePerKwh, Valid: true}
 	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		UPDATE charging_sessions SET
 			end_time = ?, end_battery_level = ?, end_range_km = ?, end_ideal_range_km = ?,
 			charge_energy_added_kwh = ?, charge_energy_used_kwh = ?, max_charger_power_kw = ?,
@@ -725,6 +809,82 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		energyAdded, energyUsed, maxPower.Float64,
 		avgOutside.Float64, cost, everFastCharger.Int64, e.ChargingSessionID)
 	return err
+}
+
+// calculateEnergyUsed integrates measured charger power over time
+// across a session's samples to get the energy actually drawn from the
+// wall (kWh) - the figure the Tesla API never reports directly (it only
+// reports energy *added* to the battery, which excludes charging
+// losses).
+//
+// Mirrors TeslaMate's own calculate_energy_used (verified directly
+// against lib/teslamate/log.ex): for each sample, energy is
+// power × the hours elapsed since the previous sample, summed across
+// the session. Where per-phase readings are available
+// (current × voltage × phases) they're preferred over the reported
+// charger_power, since charger_power is a coarser rounded figure;
+// charger_power is the fallback when they aren't.
+//
+// Negative intervals are skipped (matching TeslaMate's own
+// `where: e.energy_used >= 0`) so a clock adjustment or an
+// out-of-order sample can't subtract energy. Returns an invalid
+// (NULL) result if there's nothing usable to integrate - fewer than
+// two samples, or no power readings at all - which is the caller's
+// signal to fall back to the configured flat efficiency factor.
+func (s *Store) calculateEnergyUsed(sessionID int64) (sql.NullFloat64, error) {
+	rows, err := s.db.Query(`
+		SELECT timestamp, charger_power_kw, charger_actual_current, charger_voltage, charger_phases
+		FROM charging_samples WHERE charging_session_id = ? ORDER BY timestamp
+	`, sessionID)
+	if err != nil {
+		return sql.NullFloat64{}, err
+	}
+	defer rows.Close()
+
+	var total float64
+	var any bool
+	var prev time.Time
+	havePrev := false
+
+	for rows.Next() {
+		var tsStr string
+		var powerKw, current, voltage sql.NullFloat64
+		var phases sql.NullInt64
+		if err := rows.Scan(&tsStr, &powerKw, &current, &voltage, &phases); err != nil {
+			return sql.NullFloat64{}, err
+		}
+		ts, err := time.Parse(timeLayout, tsStr)
+		if err != nil {
+			return sql.NullFloat64{}, err
+		}
+
+		if havePrev {
+			hours := ts.Sub(prev).Hours()
+			if hours > 0 {
+				// Prefer the finer-grained per-phase measurement, as
+				// TeslaMate does; fall back to the reported power.
+				kw := 0.0
+				switch {
+				case phases.Valid && phases.Int64 > 0 && current.Valid && voltage.Valid:
+					kw = float64(phases.Int64) * current.Float64 * voltage.Float64 / 1000
+				case powerKw.Valid:
+					kw = powerKw.Float64
+				}
+				if kw > 0 {
+					total += kw * hours
+					any = true
+				}
+			}
+		}
+		prev, havePrev = ts, true
+	}
+	if err := rows.Err(); err != nil {
+		return sql.NullFloat64{}, err
+	}
+	if !any {
+		return sql.NullFloat64{}, nil
+	}
+	return sql.NullFloat64{Float64: total, Valid: true}, nil
 }
 
 // CloseChargingSessionFromLastSample is CloseDriveFromLastPosition's
