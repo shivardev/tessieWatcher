@@ -126,12 +126,23 @@ func Run(ctx context.Context, cfg config.Config) error {
 		streamID:    summary.VehicleID,
 		vin:         summary.VIN,
 		vehicleDBID: vehicleDBID,
-		machine:     vehicle.Resume(cfg.Polling.IdleTimeout, openDriveID != 0, openChargeID != 0),
+		machine:     newMachine(cfg, openDriveID != 0, openChargeID != 0),
 		geo:         geo,
 		driveID:     openDriveID,
 		chargeID:    openChargeID,
 	}
 	return loop.run(ctx)
+}
+
+// newMachine builds the state machine with every config-driven
+// threshold applied, resuming any drive/charge left open across a
+// restart (see vehicle.Resume).
+func newMachine(cfg config.Config, driving, charging bool) *vehicle.Machine {
+	m := vehicle.Resume(cfg.Polling.IdleTimeout, driving, charging)
+	if cfg.Polling.OfflineChargeMinGap > 0 {
+		m.SetOfflineChargeThresholds(vehicle.OfflineChargeMinRangeGainKm, cfg.Polling.OfflineChargeMinGap)
+	}
+	return m
 }
 
 // pickVehicle resolves which vehicle to log, by VIN if configured,
@@ -217,6 +228,12 @@ func (l *loopState) run(ctx context.Context) error {
 		default:
 			if err := l.pollVehicleData(ctx); err != nil {
 				slog.Warn("vehicle_data poll failed", "error", err)
+				// Note the observation gap: a failed poll is one of the
+				// two ways we learn the vehicle isn't reachable (the
+				// other being the summary check below), and what
+				// happened during the gap has to be reconciled once it
+				// comes back - see Machine.OnBackOnline.
+				l.machine.MarkUnreachable()
 				// vehicle_data can't reliably tell "asleep/offline" apart from
 				// a network blip (it just errors/times out either way), so
 				// fall back to the cheap, non-waking summary check to find
@@ -243,7 +260,12 @@ func (l *loopState) run(ctx context.Context) error {
 				sleepFor = l.cfg.Polling.DrivingInterval
 			case vehicle.StateCharging:
 				sleepFor = l.cfg.Polling.ChargingInterval
-			default: // StateOnline, StateIdle
+			default: // StateOnline, StateIdle, StateUpdating
+				// StateUpdating deliberately uses the normal online
+				// cadence, matching TeslaMate's own :updating state
+				// (schedule_fetch(default_interval())) - frequent
+				// enough to notice the install finishing promptly,
+				// without hammering a car that's busy installing.
 				sleepFor = l.cfg.Polling.OnlineInterval
 			}
 		}
@@ -365,6 +387,20 @@ func (l *loopState) pollVehicleData(ctx context.Context) error {
 		if err != nil {
 			slog.Warn("update vehicle metadata failed", "error", err)
 		}
+	}
+
+	// If the vehicle was unreachable at any point since our last real
+	// poll, check the before/after pair for a charge that happened
+	// while we couldn't see it. Must run BEFORE OnVehicleData, which
+	// overwrites the "before" snapshot. The machine tracks the
+	// "was unreachable" flag itself rather than this reading it off
+	// State(), because by the time a poll succeeds the state has
+	// usually already been flipped back to ONLINE by the summary check
+	// that noticed the car was reachable again - so State() here says
+	// nothing about whether there was a gap. See
+	// Machine.OnBackOnline.
+	if err := l.persist(l.machine.OnBackOnline(snap)); err != nil {
+		return err
 	}
 
 	events := l.machine.OnVehicleData(snap)
@@ -514,6 +550,55 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			}
 			slog.Warn("charging session abandoned: vehicle stopped reporting mid-charge, closed using last known sample", "session_id", l.chargeID)
 			l.chargeID = 0
+
+		case vehicle.EvOfflineCharge:
+			// The vehicle gained real range while unobservable - it was
+			// charging somewhere we couldn't see. Synthesize a
+			// complete, already-closed session spanning exactly the
+			// last-known-before and first-known-after readings, with a
+			// sample at each end, matching TeslaMate's own handling
+			// (start_charging_process + insert_charge for both
+			// readings + complete_charging_process, all in one
+			// transaction - verified against its source).
+			before, after := ev.FromSnapshot, ev.Snapshot
+			id, err := l.store.OpenChargingSession(storage.ChargeStart{
+				VehicleID: l.vehicleDBID, Time: before.Time, BatteryLevel: before.BatteryLevel,
+				RangeKm: before.RangeKm, IdealRangeKm: before.IdealRangeKm,
+				Lat: before.Lat, Lng: before.Lng,
+				Location: l.geo.Resolve(context.Background(), before.Lat, before.Lng),
+			})
+			if err != nil {
+				return fmt.Errorf("open offline charging session: %w", err)
+			}
+			for _, s := range []vehicle.Snapshot{before, after} {
+				if err := l.store.AppendChargingSample(chargingSampleFromSnapshot(id, l.vehicleDBID, s.Time, s)); err != nil {
+					return fmt.Errorf("append offline charging sample: %w", err)
+				}
+			}
+			// The API reports charge_energy_added only for a charge it
+			// actually observed, so it's unavailable here by
+			// definition. Estimate it from the range actually gained
+			// and the configured efficiency, the same modeling
+			// teslalog already does for charge_energy_used_kwh (see
+			// ChargeEnd.ChargingEfficiency) - if no efficiency is
+			// configured, the energy stays unknown rather than being
+			// guessed, and the session still correctly records the
+			// battery/range change.
+			energyAdded := 0.0
+			if l.cfg.Vehicle.EfficiencyWhKm > 0 {
+				energyAdded = (after.IdealRangeKm - before.IdealRangeKm) * l.cfg.Vehicle.EfficiencyWhKm / 1000
+			}
+			if err := l.store.CloseChargingSession(storage.ChargeEnd{
+				ChargingSessionID: id, Time: after.Time, BatteryLevel: after.BatteryLevel,
+				RangeKm: after.RangeKm, IdealRangeKm: after.IdealRangeKm, EnergyAddedKwh: energyAdded,
+				ChargingEfficiency: l.cfg.Charging.Efficiency, PricePerKwh: l.cfg.Charging.PricePerKwh,
+			}); err != nil {
+				return fmt.Errorf("close offline charging session: %w", err)
+			}
+			slog.Info("charged while unobservable: recorded a synthesized charging session",
+				"session_id", id, "battery", fmt.Sprintf("%d%%->%d%%", before.BatteryLevel, after.BatteryLevel),
+				"ideal_range_gained_km", after.IdealRangeKm-before.IdealRangeKm,
+				"offline_minutes", int(after.Time.Sub(before.Time).Minutes()))
 
 		case vehicle.EvBatterySample:
 			s := ev.Snapshot

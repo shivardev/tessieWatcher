@@ -25,13 +25,25 @@ import "time"
 type State string
 
 const (
-	StateUnknown   State = "unknown"
-	StateAsleep    State = "asleep"
-	StateOffline   State = "offline"
-	StateOnline    State = "online"
-	StateDriving   State = "driving"
-	StateCharging  State = "charging"
-	StateIdle      State = "idle"
+	StateUnknown  State = "unknown"
+	StateAsleep   State = "asleep"
+	StateOffline  State = "offline"
+	StateOnline   State = "online"
+	StateDriving  State = "driving"
+	StateCharging State = "charging"
+	StateIdle     State = "idle"
+	// StateUpdating means a software update is actively installing.
+	// A real top-level state, matching TeslaMate's own {:updating, _}
+	// state (verified directly against its source, lib/teslamate/
+	// vehicles/vehicle.ex) rather than a flag observed incidentally
+	// during whatever other state a poll happens to land in - the
+	// distinction matters because an installing update must keep being
+	// polled at the normal online cadence until it finishes, and must
+	// NOT be allowed to idle-timeout into StateSuspended (whose cheap
+	// summary check never calls vehicle_data at all, so the update
+	// finishing would never be observed). A ~20+ minute install is
+	// entirely normal, i.e. longer than IdleTimeout.
+	StateUpdating  State = "updating"
 	StateSuspended State = "suspended"
 )
 
@@ -167,6 +179,14 @@ const (
 	// be silently treated as a continuation of the abandoned one.
 	EvDriveAbandoned  EventKind = "drive_abandoned"
 	EvChargeAbandoned EventKind = "charge_abandoned"
+	// EvOfflineCharge means the vehicle gained a meaningful amount of
+	// range while we couldn't see it at all, so it must have been
+	// charging somewhere unobserved. Carries FromSnapshot (the last
+	// reading before it went dark) and Snapshot (the first reading
+	// after it came back); the runner synthesizes a complete, closed
+	// charging session spanning exactly those two points. See
+	// OnBackOnline.
+	EvOfflineCharge EventKind = "offline_charge"
 )
 
 // Event is a single thing the runner should persist. Not every field is
@@ -180,6 +200,10 @@ type Event struct {
 	ToState   State
 
 	Snapshot Snapshot
+	// FromSnapshot is only set for EvOfflineCharge: the last reading
+	// before the vehicle went unreachable, paired with Snapshot's
+	// first reading after it came back.
+	FromSnapshot Snapshot
 }
 
 // Machine is the sleep-aware vehicle state machine. Zero value is not
@@ -208,6 +232,31 @@ type Machine struct {
 	lastDrivingAt  time.Time
 	lastChargingAt time.Time
 
+	// lastSnapshot is the most recent successful OnVehicleData
+	// observation of any kind, and haveLastSnapshot says whether
+	// there's been one at all yet. Retained so that when the vehicle
+	// comes back after being unreachable, the *before* and *after*
+	// readings can be compared - see OnBackOnline, which uses exactly
+	// that pair to detect a charge that happened while we couldn't
+	// see it.
+	lastSnapshot     Snapshot
+	haveLastSnapshot bool
+	// wasUnreachable records that the vehicle was observed
+	// asleep/offline at some point since the last successful
+	// OnVehicleData poll - i.e. that there's a real observation gap
+	// worth examining. Tracked here rather than inferred from State()
+	// by the caller, because by the time a poll succeeds the state has
+	// usually already flipped back to ONLINE (the cheap summary check
+	// notices reachability before the full poll runs), so State()
+	// alone can't tell "there was a gap" from "never left".
+	wasUnreachable bool
+
+	// Thresholds for OnBackOnline's offline-charge inference. Default
+	// to the TeslaMate-matching package constants; overridable via
+	// SetOfflineChargeThresholds.
+	offlineChargeMinRangeGainKm float64
+	offlineChargeMinGap         time.Duration
+
 	updateInProgress bool
 	updateVersion    string
 }
@@ -217,8 +266,10 @@ type Machine struct {
 // initial state.
 func New(idleTimeout time.Duration) *Machine {
 	return &Machine{
-		state:       StateUnknown,
-		idleTimeout: idleTimeout,
+		state:                       StateUnknown,
+		idleTimeout:                 idleTimeout,
+		offlineChargeMinRangeGainKm: OfflineChargeMinRangeGainKm,
+		offlineChargeMinGap:         OfflineChargeMinGap,
 	}
 }
 
@@ -301,15 +352,42 @@ func (m *Machine) OnSummary(now time.Time, rawState string) []Event {
 
 	if target == StateOnline {
 		if m.state == StateAsleep || m.state == StateOffline || m.state == StateSuspended || m.state == StateUnknown {
+			// If an update was installing when the vehicle dropped
+			// offline, go back to StateUpdating rather than plain
+			// StateOnline: the install is still in progress as far as
+			// anything here knows (updateInProgress is still set,
+			// since only observing a *finished* install clears it),
+			// and StateUpdating is what keeps it from idle-suspending
+			// before that observation ever happens. Matches
+			// TeslaMate's own "went offline while updating" handling,
+			// which keeps its {:updating, _} state and just keeps
+			// re-checking (verified against its source).
+			if m.updateInProgress {
+				return m.transition(now, StateUpdating)
+			}
 			return m.transition(now, StateOnline)
 		}
 		return nil
 	}
 
+	// target is StateOffline or StateAsleep here - either way the
+	// vehicle is unobservable, so note that there's now a gap in what
+	// we've actually seen (see wasUnreachable's doc comment).
+	m.wasUnreachable = true
+
 	if m.state != target {
 		return m.transition(now, target)
 	}
 	return nil
+}
+
+// MarkUnreachable records an observation gap without going through
+// OnSummary - used when a full vehicle_data poll fails outright (the
+// car returning "vehicle unavailable", a network error), which is the
+// other way teslalog learns the vehicle isn't reachable. See
+// wasUnreachable's doc comment.
+func (m *Machine) MarkUnreachable() {
+	m.wasUnreachable = true
 }
 
 // OnUnreachable is called (in addition to OnSummary) whenever a cheap
@@ -369,9 +447,87 @@ func (m *Machine) OnUnreachable(now time.Time, rawState string, driveTimeout tim
 	return events
 }
 
+// OfflineChargeMinRangeGainKm/OfflineChargeMinGap match TeslaMate's
+// own thresholds for this inference exactly (verified directly against
+// its source: `ideal_battery_range` gain > 5 and offline_min >= 5).
+// Package-level defaults; a Machine can override them via
+// SetOfflineChargeThresholds (only end-to-end tests need to, so a
+// simulated gap doesn't have to take five real minutes).
+const (
+	OfflineChargeMinRangeGainKm = 5.0
+	OfflineChargeMinGap         = 5 * time.Minute
+)
+
+// SetOfflineChargeThresholds overrides this machine's offline-charge
+// detection thresholds. Intended for tests that need to exercise the
+// full detection path without waiting out the real defaults; leave
+// them alone in production so the behavior matches TeslaMate's.
+func (m *Machine) SetOfflineChargeThresholds(minRangeGainKm float64, minGap time.Duration) {
+	m.offlineChargeMinRangeGainKm = minRangeGainKm
+	m.offlineChargeMinGap = minGap
+}
+
+// OnBackOnline is called with the first successful OnVehicleData
+// snapshot after the vehicle had been unreachable, BEFORE that
+// snapshot is passed to OnVehicleData itself. It detects the one thing
+// that can only be inferred from the before/after pair: the vehicle
+// gained a meaningful amount of range while we couldn't see it, which
+// means it was charging somewhere unobserved.
+//
+// TeslaMate does exactly this (verified directly against its source,
+// lib/teslamate/vehicles/vehicle.ex): on coming back online after
+// being offline, if ideal range grew by more than 5 km over at least 5
+// minutes, it synthesizes a complete charging session from the two
+// readings so the energy shows up in charging history instead of
+// silently vanishing. Without it, a charge that happened during any
+// connectivity gap is simply lost - and (worse) shows up in
+// vampire-drain analysis as an impossible battery *gain* while parked.
+//
+// Returns an EvOfflineCharge event carrying both snapshots, or nothing
+// if the thresholds aren't met.
+func (m *Machine) OnBackOnline(snap Snapshot) []Event {
+	// Only meaningful if there was actually a gap - a normal
+	// back-to-back poll sequence has nothing unobserved to infer from.
+	if !m.wasUnreachable {
+		return nil
+	}
+	m.wasUnreachable = false
+
+	if !m.haveLastSnapshot {
+		return nil
+	}
+	last := m.lastSnapshot
+
+	// Use ideal range specifically, matching TeslaMate - it's the
+	// figure least affected by driving-style/temperature estimation
+	// than the rated/estimated ones, so a gain in it is the strongest
+	// available signal that real energy went in.
+	if last.IdealRangeKm <= 0 || snap.IdealRangeKm <= 0 {
+		return nil
+	}
+	if snap.IdealRangeKm-last.IdealRangeKm <= m.offlineChargeMinRangeGainKm {
+		return nil
+	}
+	if snap.Time.Sub(last.Time) < m.offlineChargeMinGap {
+		return nil
+	}
+
+	return []Event{{
+		Kind: EvOfflineCharge, At: snap.Time,
+		FromSnapshot: last, Snapshot: snap,
+	}}
+}
+
 // Suspend forces a transition to StateSuspended. The runner calls this
 // once IdleTimedOut(now) returns true, after which it must stop calling
 // OnVehicleData and switch to periodic OnSummary checks only.
+//
+// Deliberately a no-op from any state other than IDLE/ONLINE - notably
+// including StateUpdating, which must keep being polled until the
+// install finishes (see its doc comment). IdleTimedOut can't return
+// true while updating anyway (transition() clears idleSince on the way
+// into any non-IDLE state), but this guard makes the invariant local
+// and explicit rather than depending on that.
 func (m *Machine) Suspend(now time.Time) []Event {
 	if m.state != StateIdle && m.state != StateOnline {
 		return nil
@@ -395,6 +551,20 @@ func (m *Machine) OnVehicleData(snap Snapshot) []Event {
 
 	events = append(events, m.handleSoftwareUpdate(snap)...)
 
+	// An installing update takes priority over driving/charging/idle
+	// classification and holds the machine in StateUpdating until it
+	// finishes, matching TeslaMate's own {:updating, _} state (its
+	// dispatch checks software_update.status == "installing" before
+	// anything else too, and its :updating state has no idle/suspend
+	// path out at all). Critically this keeps IdleTimedOut from ever
+	// firing mid-install - see StateUpdating's doc comment.
+	if snap.isInstalling() {
+		events = append(events, m.transition(now, StateUpdating)...)
+		events = append(events, Event{Kind: EvBatterySample, At: now, Snapshot: snap})
+		m.lastSnapshot, m.haveLastSnapshot = snap, true
+		return events
+	}
+
 	switch {
 	case snap.isDriving():
 		events = append(events, m.handleDriving(snap)...)
@@ -406,6 +576,7 @@ func (m *Machine) OnVehicleData(snap Snapshot) []Event {
 
 	events = append(events, Event{Kind: EvBatterySample, At: now, Snapshot: snap})
 
+	m.lastSnapshot, m.haveLastSnapshot = snap, true
 	return events
 }
 

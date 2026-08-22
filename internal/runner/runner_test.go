@@ -714,6 +714,170 @@ func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
 	}
 }
 
+// TestChargeWhileOfflineIsRecordedEndToEnd is the daemon-level
+// counterpart to vehicle.TestOnBackOnlineDetectsAChargeThatHappened...:
+// it drives the real Run loop through offline -> back-online-with-more-
+// range and asserts an actual closed charging_sessions row lands in
+// SQLite, rather than the energy silently vanishing. Matches
+// TeslaMate's own behavior (verified against its source).
+func TestChargeWhileOfflineIsRecordedEndToEnd(t *testing.T) {
+	const vin = "5YJ3E1EA1PF000001"
+	var summaryCalls, vehicleDataCalls int64
+
+	fx := func(battery int, rangeKm, idealKm float64) fixture {
+		var f fixture
+		f.ID, f.VehicleID = 555, 42
+		f.VIN, f.DisplayName, f.State = vin, "Test Model 3", "online"
+		f.VehicleConfig.CarType = "model3"
+		f.DriveState.ShiftState = "P" // parked throughout
+		f.ChargeState.ChargingState = "Disconnected"
+		f.ChargeState.BatteryLevel = battery
+		f.ChargeState.BatteryRange = km(rangeKm)
+		f.ChargeState.IdealBatteryRange = km(idealKm)
+		f.VehicleState.Odometer = km(5000)
+		return f
+	}
+	// Parked at 40%/200km ideal, then (after an offline gap) parked at
+	// 75%/370km ideal - a 170 km ideal-range gain it could only have
+	// gotten by charging somewhere we couldn't observe.
+	before, after := fx(40, 195, 200), fx(75, 360, 370)
+
+	mux := http.NewServeMux()
+	// Simulates a real connectivity gap: after one successful "before"
+	// poll, vehicle_data starts failing (exactly how a real offline
+	// car behaves - HTTP 408 "vehicle unavailable") and the summary
+	// check confirms offline, until the gap ends and the vehicle
+	// reappears with much more range. Driving this through the real
+	// failure path (rather than only the summary check) matters
+	// because an IDLE vehicle is polled via vehicle_data directly -
+	// checkSummary only runs as its fallback.
+	var offlineChecks int64
+	mux.HandleFunc("/api/1/products", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&summaryCalls, 1)
+		state := "online"
+		if atomic.LoadInt64(&vehicleDataCalls) >= 1 && atomic.AddInt64(&offlineChecks, 1) <= 2 {
+			state = "offline"
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"response": []map[string]any{{
+				"id": 555, "vehicle_id": 42, "vin": vin,
+				"display_name": "Test Model 3", "state": state, "in_service": false,
+			}},
+			"count": 1,
+		})
+	})
+	mux.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt64(&vehicleDataCalls, 1)
+		switch {
+		case n == 1:
+			// The "before" reading.
+			json.NewEncoder(w).Encode(fixtureResponse{Response: before})
+		case atomic.LoadInt64(&offlineChecks) < 2:
+			// Unreachable, exactly as a real offline car responds.
+			w.WriteHeader(http.StatusRequestTimeout)
+			w.Write([]byte(`{"response":null,"error":"vehicle unavailable: vehicle is offline or asleep"}`))
+		default:
+			// Back online, with substantially more range than before.
+			json.NewEncoder(w).Encode(fixtureResponse{Response: after})
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tesla.db")
+	tokenPath := filepath.Join(dir, "tokens.json")
+	if err := tesla.SaveTokenFile(tokenPath, tesla.TokenSet{
+		AccessToken: "test-access-token", RefreshToken: "test-refresh-token",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+
+	cfg := config.Config{
+		Database:  dbPath,
+		TokenFile: tokenPath,
+		Polling: config.PollingConfig{
+			DrivingInterval: 2 * time.Millisecond, ChargingInterval: 2 * time.Millisecond,
+			OnlineInterval: 2 * time.Millisecond, IdleTimeout: time.Hour,
+			SuspendedCheckInterval: 2 * time.Millisecond, AsleepInterval: 2 * time.Millisecond,
+			DriveTimeout: 15 * time.Minute,
+			// A real offline gap must last 5 minutes to count (matching
+			// TeslaMate) - not something a test can wait out, since
+			// snapshot times come from the wall clock at poll time.
+			// Lowered here purely so the full detection path runs; the
+			// threshold value itself is pinned by the state-machine
+			// tests in internal/vehicle instead.
+			OfflineChargeMinGap: time.Nanosecond,
+		},
+		Streaming: config.StreamingConfig{Enabled: false},
+		Backup:    config.BackupConfig{Enabled: false},
+		// An efficiency estimate is configured, so the synthesized
+		// session's energy_added can be modeled from range gained.
+		Vehicle: config.VehicleConfig{EfficiencyWhKm: 150},
+		API: config.APIConfig{
+			OwnerAPIBaseURL: server.URL, SSOBaseURL: server.URL,
+			ClientID: "ownerapi", UserAgent: "teslalog-test/0.1",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- Run(ctx, cfg) }()
+
+	// Wait for a closed charging session to appear.
+	deadline := time.Now().Add(8 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) && !found {
+		func() {
+			db, err := sql.Open("sqlite3", "file:"+dbPath+"?_busy_timeout=2000")
+			if err != nil {
+				return
+			}
+			defer db.Close()
+			var count int
+			_ = db.QueryRow(`SELECT COUNT(*) FROM charging_sessions WHERE status = 'closed'`).Scan(&count)
+			found = count > 0
+		}()
+		if !found {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	cancel()
+	<-runErrCh
+
+	if !found {
+		t.Fatalf("a charge that happened while the vehicle was offline was never recorded - " +
+			"the range gain across the offline gap should have synthesized a charging session")
+	}
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer store.Close()
+	var vehicleID int64
+	if err := store.DB().QueryRow(`SELECT id FROM vehicles ORDER BY id LIMIT 1`).Scan(&vehicleID); err != nil {
+		t.Fatalf("query vehicle id: %v", err)
+	}
+	charges, err := store.ListCharges(vehicleID, 0)
+	if err != nil {
+		t.Fatalf("list charges: %v", err)
+	}
+	if len(charges) != 1 {
+		t.Fatalf("expected exactly 1 synthesized charging session, got %d", len(charges))
+	}
+	c := charges[0]
+	if c.StartBattery != 40 || c.EndBattery != 75 {
+		t.Fatalf("expected the synthesized session to span 40%%->75%%, got %d%%->%d%%", c.StartBattery, c.EndBattery)
+	}
+	// 170 km ideal range gained * 150 Wh/km = 25.5 kWh.
+	if diff := c.EnergyAddedKwh - 25.5; diff > 0.2 || diff < -0.2 {
+		t.Fatalf("expected ~25.5 kWh modeled from the range gained and configured efficiency, got %.2f", c.EnergyAddedKwh)
+	}
+}
+
 // TestTeeHandlerForwardsToBothHandlers pins the portal's log-capture
 // mechanism: enabling the portal must tee log output into its in-memory
 // buffer WITHOUT silencing or altering what still goes to the normal

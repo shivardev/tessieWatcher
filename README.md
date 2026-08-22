@@ -121,6 +121,13 @@ DRIVING              ->  full vehicle_data poll every driving_interval
 CHARGING             ->  full vehicle_data poll every charging_interval
                         (default 5s, matches TeslaMate's own default)
 
+UPDATING             ->  full vehicle_data poll every online_interval,
+                        and deliberately NEVER idle-suspends: a 20+
+                        minute install is normal, i.e. longer than
+                        idle_timeout, and the cheap check can't see an
+                        install finish. Matches TeslaMate's own
+                        {:updating, _} state.
+
 ONLINE / IDLE        ->  full vehicle_data poll every online_interval
                         (default 15s, matches TeslaMate's own default)
 
@@ -151,18 +158,26 @@ never calls it.
                        │ becomes active (seen via cheap check)
                        ▼
                     ONLINE
-                  /    |     \
-                 ▼     ▼      ▼
-           DRIVING  CHARGING  IDLE
-               │       │        │ idle_timeout elapsed (15m default)
-               │       │        ▼
-               │       │    SUSPENDED
-               └───────┴────────┘
+              /    /    |     \
+             ▼    ▼     ▼      ▼
+     UPDATING DRIVING CHARGING IDLE
+          │      │       │        │ idle_timeout elapsed (15m default)
+          │      │       │        ▼
+          │      │       │    SUSPENDED
+          └──────┴───────┴────────┘
                        │
                        ▼
               ASLEEP / OFFLINE (confirmed by next cheap check,
                                 every 30s default)
 ```
+
+Coming back from `ASLEEP`/`OFFLINE` also reconciles what happened during
+the gap: if the vehicle gained more than 5 km of ideal range while
+unobservable (over at least 5 minutes), it must have been charging
+somewhere, so a complete charging session is synthesized from the
+before/after readings rather than that energy silently vanishing — and
+rather than it showing up as an impossible battery *gain* in vampire
+drain analysis. Matches TeslaMate's own inference and thresholds.
 
 (`ASLEEP` vs `OFFLINE` mirrors the Owner API's own vehicle summary state
 exactly — "asleep" is a normal sleep, "offline" means the car hasn't

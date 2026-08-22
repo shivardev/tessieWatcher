@@ -204,6 +204,83 @@ func TestSoftwareUpdateLifecycle(t *testing.T) {
 	}
 }
 
+// TestInstallingUpdateEntersItsOwnStateAndNeverIdleSuspends pins a real
+// gap found by reading TeslaMate's actual source: it treats an
+// installing update as its own top-level {:updating, _} state with no
+// idle/suspend path out of it, precisely because a >20-minute install
+// is normal - i.e. longer than the idle timeout. teslalog previously
+// tracked "installing" only as a side-flag observed during whatever
+// state a poll landed in (usually IDLE), so a long install would
+// idle-timeout into SUSPENDED, whose cheap summary check never calls
+// vehicle_data - meaning the install finishing could go unobserved
+// and the software_updates row would never be completed.
+func TestInstallingUpdateEntersItsOwnStateAndNeverIdleSuspends(t *testing.T) {
+	const idleTimeout = 3 * time.Minute
+	m := New(idleTimeout)
+	m.OnSummary(t0(), "online")
+
+	// Update starts installing while parked.
+	events := m.OnVehicleData(Snapshot{Time: t0(), UpdateStatus: "installing", UpdateVersion: "2026.20.1"})
+	if !containsKind(events, EvSoftwareUpdateBeg) {
+		t.Fatalf("expected EvSoftwareUpdateBeg, got %+v", kindsOf(events))
+	}
+	if m.State() != StateUpdating {
+		t.Fatalf("expected StateUpdating, got %s", m.State())
+	}
+
+	// Well past the idle timeout, still installing: must NOT be
+	// considered idle-timed-out, and Suspend must refuse to fire.
+	later := t0().Add(30 * time.Minute)
+	m.OnVehicleData(Snapshot{Time: later, UpdateStatus: "installing", UpdateVersion: "2026.20.1"})
+	if m.State() != StateUpdating {
+		t.Fatalf("expected to still be StateUpdating 30min into an install, got %s", m.State())
+	}
+	if m.IdleTimedOut(later) {
+		t.Fatalf("an installing update must never report as idle-timed-out")
+	}
+	if evs := m.Suspend(later); len(evs) != 0 {
+		t.Fatalf("Suspend must be a no-op while updating, got %+v", kindsOf(evs))
+	}
+	if m.State() != StateUpdating {
+		t.Fatalf("Suspend must not move the machine out of StateUpdating, got %s", m.State())
+	}
+
+	// Install finishes - now it can behave normally again.
+	events = m.OnVehicleData(Snapshot{Time: later.Add(time.Minute), UpdateStatus: "", Firmware: "2026.20.1"})
+	if !containsKind(events, EvSoftwareUpdateEnd) {
+		t.Fatalf("expected EvSoftwareUpdateEnd, got %+v", kindsOf(events))
+	}
+	if m.State() != StateIdle {
+		t.Fatalf("expected StateIdle once the install finished, got %s", m.State())
+	}
+}
+
+// TestGoingOfflineMidUpdateReturnsToUpdatingNotOnline pins TeslaMate's
+// own "went offline while updating" behavior: the update stays open and
+// it just keeps re-checking. Without this, coming back online would
+// land in plain StateOnline, which CAN idle-suspend - reintroducing
+// exactly the gap StateUpdating exists to prevent.
+func TestGoingOfflineMidUpdateReturnsToUpdatingNotOnline(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online")
+	m.OnVehicleData(Snapshot{Time: t0(), UpdateStatus: "installing", UpdateVersion: "2026.20.1"})
+	if m.State() != StateUpdating {
+		t.Fatalf("expected StateUpdating, got %s", m.State())
+	}
+
+	// Car drops offline mid-install (normal: it reboots during one).
+	m.OnSummary(t0().Add(2*time.Minute), "offline")
+	if m.State() != StateOffline {
+		t.Fatalf("expected StateOffline while unreachable, got %s", m.State())
+	}
+
+	// Comes back - must resume StateUpdating, not plain StateOnline.
+	m.OnSummary(t0().Add(8*time.Minute), "online")
+	if m.State() != StateUpdating {
+		t.Fatalf("expected to resume StateUpdating after coming back online mid-install, got %s", m.State())
+	}
+}
+
 func TestDrivingWhileChargingClosesChargeFirst(t *testing.T) {
 	m := New(3 * time.Minute)
 	m.OnSummary(t0(), "online")
@@ -310,6 +387,85 @@ func TestOnUnreachablePreventsMergingAFutureDriveIntoAnAbandonedOne(t *testing.T
 	}
 	if containsKind(events, EvDrivePoint) {
 		t.Fatalf("must not emit EvDrivePoint here - that would mean this got merged into the abandoned drive: %+v", kindsOf(events))
+	}
+}
+
+// TestOnBackOnlineDetectsAChargeThatHappenedWhileUnobservable pins
+// TeslaMate's own inference (verified directly against its source): if
+// the vehicle comes back after being unreachable having gained more
+// than 5 km of ideal range over at least 5 minutes, it must have been
+// charging somewhere we couldn't see. Without this, that energy is
+// silently lost from charging history - and shows up in vampire-drain
+// analysis as an impossible battery *gain* while parked.
+func TestOnBackOnlineDetectsAChargeThatHappenedWhileUnobservable(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online")
+
+	// Last thing we saw before losing contact: parked, 40% / 200 km ideal.
+	m.OnVehicleData(Snapshot{
+		Time: t0(), ShiftState: "P", BatteryLevel: 40, RangeKm: 195, IdealRangeKm: 200,
+	})
+	m.OnSummary(t0().Add(10*time.Minute), "offline")
+
+	// Comes back 2 hours later with substantially more range.
+	after := Snapshot{
+		Time: t0().Add(2 * time.Hour), ShiftState: "P", BatteryLevel: 75, RangeKm: 360, IdealRangeKm: 370,
+	}
+	events := m.OnBackOnline(after)
+	if !containsKind(events, EvOfflineCharge) {
+		t.Fatalf("expected EvOfflineCharge, got %+v", kindsOf(events))
+	}
+	for _, e := range events {
+		if e.Kind != EvOfflineCharge {
+			continue
+		}
+		if e.FromSnapshot.BatteryLevel != 40 || e.Snapshot.BatteryLevel != 75 {
+			t.Fatalf("expected the event to carry both the before (40%%) and after (75%%) readings, got %d%% -> %d%%",
+				e.FromSnapshot.BatteryLevel, e.Snapshot.BatteryLevel)
+		}
+		if !e.FromSnapshot.Time.Equal(t0()) {
+			t.Fatalf("expected FromSnapshot to be the last pre-offline reading, got %s", e.FromSnapshot.Time)
+		}
+	}
+}
+
+func TestOnBackOnlineIgnoresSmallOrBriefChanges(t *testing.T) {
+	cases := []struct {
+		name       string
+		afterIdeal float64
+		afterAt    time.Duration
+	}{
+		// Range barely moved - normal estimation drift, not a charge.
+		{"range gain under the threshold", 203, 2 * time.Hour},
+		// Real range gain but over a too-short window to be a charge -
+		// matches TeslaMate's own >= 5 minute floor.
+		{"gap too brief", 370, 2 * time.Minute},
+		// Range went DOWN (normal vampire drain) - definitely not a charge.
+		{"range decreased", 194, 2 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New(3 * time.Minute)
+			m.OnSummary(t0(), "online")
+			m.OnVehicleData(Snapshot{Time: t0(), ShiftState: "P", BatteryLevel: 40, RangeKm: 195, IdealRangeKm: 200})
+			m.OnSummary(t0().Add(time.Minute), "offline")
+
+			events := m.OnBackOnline(Snapshot{
+				Time: t0().Add(c.afterAt), ShiftState: "P", BatteryLevel: 41, RangeKm: c.afterIdeal - 5, IdealRangeKm: c.afterIdeal,
+			})
+			if len(events) != 0 {
+				t.Fatalf("expected no offline-charge inference, got %+v", kindsOf(events))
+			}
+		})
+	}
+}
+
+func TestOnBackOnlineWithNoPriorSnapshotIsANoOp(t *testing.T) {
+	// Fresh start (e.g. daemon just launched): nothing to compare
+	// against, so nothing can be inferred.
+	m := New(3 * time.Minute)
+	if events := m.OnBackOnline(Snapshot{Time: t0(), BatteryLevel: 80, IdealRangeKm: 300}); len(events) != 0 {
+		t.Fatalf("expected no events with no prior snapshot, got %+v", kindsOf(events))
 	}
 }
 

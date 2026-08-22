@@ -172,6 +172,13 @@ type PollingConfig struct {
 	// deliberately not invented independently, given how easy it is
 	// to get this kind of edge case subtly wrong without checking.
 	DriveTimeout time.Duration
+	// OfflineChargeMinGap is how long the vehicle must have been
+	// unobservable before a range gain across that gap is treated as
+	// "it charged somewhere we couldn't see" (see
+	// vehicle.Machine.OnBackOnline). Defaults to TeslaMate's own
+	// threshold; exists as a config field mainly so tests can drive
+	// the full detection path without waiting out five real minutes.
+	OfflineChargeMinGap time.Duration
 }
 
 type StreamingConfig struct {
@@ -286,6 +293,10 @@ func Default() Config {
 			SuspendedCheckInterval: 21 * time.Minute,
 			AsleepInterval:         30 * time.Second,
 			DriveTimeout:           15 * time.Minute,
+			// Matches vehicle.OfflineChargeMinGap (kept as a literal
+			// here rather than importing internal/vehicle, which would
+			// make config depend on it - config is meant to be a leaf).
+			OfflineChargeMinGap: 5 * time.Minute,
 		},
 		Streaming: StreamingConfig{
 			Enabled: true,
