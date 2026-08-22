@@ -191,6 +191,10 @@ type loopState struct {
 	chargeID int64
 
 	stream *tesla.StreamConn
+	// lastStreamAt is the timestamp of the most recent streaming
+	// sample actually recorded, used to drop stale/replayed ones after
+	// a reconnect - see drainStream. Reset at the start of each drive.
+	lastStreamAt time.Time
 }
 
 func (l *loopState) run(ctx context.Context) error {
@@ -438,6 +442,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				return fmt.Errorf("open drive: %w", err)
 			}
 			l.driveID = id
+			l.lastStreamAt = time.Time{} // fresh drive, no prior stream samples to compare against
 			// TeslaMate's own start_drive records a position for this
 			// exact same first sample, in the same transaction as
 			// starting the drive (verified directly against its
@@ -687,6 +692,19 @@ func (l *loopState) drainStream() {
 				l.stream = nil
 				return
 			}
+			// Discard samples older than what we've already recorded.
+			// The stream can replay buffered/stale data after a
+			// reconnect - and teslalog reconnects often during a long
+			// drive - which would otherwise write out-of-order points,
+			// corrupting the route's shape and any calculation that
+			// depends on sample ordering (elevation gain/loss, energy
+			// integration). TeslaMate guards the same way (its stale?
+			// check, verified directly against its source).
+			if !l.lastStreamAt.IsZero() && !s.Time.After(l.lastStreamAt) {
+				continue
+			}
+			l.lastStreamAt = s.Time
+
 			// The legacy streaming protocol only carries GPS/speed/power/
 			// battery/range/shift_state/elevation - richer telemetry
 			// (climate, TPMS, usable battery %, ideal/est range) only comes

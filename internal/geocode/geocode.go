@@ -75,10 +75,23 @@ func New(geofences []Geofence, cache Cache, enabled bool, baseURL, userAgent str
 // the cache, then (if enabled) a live reverse-geocoding lookup, in that
 // cheapest-first order. Returns "" if none of those produced a name.
 func (r *Resolver) Resolve(ctx context.Context, lat, lng float64) string {
+	// Pick the NEAREST containing geofence, not merely the first one
+	// listed - matching TeslaMate's own find_geofence, which orders
+	// candidates by distance and takes the closest (verified directly
+	// against lib/teslamate/locations.ex). This matters whenever zones
+	// overlap, e.g. a small "Home garage" inside a larger "Home": the
+	// more specific one wins regardless of config order, instead of
+	// the answer depending on how the file happens to be arranged.
+	bestName := ""
+	bestDist := math.Inf(1)
 	for _, g := range r.geofences {
-		if haversineMeters(lat, lng, g.Lat, g.Lng) <= g.RadiusM {
-			return g.Name
+		d := haversineMeters(lat, lng, g.Lat, g.Lng)
+		if d <= g.RadiusM && d < bestDist {
+			bestName, bestDist = g.Name, d
 		}
+	}
+	if bestName != "" {
+		return bestName
 	}
 
 	latKey, lngKey := roundCoord(lat), roundCoord(lng)

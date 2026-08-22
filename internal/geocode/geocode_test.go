@@ -35,6 +35,34 @@ func TestResolveMatchesGeofenceBeforeAnythingElse(t *testing.T) {
 	}
 }
 
+// TestResolvePicksTheNearestOverlappingGeofence pins TeslaMate's own
+// find_geofence behavior (verified directly against
+// lib/teslamate/locations.ex: it orders candidates by distance and
+// takes the closest). teslalog used to return whichever matching
+// geofence appeared first in config, so with a small zone nested
+// inside a larger one - e.g. "Home garage" inside "Home" - the
+// reported location depended on how the config file happened to be
+// ordered rather than on where the car actually was.
+func TestResolvePicksTheNearestOverlappingGeofence(t *testing.T) {
+	// Deliberately listed largest-first, so a naive first-match would
+	// return the wrong (less specific) one.
+	geofences := []Geofence{
+		{Name: "Home", Lat: 35.0000, Lng: -85.0000, RadiusM: 500},
+		{Name: "Home garage", Lat: 35.0002, Lng: -85.0000, RadiusM: 50},
+	}
+	r := New(geofences, nil, false, "", "test")
+
+	// Sitting essentially on top of the garage - inside both zones.
+	if got := r.Resolve(context.Background(), 35.00021, -85.0000); got != "Home garage" {
+		t.Fatalf("expected the nearest (most specific) geofence 'Home garage', got %q", got)
+	}
+
+	// Elsewhere in the yard: inside "Home" only.
+	if got := r.Resolve(context.Background(), 35.0030, -85.0000); got != "Home" {
+		t.Fatalf("expected 'Home' when outside the garage's radius, got %q", got)
+	}
+}
+
 func TestResolveOutsideGeofenceRadiusDoesNotMatch(t *testing.T) {
 	geofences := []Geofence{{Name: "Home", Lat: 35.0000, Lng: -85.0000, RadiusM: 10}}
 	r := New(geofences, nil, false, "", "test")
