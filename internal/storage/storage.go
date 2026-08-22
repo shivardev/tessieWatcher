@@ -187,6 +187,37 @@ func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 	return id, nil
 }
 
+// SeedVehicleEfficiency stores whPerKm ONLY if the vehicle has no
+// efficiency figure yet. config.toml's [vehicle].efficiency_wh_km is
+// documented as a starting point that teslalog replaces once it has
+// derived the real figure from actual charging history (see
+// RecalculateEfficiency) - so applying it unconditionally on every
+// startup would clobber that derived value on every restart, which
+// is the exact opposite of what the setting promises.
+func (s *Store) SeedVehicleEfficiency(vehicleID int64, whPerKm float64) error {
+	_, err := s.db.Exec(`
+		UPDATE vehicles SET efficiency_wh_km = ?
+		WHERE id = ? AND (efficiency_wh_km IS NULL OR efficiency_wh_km <= 0)
+	`, whPerKm, vehicleID)
+	return err
+}
+
+// VehicleEfficiency returns the vehicle's current Wh/km figure -
+// derived from real charging history where enough of it exists,
+// otherwise whatever was seeded from config. Returns ok=false when
+// neither is available, so callers can tell "no efficiency known"
+// apart from a real zero.
+func (s *Store) VehicleEfficiency(vehicleID int64) (whPerKm float64, ok bool, err error) {
+	var v sql.NullFloat64
+	if err := s.db.QueryRow(`SELECT efficiency_wh_km FROM vehicles WHERE id = ?`, vehicleID).Scan(&v); err != nil {
+		return 0, false, err
+	}
+	if !v.Valid || v.Float64 <= 0 {
+		return 0, false, nil
+	}
+	return v.Float64, true, nil
+}
+
 // SetVehicleEfficiency stores a user-configured Wh/km efficiency
 // estimate (config.toml's [vehicle].efficiency_wh_km) — not reported by
 // the API, used the same way TeslaMate uses it: to project range from

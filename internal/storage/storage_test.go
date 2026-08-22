@@ -1202,3 +1202,52 @@ func TestLatestBatteryReadingPrefersOpenSessionOverIdleSample(t *testing.T) {
 		t.Fatalf("expected in-drive reading level=52 range=210, got ok=%v level=%d range=%.1f err=%v", ok, level, rangeKm, err)
 	}
 }
+
+// TestSeedVehicleEfficiencyDoesNotClobberDerivedValue is a regression
+// test for a real bug: config.toml's [vehicle].efficiency_wh_km is
+// documented as a starting point that teslalog replaces once it has
+// derived the real figure from actual charging history - but the
+// runner applied it unconditionally on every startup, so the derived
+// figure was clobbered back to the config guess on every restart, the
+// exact opposite of what the setting promises.
+func TestSeedVehicleEfficiencyDoesNotClobberDerivedValue(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-EFF", TeslaID: "21", DisplayName: "Car"})
+
+	// Nothing known yet: the seed applies.
+	if err := s.SeedVehicleEfficiency(vehicleID, 150); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, ok, err := s.VehicleEfficiency(vehicleID)
+	if err != nil || !ok || got != 150 {
+		t.Fatalf("expected the seed to apply when nothing is known, got %v ok=%v err=%v", got, ok, err)
+	}
+
+	// A figure derived from real history lands.
+	if err := s.SetVehicleEfficiency(vehicleID, 131.4); err != nil {
+		t.Fatalf("set derived: %v", err)
+	}
+
+	// Restart: the seed must NOT overwrite the derived figure.
+	if err := s.SeedVehicleEfficiency(vehicleID, 150); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+	got, ok, err = s.VehicleEfficiency(vehicleID)
+	if err != nil || !ok {
+		t.Fatalf("read back: ok=%v err=%v", ok, err)
+	}
+	if got != 131.4 {
+		t.Fatalf("expected the derived 131.4 to survive a restart, got %v (the config seed clobbered it)", got)
+	}
+}
+
+func TestVehicleEfficiencyReportsUnknownRatherThanZero(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-EFF2", TeslaID: "22", DisplayName: "Car"})
+
+	// A brand-new vehicle with no charges and no seed: "unknown", not 0,
+	// so callers don't treat an absent figure as a real measurement.
+	if _, ok, err := s.VehicleEfficiency(vehicleID); err != nil || ok {
+		t.Fatalf("expected ok=false for a vehicle with no efficiency yet, got ok=%v err=%v", ok, err)
+	}
+}

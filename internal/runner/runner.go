@@ -59,8 +59,11 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		return fmt.Errorf("upsert vehicle: %w", err)
 	}
 	if cfg.Vehicle.EfficiencyWhKm > 0 {
-		if err := store.SetVehicleEfficiency(vehicleDBID, cfg.Vehicle.EfficiencyWhKm); err != nil {
-			slog.Warn("set vehicle efficiency failed", "error", err)
+		// Seed, don't overwrite: a figure already derived from real
+		// charging history is strictly better than the config guess,
+		// and must survive restarts. See SeedVehicleEfficiency.
+		if err := store.SeedVehicleEfficiency(vehicleDBID, cfg.Vehicle.EfficiencyWhKm); err != nil {
+			slog.Warn("seed vehicle efficiency failed", "error", err)
 		}
 	}
 
@@ -638,9 +641,22 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			// configured, the energy stays unknown rather than being
 			// guessed, and the session still correctly records the
 			// battery/range change.
+			// Use the best efficiency available - the figure derived
+			// from this car's own charging history if there is one,
+			// falling back to the config seed. Using the config value
+			// directly would ignore the derived figure entirely, which
+			// is both less accurate and inconsistent with everything
+			// else that reads efficiency.
 			energyAdded := 0.0
-			if l.cfg.Vehicle.EfficiencyWhKm > 0 {
-				energyAdded = (after.IdealRangeKm - before.IdealRangeKm) * l.cfg.Vehicle.EfficiencyWhKm / 1000
+			whPerKm, haveEff, effErr := l.store.VehicleEfficiency(l.vehicleDBID)
+			if effErr != nil {
+				slog.Warn("read vehicle efficiency failed", "error", effErr)
+			}
+			if !haveEff {
+				whPerKm = l.cfg.Vehicle.EfficiencyWhKm
+			}
+			if whPerKm > 0 {
+				energyAdded = (after.IdealRangeKm - before.IdealRangeKm) * whPerKm / 1000
 			}
 			// Price it by wherever it was parked when it went dark -
 			// the same "where did this charge happen" question, just
