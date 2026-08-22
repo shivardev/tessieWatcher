@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -281,6 +282,86 @@ func TestCloseDriveDiscardsTrivialDrives(t *testing.T) {
 			t.Fatalf("expected a real 2km drive to be kept and closed, got count=%d status=%q", count, status)
 		}
 	})
+}
+
+// TestUnresolvedLocationsCanBeFoundAndBackfilled pins the ability to
+// retroactively fill in place names that failed to resolve when the
+// drive/charge was recorded - the geocoder being unreachable or
+// rate-limited, or a geofence being added to the config afterwards.
+// The coordinates are always stored, so the name genuinely can be
+// filled in later; TeslaMate does exactly this on an hourly sweep
+// (lib/teslamate/repair.ex). Without it, a location that failed once
+// stays blank forever.
+func TestUnresolvedLocationsCanBeFoundAndBackfilled(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-BACKFILL", TeslaID: "18", DisplayName: "Car"})
+	start := time.Now().UTC()
+
+	// A drive recorded with coordinates but no resolvable names.
+	driveID, err := s.OpenDrive(DriveStart{
+		VehicleID: vehicleID, Time: start, OdometerKm: 100, Lat: 35.10, Lng: -85.10,
+	})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.AppendPosition(PositionSample{
+			DriveID: driveID, VehicleID: vehicleID, Time: start.Add(time.Duration(i+1) * time.Minute),
+			OdometerKm: 100 + float64(i+1)*3, ShiftState: "D",
+		}); err != nil {
+			t.Fatalf("append position: %v", err)
+		}
+	}
+	if err := s.CloseDrive(DriveEnd{
+		DriveID: driveID, Time: start.Add(10 * time.Minute), OdometerKm: 110, Lat: 35.20, Lng: -85.20,
+	}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+
+	// A charging session with the same problem.
+	chargeID, err := s.OpenChargingSession(ChargeStart{
+		VehicleID: vehicleID, Time: start, BatteryLevel: 30, Lat: 35.30, Lng: -85.30,
+	})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: chargeID, Time: start.Add(time.Hour), BatteryLevel: 80, EnergyAddedKwh: 20,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	pending, err := s.ListUnresolvedLocations(vehicleID, 25)
+	if err != nil {
+		t.Fatalf("list unresolved locations: %v", err)
+	}
+	// Both drive endpoints plus the charge's location.
+	if len(pending) != 3 {
+		t.Fatalf("expected 3 unresolved locations (drive start+end, charge), got %d: %+v", len(pending), pending)
+	}
+
+	for _, u := range pending {
+		if err := s.SetResolvedLocation(u, fmt.Sprintf("Resolved %.2f,%.2f", u.Lat, u.Lng)); err != nil {
+			t.Fatalf("set resolved location: %v", err)
+		}
+	}
+
+	// Nothing should remain unresolved.
+	remaining, err := s.ListUnresolvedLocations(vehicleID, 25)
+	if err != nil {
+		t.Fatalf("re-list unresolved locations: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected no unresolved locations after backfill, got %+v", remaining)
+	}
+
+	var startLoc, endLoc string
+	if err := s.db.QueryRow(`SELECT start_location, end_location FROM drives WHERE id = ?`, driveID).Scan(&startLoc, &endLoc); err != nil {
+		t.Fatalf("query drive locations: %v", err)
+	}
+	if startLoc != "Resolved 35.10,-85.10" || endLoc != "Resolved 35.20,-85.20" {
+		t.Fatalf("expected both drive endpoints backfilled from their own coordinates, got %q / %q", startLoc, endLoc)
+	}
 }
 
 // TestRecalculateEfficiencyDerivesFromRealChargingHistory pins

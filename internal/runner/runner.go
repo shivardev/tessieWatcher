@@ -220,6 +220,11 @@ func (l *loopState) run(ctx context.Context) error {
 				slog.Warn("vehicle summary check failed", "error", err)
 			}
 			if isAsleepLike(l.machine.State()) {
+				// The car is asleep/offline and we have nothing else to
+				// do - a good moment to retry any place names that
+				// failed to resolve earlier, without competing with
+				// active drive/charge logging for time or rate limit.
+				l.backfillLocations(ctx)
 				sleepFor = l.checkInterval(l.machine.State())
 			} else {
 				// checkSummary just found the car active (e.g. woke up on
@@ -763,6 +768,43 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 
 		SentryMode: boolPtr(s.SentryMode), IsUserPresent: boolPtr(s.IsUserPresent), ValetMode: boolPtr(s.ValetMode),
 		ClimateKeeperMode: s.ClimateKeeperMode,
+	}
+}
+
+// backfillLocations retries place-name resolution for drive/charge
+// endpoints that have coordinates but no name. These fail for
+// temporary reasons - geocoder unreachable or rate-limited, or a
+// geofence added to the config after the fact - so retrying later
+// genuinely fixes them, whereas leaving them alone means a blank
+// "from"/"to" forever. Mirrors TeslaMate's own hourly Repair sweep
+// (verified directly against lib/teslamate/repair.ex).
+//
+// Bounded per sweep so a large backlog can't stall the poll loop or
+// hammer the geocoding service; the next sweep picks up where this
+// one left off.
+func (l *loopState) backfillLocations(ctx context.Context) {
+	const perSweep = 25
+
+	pending, err := l.store.ListUnresolvedLocations(l.vehicleDBID, perSweep)
+	if err != nil {
+		slog.Warn("list unresolved locations failed", "error", err)
+		return
+	}
+
+	var fixed int
+	for _, u := range pending {
+		name := l.geo.Resolve(ctx, u.Lat, u.Lng)
+		if name == "" {
+			continue // still unresolvable (geocoding off/down) - try again next sweep
+		}
+		if err := l.store.SetResolvedLocation(u, name); err != nil {
+			slog.Warn("backfill location failed", "error", err)
+			continue
+		}
+		fixed++
+	}
+	if fixed > 0 {
+		slog.Info("backfilled previously-unresolved locations", "count", fixed)
 	}
 }
 

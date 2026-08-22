@@ -196,6 +196,90 @@ func (s *Store) SetVehicleEfficiency(vehicleID int64, whPerKm float64) error {
 	return err
 }
 
+// UnresolvedLocation is one drive/charge endpoint whose place name was
+// never resolved - see ListUnresolvedLocations.
+type UnresolvedLocation struct {
+	Table  string // "drives" or "charging_sessions"
+	ID     int64
+	Column string // which location column to fill in
+	Lat    float64
+	Lng    float64
+}
+
+// ListUnresolvedLocations finds drive/charge endpoints that have real
+// coordinates but no resolved place name, up to limit rows.
+//
+// These happen for reasons that are temporary, not permanent: the
+// geocoding service was unreachable, rate-limited, or the daemon was
+// started before a geofence covering that spot was configured. The
+// coordinates were always recorded, so the name can be filled in later
+// - which is exactly what TeslaMate's own Repair GenServer does on an
+// hourly sweep (verified directly against lib/teslamate/repair.ex).
+// Without this, a location that failed to resolve once stays blank
+// forever.
+func (s *Store) ListUnresolvedLocations(vehicleID int64, limit int) ([]UnresolvedLocation, error) {
+	const q = `
+		SELECT 'drives', id, 'start_location', start_lat, start_lng FROM drives
+			WHERE vehicle_id = ? AND status = 'closed'
+			  AND (start_location IS NULL OR start_location = '')
+			  AND start_lat IS NOT NULL AND start_lng IS NOT NULL
+		UNION ALL
+		SELECT 'drives', id, 'end_location', end_lat, end_lng FROM drives
+			WHERE vehicle_id = ? AND status = 'closed'
+			  AND (end_location IS NULL OR end_location = '')
+			  AND end_lat IS NOT NULL AND end_lng IS NOT NULL
+		UNION ALL
+		SELECT 'charging_sessions', id, 'location', latitude, longitude FROM charging_sessions
+			WHERE vehicle_id = ? AND status = 'closed'
+			  AND (location IS NULL OR location = '')
+			  AND latitude IS NOT NULL AND longitude IS NOT NULL
+		LIMIT ?`
+
+	rows, err := s.db.Query(q, vehicleID, vehicleID, vehicleID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unresolved locations: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UnresolvedLocation
+	for rows.Next() {
+		var u UnresolvedLocation
+		if err := rows.Scan(&u.Table, &u.ID, &u.Column, &u.Lat, &u.Lng); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// SetResolvedLocation fills in a previously-unresolved place name found
+// via ListUnresolvedLocations.
+func (s *Store) SetResolvedLocation(u UnresolvedLocation, name string) error {
+	// Table/column come from ListUnresolvedLocations' own fixed
+	// SELECT literals, never from user input, so interpolating them
+	// here can't inject anything - and neither can be a bound
+	// parameter in SQL.
+	switch u.Table {
+	case "drives":
+		if u.Column != "start_location" && u.Column != "end_location" {
+			return fmt.Errorf("unexpected drives column %q", u.Column)
+		}
+	case "charging_sessions":
+		if u.Column != "location" {
+			return fmt.Errorf("unexpected charging_sessions column %q", u.Column)
+		}
+	default:
+		return fmt.Errorf("unexpected table %q", u.Table)
+	}
+
+	_, err := s.db.Exec(
+		fmt.Sprintf(`UPDATE %s SET %s = ? WHERE id = ?`, u.Table, u.Column), name, u.ID)
+	if err != nil {
+		return fmt.Errorf("set resolved location on %s#%d: %w", u.Table, u.ID, err)
+	}
+	return nil
+}
+
 // efficiencyPrecisionThresholds mirrors TeslaMate's own
 // recalculate_efficiency opts list exactly (verified directly against
 // lib/teslamate/log.ex: `[{5, 8}, {4, 5}, {3, 3}, {2, 2}]`): try to
