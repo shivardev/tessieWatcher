@@ -42,6 +42,21 @@ type GeofenceConfig struct {
 	Lat     float64
 	Lng     float64
 	RadiusM float64
+
+	// Per-geofence charging price. Real rates differ by location -
+	// home vs a paid apartment charger vs a free one at a store - so
+	// one global rate can't produce correct costs for anyone with more
+	// than one regular charging spot. Matches TeslaMate's own
+	// per-geofence pricing. See geocode.Geofence's equivalent fields.
+	//
+	// HasPricing is set by Load when the file actually specified a
+	// price for this geofence, distinguishing a genuinely free charger
+	// (cost_per_unit = 0) from one with no pricing configured at all
+	// (cost left unknown).
+	HasPricing  bool
+	BillingType string
+	CostPerUnit float64
+	SessionFee  float64
 }
 
 // GeocodingConfig controls the optional, off-by-default fallback for
@@ -102,10 +117,20 @@ type ChargingConfig struct {
 	// is estimated as charge_energy_added_kwh / Efficiency. Leave 0 to
 	// skip recording an estimate at all (the column stays NULL).
 	Efficiency float64
-	// PricePerKwh, if set, is multiplied by charge_energy_added_kwh to
-	// populate charging_sessions.cost. Leave 0 for no cost tracking
-	// (matches TeslaMate's behavior with no geofence price configured).
+	// PricePerKwh is a FALLBACK rate, used only for charges that
+	// happen outside every priced geofence (see
+	// GeofenceConfig.CostPerUnit, which takes precedence and is how
+	// per-location rates - home vs a paid apartment charger vs a free
+	// one - are actually expressed). Leave 0 to record no cost for
+	// unpriced locations, matching TeslaMate's behavior with no
+	// geofence price configured.
 	PricePerKwh float64
+	// FreeSupercharging: if true, any charge at a Tesla-branded fast
+	// charger costs 0 regardless of any other pricing. Matches
+	// TeslaMate's own car_settings.free_supercharging (verified
+	// against lib/teslamate/log.ex's put_cost, which short-circuits on
+	// fast_charger_type starting with "Tesla").
+	FreeSupercharging bool
 }
 
 type PollingConfig struct {
@@ -251,6 +276,12 @@ type rawConfig struct {
 		Lat     float64 `toml:"lat"`
 		Lng     float64 `toml:"lng"`
 		RadiusM float64 `toml:"radius_m"`
+		// *float64 (not float64) so "not priced at all" is
+		// distinguishable from an explicit 0 meaning free - see
+		// GeofenceConfig.HasPricing.
+		CostPerUnit *float64 `toml:"cost_per_unit"`
+		BillingType string   `toml:"billing_type"`
+		SessionFee  float64  `toml:"session_fee"`
 	} `toml:"geofence"`
 
 	API struct {
@@ -265,8 +296,9 @@ type rawConfig struct {
 	} `toml:"vehicle"`
 
 	Charging struct {
-		Efficiency  float64 `toml:"efficiency"`
-		PricePerKwh float64 `toml:"price_per_kwh"`
+		Efficiency        float64 `toml:"efficiency"`
+		PricePerKwh       float64 `toml:"price_per_kwh"`
+		FreeSupercharging *bool   `toml:"free_supercharging"`
 	} `toml:"charging"`
 }
 
@@ -451,7 +483,20 @@ func Load(path string) (Config, error) {
 
 	cfg.Geofences = nil
 	for _, g := range raw.Geofence {
-		cfg.Geofences = append(cfg.Geofences, GeofenceConfig{Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM})
+		gc := GeofenceConfig{Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM}
+		if g.CostPerUnit != nil {
+			gc.HasPricing = true
+			gc.CostPerUnit = *g.CostPerUnit
+			gc.SessionFee = g.SessionFee
+			gc.BillingType = g.BillingType
+			if gc.BillingType == "" {
+				gc.BillingType = "per_kwh"
+			}
+			if gc.BillingType != "per_kwh" && gc.BillingType != "per_minute" {
+				return cfg, fmt.Errorf("geofence %q: billing_type must be \"per_kwh\" or \"per_minute\", got %q", g.Name, g.BillingType)
+			}
+		}
+		cfg.Geofences = append(cfg.Geofences, gc)
 	}
 
 	if raw.API.OwnerAPIBaseURL != "" {
@@ -470,6 +515,9 @@ func Load(path string) (Config, error) {
 	cfg.Vehicle.EfficiencyWhKm = raw.Vehicle.EfficiencyWhKm
 	cfg.Charging.Efficiency = raw.Charging.Efficiency
 	cfg.Charging.PricePerKwh = raw.Charging.PricePerKwh
+	if raw.Charging.FreeSupercharging != nil {
+		cfg.Charging.FreeSupercharging = *raw.Charging.FreeSupercharging
+	}
 
 	return cfg, nil
 }

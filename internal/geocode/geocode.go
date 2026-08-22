@@ -31,6 +31,56 @@ type Geofence struct {
 	Lat     float64
 	Lng     float64
 	RadiusM float64
+
+	// Pricing for charges that happen inside this zone. Real-world
+	// electricity rates differ per location - home vs a paid apartment
+	// charger vs a free one at a store - so a single global rate can't
+	// produce correct costs for anyone with more than one regular
+	// charging spot. Matches TeslaMate's own per-geofence pricing
+	// (geofences.cost_per_unit/billing_type/session_fee, verified
+	// against lib/teslamate/log.ex's put_cost).
+	//
+	// BillingType is "per_kwh" (default) or "per_minute". CostPerUnit
+	// is currency per kWh or per minute accordingly; zero is a
+	// legitimate value meaning free. SessionFee is a flat charge added
+	// once per session on top.
+	//
+	// HasPricing distinguishes "this zone charges nothing" (a free
+	// charger - cost 0) from "no pricing configured for this zone"
+	// (cost unknown, left NULL), which a zero CostPerUnit alone
+	// can't express.
+	HasPricing  bool
+	BillingType string
+	CostPerUnit float64
+	SessionFee  float64
+}
+
+// Cost computes what a charging session inside this geofence cost,
+// following TeslaMate's put_cost exactly (verified against its
+// source): per-kWh billing charges for the greater of energy added
+// and energy drawn from the wall, per-minute billing charges for
+// elapsed time, and either way a flat session fee is added on top.
+// Returns ok=false if this zone has no pricing configured, so the
+// caller can leave the cost unknown rather than recording a
+// misleading zero.
+func (g Geofence) Cost(energyAddedKwh, energyUsedKwh, durationMin float64) (cost float64, ok bool) {
+	if !g.HasPricing {
+		return 0, false
+	}
+	switch g.BillingType {
+	case "per_minute":
+		return g.SessionFee + durationMin*g.CostPerUnit, true
+	default: // "per_kwh"
+		// TeslaMate bills the greater of the two: energy drawn from
+		// the wall is what a supplier meters, but it isn't always
+		// derivable, in which case energy added is the best available
+		// stand-in.
+		kwh := energyAddedKwh
+		if energyUsedKwh > kwh {
+			kwh = energyUsedKwh
+		}
+		return g.SessionFee + kwh*g.CostPerUnit, true
+	}
 }
 
 // Cache persists resolved (roundCoord(lat), roundCoord(lng)) -> name
@@ -71,27 +121,37 @@ func New(geofences []Geofence, cache Cache, enabled bool, baseURL, userAgent str
 	}
 }
 
-// Resolve returns a place name for (lat, lng), checking geofences, then
-// the cache, then (if enabled) a live reverse-geocoding lookup, in that
-// cheapest-first order. Returns "" if none of those produced a name.
-func (r *Resolver) Resolve(ctx context.Context, lat, lng float64) string {
-	// Pick the NEAREST containing geofence, not merely the first one
-	// listed - matching TeslaMate's own find_geofence, which orders
-	// candidates by distance and takes the closest (verified directly
-	// against lib/teslamate/locations.ex). This matters whenever zones
-	// overlap, e.g. a small "Home garage" inside a larger "Home": the
-	// more specific one wins regardless of config order, instead of
-	// the answer depending on how the file happens to be arranged.
-	bestName := ""
+// FindGeofence returns the configured geofence containing (lat, lng),
+// or ok=false if none does. Exposed separately from Resolve because
+// callers sometimes need more than the name - notably the charging
+// cost, which is per-geofence (see Geofence.Cost).
+//
+// Picks the NEAREST containing zone, not merely the first one listed -
+// matching TeslaMate's own find_geofence, which orders candidates by
+// distance and takes the closest (verified directly against
+// lib/teslamate/locations.ex). This matters whenever zones overlap,
+// e.g. a small "Home garage" inside a larger "Home": the more specific
+// one wins regardless of config order, instead of the answer depending
+// on how the file happens to be arranged.
+func (r *Resolver) FindGeofence(lat, lng float64) (Geofence, bool) {
+	var best Geofence
+	found := false
 	bestDist := math.Inf(1)
 	for _, g := range r.geofences {
 		d := haversineMeters(lat, lng, g.Lat, g.Lng)
 		if d <= g.RadiusM && d < bestDist {
-			bestName, bestDist = g.Name, d
+			best, bestDist, found = g, d, true
 		}
 	}
-	if bestName != "" {
-		return bestName
+	return best, found
+}
+
+// Resolve returns a place name for (lat, lng), checking geofences, then
+// the cache, then (if enabled) a live reverse-geocoding lookup, in that
+// cheapest-first order. Returns "" if none of those produced a name.
+func (r *Resolver) Resolve(ctx context.Context, lat, lng float64) string {
+	if g, ok := r.FindGeofence(lat, lng); ok {
+		return g.Name
 	}
 
 	latKey, lngKey := roundCoord(lat), roundCoord(lng)

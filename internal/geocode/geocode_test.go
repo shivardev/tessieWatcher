@@ -63,6 +63,98 @@ func TestResolvePicksTheNearestOverlappingGeofence(t *testing.T) {
 	}
 }
 
+// TestGeofenceCost pins TeslaMate's put_cost semantics (verified
+// directly against lib/teslamate/log.ex): per-kWh billing charges for
+// the GREATER of energy added and energy drawn from the wall,
+// per-minute billing charges for elapsed time, and either way a flat
+// session fee is added on top. A zone with no pricing configured
+// reports no cost at all rather than a misleading zero.
+func TestGeofenceCost(t *testing.T) {
+	cases := []struct {
+		name        string
+		g           Geofence
+		added, used float64
+		durationMin float64
+		wantCost    float64
+		wantOK      bool
+	}{
+		{
+			name:  "per kWh bills the greater of added and used",
+			g:     Geofence{HasPricing: true, BillingType: "per_kwh", CostPerUnit: 0.125},
+			added: 30, used: 33, // 33 kWh actually drawn from the wall
+			wantCost: 33 * 0.125, wantOK: true,
+		},
+		{
+			name:  "per kWh falls back to added when used is unavailable",
+			g:     Geofence{HasPricing: true, BillingType: "per_kwh", CostPerUnit: 0.125},
+			added: 30, used: 0,
+			wantCost: 30 * 0.125, wantOK: true,
+		},
+		{
+			name:  "session fee is added on top",
+			g:     Geofence{HasPricing: true, BillingType: "per_kwh", CostPerUnit: 0.30, SessionFee: 0.45},
+			added: 10, used: 11,
+			wantCost: 0.45 + 11*0.30, wantOK: true,
+		},
+		{
+			name:  "a free charger costs zero, and that's a real answer",
+			g:     Geofence{HasPricing: true, BillingType: "per_kwh", CostPerUnit: 0},
+			added: 40, used: 44,
+			wantCost: 0, wantOK: true,
+		},
+		{
+			name:  "per minute bills elapsed time",
+			g:     Geofence{HasPricing: true, BillingType: "per_minute", CostPerUnit: 0.05, SessionFee: 1},
+			added: 10, used: 11,
+			durationMin: 60,
+			wantCost:    1 + 60*0.05, wantOK: true,
+		},
+		{
+			name:  "an empty billing type defaults to per kWh",
+			g:     Geofence{HasPricing: true, CostPerUnit: 0.2},
+			added: 10, used: 10,
+			wantCost: 2, wantOK: true,
+		},
+		{
+			name:  "no pricing configured reports no cost, not zero",
+			g:     Geofence{Name: "Somewhere"},
+			added: 30, used: 33,
+			wantOK: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cost, ok := c.g.Cost(c.added, c.used, c.durationMin)
+			if ok != c.wantOK {
+				t.Fatalf("expected ok=%v, got %v", c.wantOK, ok)
+			}
+			if ok && (cost-c.wantCost > 0.0001 || cost-c.wantCost < -0.0001) {
+				t.Fatalf("expected cost %.4f, got %.4f", c.wantCost, cost)
+			}
+		})
+	}
+}
+
+func TestFindGeofenceReturnsTheZoneNotJustTheName(t *testing.T) {
+	geofences := []Geofence{
+		{Name: "Home", Lat: 35.0, Lng: -85.0, RadiusM: 100, HasPricing: true, BillingType: "per_kwh", CostPerUnit: 0.125},
+	}
+	r := New(geofences, nil, false, "", "test")
+
+	g, ok := r.FindGeofence(35.00035, -85.0)
+	if !ok {
+		t.Fatalf("expected to find the containing geofence")
+	}
+	if g.Name != "Home" || g.CostPerUnit != 0.125 {
+		t.Fatalf("expected the full zone including its pricing, got %+v", g)
+	}
+
+	if _, ok := r.FindGeofence(36.0, -86.0); ok {
+		t.Fatalf("expected no match far outside every zone")
+	}
+}
+
 func TestResolveOutsideGeofenceRadiusDoesNotMatch(t *testing.T) {
 	geofences := []Geofence{{Name: "Home", Lat: 35.0000, Lng: -85.0000, RadiusM: 10}}
 	r := New(geofences, nil, false, "", "test")

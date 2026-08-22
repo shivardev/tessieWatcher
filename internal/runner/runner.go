@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"teslalog/internal/backup"
@@ -111,7 +112,11 @@ func Run(ctx context.Context, cfg config.Config) error {
 
 	geofences := make([]geocode.Geofence, 0, len(cfg.Geofences))
 	for _, g := range cfg.Geofences {
-		geofences = append(geofences, geocode.Geofence{Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM})
+		geofences = append(geofences, geocode.Geofence{
+			Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM,
+			HasPricing: g.HasPricing, BillingType: g.BillingType,
+			CostPerUnit: g.CostPerUnit, SessionFee: g.SessionFee,
+		})
 	}
 	geo := geocode.New(geofences, store, cfg.Geocoding.Enabled, cfg.Geocoding.BaseURL, cfg.Geocoding.UserAgent)
 
@@ -189,6 +194,14 @@ type loopState struct {
 
 	driveID  int64
 	chargeID int64
+	// chargeGeofence is the geofence the current charging session
+	// started inside, if any - captured at start because that's what
+	// determines the price (TeslaMate resolves it at
+	// start_charging_process the same way). haveChargeGeofence
+	// distinguishes "charging somewhere unpriced" from "no geofence
+	// looked up yet".
+	chargeGeofence     geocode.Geofence
+	haveChargeGeofence bool
 
 	stream *tesla.StreamConn
 	// lastStreamAt is the timestamp of the most recent streaming
@@ -501,6 +514,10 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				return fmt.Errorf("open charging session: %w", err)
 			}
 			l.chargeID = id
+			// Capture where this charge is happening now, at the
+			// start - that's what determines its price, and it's the
+			// same point TeslaMate resolves the geofence at.
+			l.chargeGeofence, l.haveChargeGeofence = l.geo.FindGeofence(s.Lat, s.Lng)
 			// TeslaMate's own start_charging_process records a sample
 			// for this exact same first observation, in the same
 			// transaction as starting the session (verified directly
@@ -535,6 +552,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				ChargingSessionID: l.chargeID, Time: ev.At, BatteryLevel: s.BatteryLevel,
 				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EnergyAddedKwh: s.ChargeEnergyAddedKwh,
 				ChargingEfficiency: l.cfg.Charging.Efficiency, PricePerKwh: l.cfg.Charging.PricePerKwh,
+				CostFunc: l.chargeCostFunc(s.FastChargerBrand),
 			}); err != nil {
 				return fmt.Errorf("close charging session: %w", err)
 			}
@@ -599,10 +617,20 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			if l.cfg.Vehicle.EfficiencyWhKm > 0 {
 				energyAdded = (after.IdealRangeKm - before.IdealRangeKm) * l.cfg.Vehicle.EfficiencyWhKm / 1000
 			}
+			// Price it by wherever it was parked when it went dark -
+			// the same "where did this charge happen" question, just
+			// answered from the last reading we have instead of a live
+			// one. No charger brand is known for an unobserved charge,
+			// so free-supercharging can't apply.
+			var offlineCost func(float64, float64, float64) (float64, bool)
+			if g, ok := l.geo.FindGeofence(before.Lat, before.Lng); ok && g.HasPricing {
+				offlineCost = g.Cost
+			}
 			if err := l.store.CloseChargingSession(storage.ChargeEnd{
 				ChargingSessionID: id, Time: after.Time, BatteryLevel: after.BatteryLevel,
 				RangeKm: after.RangeKm, IdealRangeKm: after.IdealRangeKm, EnergyAddedKwh: energyAdded,
 				ChargingEfficiency: l.cfg.Charging.Efficiency, PricePerKwh: l.cfg.Charging.PricePerKwh,
+				CostFunc: offlineCost,
 			}); err != nil {
 				return fmt.Errorf("close offline charging session: %w", err)
 			}
@@ -769,6 +797,27 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 		SentryMode: boolPtr(s.SentryMode), IsUserPresent: boolPtr(s.IsUserPresent), ValetMode: boolPtr(s.ValetMode),
 		ClimateKeeperMode: s.ClimateKeeperMode,
 	}
+}
+
+// chargeCostFunc returns the pricing rule for the charging session
+// that's currently ending, or nil to fall back to the flat global rate
+// (storage.ChargeEnd.PricePerKwh). fastChargerBrand is the session's
+// reported charger brand, used for the free-supercharging rule.
+//
+// Order matches TeslaMate's put_cost exactly (verified against
+// lib/teslamate/log.ex): free supercharging short-circuits everything,
+// then the geofence's own pricing applies, then nothing.
+func (l *loopState) chargeCostFunc(fastChargerBrand string) func(float64, float64, float64) (float64, bool) {
+	if l.cfg.Charging.FreeSupercharging && strings.HasPrefix(fastChargerBrand, "Tesla") {
+		return func(float64, float64, float64) (float64, bool) { return 0, true }
+	}
+	if l.haveChargeGeofence && l.chargeGeofence.HasPricing {
+		g := l.chargeGeofence
+		return func(added, used, durationMin float64) (float64, bool) {
+			return g.Cost(added, used, durationMin)
+		}
+	}
+	return nil
 }
 
 // backfillLocations retries place-name resolution for drive/charge

@@ -97,11 +97,39 @@ user_agent = "teslalog/0.2.0 (personal use)"
 # network), and covers your most common places (home, work) without
 # ever sending their coordinates anywhere. Add as many [[geofence]]
 # blocks as you like; radius_m is required (no implicit default).
+# When zones overlap, the NEAREST one wins, so a small "Home garage"
+# inside a larger "Home" resolves to the garage regardless of the
+# order they're listed in.
 # [[geofence]]
 # name     = "Home"
 # lat      = 35.0000
 # lng      = -85.0000
 # radius_m = 50
+#
+# Geofences can also carry their own charging price, which is how
+# per-location rates are expressed - electricity costs differ between
+# home, a paid apartment charger, and a free one at a store, so a
+# single global rate can't be right for all of them. A geofence's
+# price always beats [charging].price_per_kwh below.
+#
+# cost_per_unit is required to enable pricing for a zone; 0 is a real
+# value meaning "free" (distinct from omitting it, which means "cost
+# unknown here"). billing_type is "per_kwh" (default) or "per_minute".
+# session_fee is a flat amount added once per session.
+# [[geofence]]
+# name          = "Apartment charger"
+# lat           = 36.1220
+# lng           = -86.7746
+# radius_m      = 50
+# cost_per_unit = 0.30
+# session_fee   = 0.45
+#
+# [[geofence]]
+# name          = "Free charger at the store"
+# lat           = 36.1288
+# lng           = -86.7783
+# radius_m      = 50
+# cost_per_unit = 0
 
 [api]
 # These defaults are correct for the standard Tesla Owner API/SSO
@@ -124,13 +152,24 @@ efficiency_wh_km = 0
 
 [charging]
 # The Owner API only reports energy ADDED to the battery, not energy
-# drawn from the wall. TeslaMate estimates the latter with a
-# configurable efficiency factor; set one here to do the same
+# drawn from the wall. teslalog computes the real figure by
+# integrating measured charger power over each session's samples, the
+# same as TeslaMate. This efficiency factor is only a FALLBACK for
+# sessions where no usable power readings exist
 # (charge_energy_used_kwh = charge_energy_added_kwh / efficiency).
-# Leave 0 to skip recording an estimate (column stays NULL).
+# Leave 0 to skip the fallback (column stays NULL in that case).
 efficiency = 0
 
-# If set, charging_sessions.cost = charge_energy_added_kwh * price_per_kwh.
-# Leave 0 for no cost tracking (teslalog doesn't do TeslaMate's
-# geofence-based variable pricing - this is one flat rate).
+# Fallback charging rate, used only for charges that happen outside
+# every priced [[geofence]] above - per-location pricing is set on the
+# geofences themselves, since real rates differ by location. Applied
+# to whichever is greater of energy added and energy drawn from the
+# wall, matching TeslaMate. Leave 0 to record no cost for unpriced
+# locations.
 price_per_kwh = 0
+
+# If true, any charge at a Tesla-branded fast charger (Supercharger)
+# costs 0 regardless of every other pricing rule - for accounts with
+# free supercharging included. Matches TeslaMate's own
+# free_supercharging setting.
+free_supercharging = false

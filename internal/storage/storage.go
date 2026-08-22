@@ -841,10 +841,22 @@ type ChargeEnd struct {
 	// then stays NULL when no real calculation is possible).
 	ChargingEfficiency float64
 
-	// PricePerKwh, if > 0, is used to compute cost = EnergyAddedKwh *
-	// PricePerKwh. Leave 0 to skip (matches TeslaMate's behavior
-	// without a configured geofence price).
+	// PricePerKwh is the FALLBACK rate, applied to whichever of energy
+	// added/used is greater, and used only when Cost isn't supplied.
+	// Leave 0 to record no cost (matching TeslaMate's behavior without
+	// a configured geofence price).
 	PricePerKwh float64
+
+	// CostFunc, when set, computes this session's cost and overrides
+	// PricePerKwh entirely. Real pricing is per-location (see
+	// geocode.Geofence.Cost) and can include a flat session fee or
+	// per-minute billing, none of which a single rate here can
+	// express - so the caller, which knows *where* the charge
+	// happened, supplies the pricing rule, while this package supplies
+	// the authoritative energy/duration figures it needs (they're
+	// derived from the session's own samples here, not known upfront).
+	// Returning ok=false leaves the cost unrecorded.
+	CostFunc func(energyAddedKwh, energyUsedKwh, durationMin float64) (cost float64, ok bool)
 }
 
 func (s *Store) CloseChargingSession(e ChargeEnd) error {
@@ -878,9 +890,30 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 	if !energyUsed.Valid && e.ChargingEfficiency > 0 {
 		energyUsed = sql.NullFloat64{Float64: energyAdded / e.ChargingEfficiency, Valid: true}
 	}
+	// A cost computed by the caller (per-geofence pricing, free
+	// supercharging) always wins; the flat rate is only for charges
+	// that happened somewhere with no pricing configured.
 	var cost sql.NullFloat64
-	if e.PricePerKwh > 0 {
-		cost = sql.NullFloat64{Float64: energyAdded * e.PricePerKwh, Valid: true}
+	switch {
+	case e.CostFunc != nil:
+		var durationMin float64
+		var startTimeStr string
+		if err := s.db.QueryRow(`SELECT start_time FROM charging_sessions WHERE id = ?`, e.ChargingSessionID).Scan(&startTimeStr); err == nil {
+			if st, perr := time.Parse(timeLayout, startTimeStr); perr == nil {
+				durationMin = e.Time.Sub(st).Minutes()
+			}
+		}
+		if c, ok := e.CostFunc(energyAdded, energyUsed.Float64, durationMin); ok {
+			cost = sql.NullFloat64{Float64: c, Valid: true}
+		}
+	case e.PricePerKwh > 0:
+		// Bill the greater of added/used, as TeslaMate does - see
+		// geocode.Geofence.Cost.
+		kwh := energyAdded
+		if energyUsed.Valid && energyUsed.Float64 > kwh {
+			kwh = energyUsed.Float64
+		}
+		cost = sql.NullFloat64{Float64: kwh * e.PricePerKwh, Valid: true}
 	}
 
 	_, err = s.db.Exec(`
