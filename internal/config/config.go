@@ -136,8 +136,26 @@ type PollingConfig struct {
 	IdleTimeout time.Duration
 	// SuspendedCheckInterval is how often we perform a *lightweight*
 	// check (no vehicle_data, no wake) while SUSPENDED/ASLEEP to see if
-	// the car has become active on its own.
+	// the car has become active on its own. Deliberately long: this is
+	// the one state where a slow interval is the whole point (leaving
+	// a genuinely sleeping car alone).
 	SuspendedCheckInterval time.Duration
+	// OfflineCheckInterval is the same kind of lightweight, non-waking
+	// check, but for OFFLINE specifically - which, unlike ASLEEP/
+	// SUSPENDED, carries no "leave it alone" rationale at all: it just
+	// means the last poll couldn't reach the car (temporary
+	// connectivity blip, or the car about to come online for a drive).
+	// Found live, head-to-head against a real TeslaMate instance
+	// polling the same car: with this bucketed under
+	// SuspendedCheckInterval's default 15-minute cadence (the original
+	// behavior - see isAsleepLike), teslalog missed the first ~10
+	// minutes and ~11 km of a real drive that started from OFFLINE,
+	// where TeslaMate (checking far more often) caught it within about
+	// a minute. ListVehicles is cheap and never wakes the car
+	// regardless of how often it's called, so there's no sleep-
+	// preservation cost to checking OFFLINE much more often than
+	// ASLEEP - only the cost of the API call itself.
+	OfflineCheckInterval time.Duration
 }
 
 type StreamingConfig struct {
@@ -172,6 +190,7 @@ type rawConfig struct {
 		OnlineInterval         string `toml:"online_interval"`
 		IdleTimeout            string `toml:"idle_timeout"`
 		SuspendedCheckInterval string `toml:"suspended_check_interval"`
+		OfflineCheckInterval   string `toml:"offline_check_interval"`
 	} `toml:"polling"`
 
 	Streaming struct {
@@ -242,6 +261,12 @@ func Default() Config {
 			OnlineInterval:         15 * time.Second,
 			IdleTimeout:            3 * time.Minute,
 			SuspendedCheckInterval: 15 * time.Minute,
+			// Short: see OfflineCheckInterval's doc comment - this
+			// specific value (1 minute) was picked to comfortably beat
+			// TeslaMate's own real-world detection time on the same
+			// vehicle (observed at ~67s), so a drive starting from
+			// OFFLINE isn't missed for anywhere near as long.
+			OfflineCheckInterval: 1 * time.Minute,
 		},
 		Streaming: StreamingConfig{
 			Enabled: true,
@@ -335,6 +360,11 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("polling.suspended_check_interval: %w", err)
 	} else {
 		cfg.Polling.SuspendedCheckInterval = d
+	}
+	if d, err := parseDurationOr(raw.Polling.OfflineCheckInterval, cfg.Polling.OfflineCheckInterval); err != nil {
+		return cfg, fmt.Errorf("polling.offline_check_interval: %w", err)
+	} else {
+		cfg.Polling.OfflineCheckInterval = d
 	}
 
 	if raw.Streaming.Enabled != nil {

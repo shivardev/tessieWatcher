@@ -27,8 +27,15 @@ idle_timeout = "3m"
 
 # How often we perform the cheap "is it awake yet" check
 # (GET /api/1/vehicles, which never wakes the car) while
-# asleep/suspended.
+# genuinely asleep/suspended - deliberately slow, since leaving a
+# sleeping car alone is the whole point here.
 suspended_check_interval = "15m"
+# Same kind of cheap, non-waking check, but for OFFLINE specifically -
+# unlike asleep/suspended, offline carries no "leave it alone" reason
+# for a slow interval (it just means the last check couldn't reach the
+# car), so this defaults much shorter. Checking more often costs
+# nothing here since the call never wakes anything either way.
+offline_check_interval = "1m"
 
 [streaming]
 enabled = true

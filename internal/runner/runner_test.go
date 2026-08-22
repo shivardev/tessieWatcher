@@ -594,6 +594,105 @@ func TestWakingUpDoesNotWaitOutTheFullSuspendedInterval(t *testing.T) {
 	}
 }
 
+// TestOfflineIsCheckedOnItsOwnShorterInterval is a regression test for
+// a real, live-observed bug: OFFLINE used to share ASLEEP/SUSPENDED's
+// (typically much longer, e.g. 15 minutes) SuspendedCheckInterval, on
+// the reasoning that all of "asleep-like" only needs a cheap, slow
+// check. That reasoning holds for ASLEEP/SUSPENDED (leaving a genuinely
+// sleeping car alone is the whole point) but not for OFFLINE, which
+// carries no such rationale - it just means the last check couldn't
+// reach the car. Caught head-to-head against a real TeslaMate instance
+// polling the same real vehicle: teslalog missed the first ~10 minutes
+// and ~11 km of a drive that started from OFFLINE, because it was
+// still waiting out a 15-minute SuspendedCheckInterval while TeslaMate
+// (checking far more often) caught the same drive within about a
+// minute. This pins OfflineCheckInterval as the one actually governing
+// OFFLINE's check cadence, independent of SuspendedCheckInterval.
+func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
+	const vin = "5YJ3E1EA1PF000001"
+	var summaryCalls, vehicleDataCalls int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/1/products", func(w http.ResponseWriter, r *http.Request) {
+		// Same shape as TestWakingUpDoesNotWaitOutTheFullSuspendedInterval,
+		// but OFFLINE instead of ASLEEP.
+		state := "online"
+		if atomic.AddInt64(&summaryCalls, 1) <= 2 {
+			state = "offline"
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"response": []map[string]any{{
+				"id": 555, "vehicle_id": 42, "vin": vin,
+				"display_name": "Test Model 3", "state": state, "in_service": false,
+			}},
+			"count": 1,
+		})
+	})
+	mux.HandleFunc("/api/1/vehicles/555/vehicle_data", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&vehicleDataCalls, 1)
+		f := fixture{ID: 555, VehicleID: 42, VIN: vin, DisplayName: "Test Model 3", State: "online"}
+		f.ChargeState.BatteryLevel = 70
+		json.NewEncoder(w).Encode(fixtureResponse{Response: f})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "tesla.db")
+	tokenPath := filepath.Join(dir, "tokens.json")
+	if err := tesla.SaveTokenFile(tokenPath, tesla.TokenSet{
+		AccessToken: "test-access-token", RefreshToken: "test-refresh-token",
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed token file: %v", err)
+	}
+
+	cfg := config.Config{
+		Database:  dbPath,
+		TokenFile: tokenPath,
+		Polling: config.PollingConfig{
+			DrivingInterval: 2 * time.Millisecond, ChargingInterval: 2 * time.Millisecond,
+			OnlineInterval: 2 * time.Millisecond, IdleTimeout: time.Hour,
+			// Deliberately long, exactly like the ASLEEP test above -
+			// if OFFLINE incorrectly falls back to this, vehicle_data
+			// will never be called before the test's own deadline.
+			SuspendedCheckInterval: 5 * time.Second,
+			// Short: this is the one that should actually govern
+			// OFFLINE's check cadence.
+			OfflineCheckInterval: 2 * time.Millisecond,
+		},
+		Streaming: config.StreamingConfig{Enabled: false},
+		Backup:    config.BackupConfig{Enabled: false},
+		API: config.APIConfig{
+			OwnerAPIBaseURL: server.URL, SSOBaseURL: server.URL,
+			ClientID: "ownerapi", UserAgent: "teslalog-test/0.1",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- Run(ctx, cfg) }()
+
+	deadline := time.Now().Add(2 * time.Second) // well under SuspendedCheckInterval
+	var polled bool
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&vehicleDataCalls) > 0 {
+			polled = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-runErrCh
+
+	if !polled {
+		t.Fatalf("vehicle_data was never called within 2s of coming online from OFFLINE - OfflineCheckInterval (%s) was not honored, "+
+			"the daemon fell back to the much longer SuspendedCheckInterval (%s) instead",
+			cfg.Polling.OfflineCheckInterval, cfg.Polling.SuspendedCheckInterval)
+	}
+}
+
 // TestTeeHandlerForwardsToBothHandlers pins the portal's log-capture
 // mechanism: enabling the portal must tee log output into its in-memory
 // buffer WITHOUT silencing or altering what still goes to the normal

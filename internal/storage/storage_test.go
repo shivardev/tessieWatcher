@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -235,9 +236,10 @@ func TestPositionCarriesSentryValetKeeperModeFields(t *testing.T) {
 		t.Fatalf("open drive: %v", err)
 	}
 
+	sentryOn, userPresent, valetOff := true, true, false
 	if err := s.AppendPosition(PositionSample{
 		DriveID: driveID, VehicleID: vehicleID, Time: time.Now().UTC(),
-		SentryMode: true, IsUserPresent: true, ValetMode: false, ClimateKeeperMode: "dog",
+		SentryMode: &sentryOn, IsUserPresent: &userPresent, ValetMode: &valetOff, ClimateKeeperMode: "dog",
 	}); err != nil {
 		t.Fatalf("append position: %v", err)
 	}
@@ -251,6 +253,78 @@ func TestPositionCarriesSentryValetKeeperModeFields(t *testing.T) {
 	}
 	if sentry != 1 || present != 1 || valet != 0 || keeper != "dog" {
 		t.Fatalf("unexpected values: sentry=%d present=%d valet=%d keeper=%q", sentry, present, valet, keeper)
+	}
+}
+
+// TestAppendPositionLeavesStreamingOnlyFieldsNullWhenOmitted is a
+// regression test for a real bug found live: a streaming-derived
+// position (see runner.go's drainStream) only ever sets a subset of
+// PositionSample's fields - fan/climate/defroster state, TPMS, usable
+// battery %, ideal/estimated range, and sentry/valet/user-present
+// aren't in the streaming protocol at all. When those fields were
+// plain (non-pointer) Go types, an unset field silently wrote its Go
+// zero value (0, false) into a column that's perfectly capable of
+// storing NULL - indistinguishable from "really is off/zero" to
+// anything reading the data back, and wrong roughly 90% of the time
+// (streaming reports far more frequently than the REST poll interval,
+// so the large majority of any drive's positions are streaming-only).
+// Every one of these fields is now a pointer - nil in, NULL out.
+func TestAppendPositionLeavesStreamingOnlyFieldsNullWhenOmitted(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-STREAM", TeslaID: "7", DisplayName: "Car"})
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: time.Now().UTC(), OdometerKm: 10})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+
+	// Mirrors exactly what drainStream constructs: only the fields the
+	// streaming protocol actually reports.
+	if err := s.AppendPosition(PositionSample{
+		DriveID: driveID, VehicleID: vehicleID, Time: time.Now().UTC(),
+		Lat: 40.0, Lng: -74.0, SpeedKmh: 60, Heading: 90,
+		ElevationM: nil, PowerKw: 10, OdometerKm: 1000,
+		BatteryLevel: 70, RangeKm: 200, ShiftState: "D",
+	}); err != nil {
+		t.Fatalf("append streaming-style position: %v", err)
+	}
+
+	row := s.db.QueryRow(`
+		SELECT usable_battery_level, ideal_range_km, est_range_km, battery_heater_on,
+		       fan_status, driver_temp_setting_c, passenger_temp_setting_c,
+		       is_climate_on, is_rear_defroster_on, is_front_defroster_on,
+		       tpms_pressure_fl, tpms_pressure_fr, tpms_pressure_rl, tpms_pressure_rr,
+		       sentry_mode, is_user_present, valet_mode,
+		       battery_level, range_km
+		FROM positions WHERE drive_id = ?
+	`, driveID)
+
+	var usableBatt, idealRange, estRange, battHeater, fan, driverTemp, passengerTemp,
+		isClimate, isRearDef, isFrontDef, tpmsFL, tpmsFR, tpmsRL, tpmsRR,
+		sentry, userPresent, valet sql.NullString
+	var battLevel int
+	var rangeKm float64
+	if err := row.Scan(&usableBatt, &idealRange, &estRange, &battHeater, &fan, &driverTemp, &passengerTemp,
+		&isClimate, &isRearDef, &isFrontDef, &tpmsFL, &tpmsFR, &tpmsRL, &tpmsRR,
+		&sentry, &userPresent, &valet, &battLevel, &rangeKm); err != nil {
+		t.Fatalf("query position: %v", err)
+	}
+
+	for name, got := range map[string]sql.NullString{
+		"usable_battery_level": usableBatt, "ideal_range_km": idealRange, "est_range_km": estRange,
+		"battery_heater_on": battHeater, "fan_status": fan, "driver_temp_setting_c": driverTemp,
+		"passenger_temp_setting_c": passengerTemp, "is_climate_on": isClimate,
+		"is_rear_defroster_on": isRearDef, "is_front_defroster_on": isFrontDef,
+		"tpms_pressure_fl": tpmsFL, "tpms_pressure_fr": tpmsFR, "tpms_pressure_rl": tpmsRL, "tpms_pressure_rr": tpmsRR,
+		"sentry_mode": sentry, "is_user_present": userPresent, "valet_mode": valet,
+	} {
+		if got.Valid {
+			t.Errorf("%s: expected NULL for a streaming-only sample, got %q", name, got.String)
+		}
+	}
+
+	// Fields both sources report should still be the real values, not NULL.
+	if battLevel != 70 || rangeKm != 200 {
+		t.Fatalf("expected battery_level=70 range_km=200 (always known), got %d/%.0f", battLevel, rangeKm)
 	}
 }
 

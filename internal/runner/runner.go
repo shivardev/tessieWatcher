@@ -205,7 +205,7 @@ func (l *loopState) run(ctx context.Context) error {
 				slog.Warn("vehicle summary check failed", "error", err)
 			}
 			if isAsleepLike(l.machine.State()) {
-				sleepFor = l.cfg.Polling.SuspendedCheckInterval
+				sleepFor = l.checkInterval(l.machine.State())
 			} else {
 				// checkSummary just found the car active (e.g. woke up on
 				// its own) - start the fast poll/driving/charging cadence
@@ -301,6 +301,24 @@ func isAsleepLike(s vehicle.State) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// checkInterval picks how long to wait before the next cheap,
+// non-waking summary check, for whichever isAsleepLike state s is.
+// OFFLINE/UNKNOWN get the short interval: unlike ASLEEP/SUSPENDED,
+// neither carries any "leave it alone" rationale - OFFLINE just means
+// the last check couldn't reach the car (a connectivity blip, or the
+// car about to come online for a drive), and checking it again sooner
+// costs nothing since ListVehicles never wakes anything regardless of
+// how often it's called. See OfflineCheckInterval's doc comment for
+// the real-world drive-tracking gap this fixes.
+func (l *loopState) checkInterval(s vehicle.State) time.Duration {
+	switch s {
+	case vehicle.StateOffline, vehicle.StateUnknown:
+		return l.cfg.Polling.OfflineCheckInterval
+	default: // StateAsleep, StateSuspended
+		return l.cfg.Polling.SuspendedCheckInterval
 	}
 }
 
@@ -562,32 +580,38 @@ func (l *loopState) drainStream() {
 // distinguish "genuinely unknown" (nil, stored as SQL NULL) from a real
 // zero reading.
 func ptr(v float64) *float64 { return &v }
+func intPtr(v int) *int      { return &v }
+func boolPtr(v bool) *bool   { return &v }
 
 // positionFromSnapshot maps a full vehicle_data-derived Snapshot onto a
 // storage.PositionSample, carrying every field TeslaMate's positions
 // table tracks (see internal/storage/schema.go). ElevationM is left nil:
 // the Owner API's vehicle_data response doesn't report elevation at all
 // (only the streaming client does, see drainStream below).
+// positionFromSnapshot builds a position row from a full REST
+// vehicle_data poll - unlike drainStream's streaming-derived samples
+// (see its comment), every field here is genuinely known, so every
+// nullable PositionSample field gets a real pointer, never nil.
 func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Snapshot) storage.PositionSample {
 	return storage.PositionSample{
 		DriveID: driveID, VehicleID: vehicleDBID, Time: at,
 		Lat: s.Lat, Lng: s.Lng, SpeedKmh: s.SpeedKmh, Heading: s.Heading,
 		PowerKw: s.PowerKw, OdometerKm: s.OdometerKm,
 
-		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
-		RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EstRangeKm: s.EstRangeKm,
-		BatteryHeaterOn: s.BatteryHeaterOn,
+		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: intPtr(s.UsableBatteryLevel),
+		RangeKm: s.RangeKm, IdealRangeKm: ptr(s.IdealRangeKm), EstRangeKm: ptr(s.EstRangeKm),
+		BatteryHeaterOn: boolPtr(s.BatteryHeaterOn),
 
-		OutsideTempC: ptr(s.OutsideTempC), InsideTempC: ptr(s.InsideTempC), FanStatus: s.FanStatus,
-		DriverTempSettingC: s.DriverTempSettingC, PassengerTempSettingC: s.PassengerTempSettingC,
-		IsClimateOn: s.IsClimateOn, IsRearDefrosterOn: s.IsRearDefrosterOn, IsFrontDefrosterOn: s.IsFrontDefrosterOn,
+		OutsideTempC: ptr(s.OutsideTempC), InsideTempC: ptr(s.InsideTempC), FanStatus: intPtr(s.FanStatus),
+		DriverTempSettingC: ptr(s.DriverTempSettingC), PassengerTempSettingC: ptr(s.PassengerTempSettingC),
+		IsClimateOn: boolPtr(s.IsClimateOn), IsRearDefrosterOn: boolPtr(s.IsRearDefrosterOn), IsFrontDefrosterOn: boolPtr(s.IsFrontDefrosterOn),
 
-		TpmsPressureFL: s.TpmsPressureFL, TpmsPressureFR: s.TpmsPressureFR,
-		TpmsPressureRL: s.TpmsPressureRL, TpmsPressureRR: s.TpmsPressureRR,
+		TpmsPressureFL: ptr(s.TpmsPressureFL), TpmsPressureFR: ptr(s.TpmsPressureFR),
+		TpmsPressureRL: ptr(s.TpmsPressureRL), TpmsPressureRR: ptr(s.TpmsPressureRR),
 
 		ShiftState: s.ShiftState,
 
-		SentryMode: s.SentryMode, IsUserPresent: s.IsUserPresent, ValetMode: s.ValetMode,
+		SentryMode: boolPtr(s.SentryMode), IsUserPresent: boolPtr(s.IsUserPresent), ValetMode: boolPtr(s.ValetMode),
 		ClimateKeeperMode: s.ClimateKeeperMode,
 	}
 }

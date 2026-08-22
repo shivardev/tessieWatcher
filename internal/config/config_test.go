@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func writeTemp(t *testing.T, contents string) string {
@@ -69,6 +70,32 @@ func TestLoadOmittedBooleansKeepDefaults(t *testing.T) {
 	}
 	if cfg.Database != "/tmp/custom.db" {
 		t.Fatalf("database override did not apply: %q", cfg.Database)
+	}
+}
+
+func TestLoadOfflineCheckIntervalOverride(t *testing.T) {
+	path := writeTemp(t, "[polling]\noffline_check_interval = \"30s\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Polling.OfflineCheckInterval != 30*time.Second {
+		t.Fatalf("expected offline_check_interval override to apply, got %s", cfg.Polling.OfflineCheckInterval)
+	}
+}
+
+func TestLoadOfflineCheckIntervalDefaultsShorterThanSuspended(t *testing.T) {
+	// Regression guard for the bug itself: OfflineCheckInterval must
+	// default to something well under SuspendedCheckInterval's 15
+	// minutes, or a fresh install regains the exact drive-tracking gap
+	// this was added to fix.
+	cfg := Default()
+	if cfg.Polling.OfflineCheckInterval <= 0 {
+		t.Fatalf("expected a positive default offline_check_interval, got %s", cfg.Polling.OfflineCheckInterval)
+	}
+	if cfg.Polling.OfflineCheckInterval >= cfg.Polling.SuspendedCheckInterval {
+		t.Fatalf("expected offline_check_interval (%s) to default well under suspended_check_interval (%s)",
+			cfg.Polling.OfflineCheckInterval, cfg.Polling.SuspendedCheckInterval)
 	}
 }
 

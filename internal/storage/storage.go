@@ -127,6 +127,18 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// boolPtrToInt is boolToInt for a nullable bool - nil stays nil (SQL
+// NULL) rather than silently becoming boolToInt(false) (0). Needed
+// because SQLite has no native bool type (every bool column is stored
+// as 0/1), so the nil-preserving behavior *float64/*int params get for
+// free from database/sql needs the same thing spelled out by hand here.
+func boolPtrToInt(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return boolToInt(*b)
+}
+
 // ---- vehicles ----
 
 // VehicleMeta is the API-derived (not user-configured) vehicle identity
@@ -294,6 +306,22 @@ func nullIfEmpty(s string) any {
 // AVG(outside_temp_c)/AVG(inside_temp_c) and elevationChange's ascent/
 // descent calculation (which already, correctly, filters on
 // `elevation_m IS NOT NULL`) by mixing real readings with phantom zeros.
+// PositionSample records one GPS/telemetry sample for an open drive.
+// Fields are *pointer* types wherever the value can genuinely be
+// unknown for a given sample - specifically, everywhere the streaming
+// client's tesla.StreamSample (see stream.go) doesn't carry that
+// field at all, since only REST vehicle_data polls report it
+// (fan/climate/defroster state, TPMS, usable battery %, ideal/
+// estimated range, sentry/valet/user-present). A nil pointer here
+// means "this sample's source didn't report it," stored as SQL NULL -
+// NOT "known to be 0/off". Getting this wrong is a real, previously-
+// shipped bug: with these as plain (non-pointer) fields, every
+// streaming-sourced sample - the large majority of samples during any
+// drive, since streaming reports far more frequently than the REST
+// poll interval - silently wrote Go's zero value (fan_status=0,
+// climate=off, all four tire pressures=0, etc.) instead of leaving the
+// column NULL, which is indistinguishable from "really is off/zero"
+// to anything reading the data back out.
 type PositionSample struct {
 	DriveID    int64
 	VehicleID  int64
@@ -305,31 +333,38 @@ type PositionSample struct {
 	PowerKw    float64
 	OdometerKm float64
 
-	BatteryLevel       int
-	UsableBatteryLevel int
-	RangeKm            float64
-	IdealRangeKm       float64
-	EstRangeKm         float64
-	BatteryHeaterOn    bool
+	// BatteryLevel and RangeKm (rated range) are reported by both REST
+	// and streaming, so these stay plain, always-known fields.
+	BatteryLevel int
+	RangeKm      float64
+
+	UsableBatteryLevel *int
+	IdealRangeKm       *float64
+	EstRangeKm         *float64
+	BatteryHeaterOn    *bool
 
 	OutsideTempC          *float64
 	InsideTempC           *float64
-	FanStatus             int
-	DriverTempSettingC    float64
-	PassengerTempSettingC float64
-	IsClimateOn           bool
-	IsRearDefrosterOn     bool
-	IsFrontDefrosterOn    bool
+	FanStatus             *int
+	DriverTempSettingC    *float64
+	PassengerTempSettingC *float64
+	IsClimateOn           *bool
+	IsRearDefrosterOn     *bool
+	IsFrontDefrosterOn    *bool
 
-	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR float64
+	TpmsPressureFL, TpmsPressureFR, TpmsPressureRL, TpmsPressureRR *float64
 
+	// ShiftState is reported by both sources ("" is a legitimate "no
+	// gear info yet" value either way, not a source limitation), so it
+	// stays a plain string.
 	ShiftState string
 
 	// Not tracked by TeslaMate at all - see schema.go's positions table
-	// comment for why they're here anyway.
-	SentryMode        bool
-	IsUserPresent     bool
-	ValetMode         bool
+	// comment for why they're here anyway. Also REST-only, like the
+	// climate/TPMS fields above.
+	SentryMode        *bool
+	IsUserPresent     *bool
+	ValetMode         *bool
 	ClimateKeeperMode string
 }
 
@@ -347,11 +382,11 @@ func (s *Store) AppendPosition(p PositionSample) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, p.DriveID, p.VehicleID, fmtTime(p.Time), p.Lat, p.Lng, p.SpeedKmh,
 		p.Heading, p.ElevationM, p.PowerKw, p.OdometerKm,
-		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm, boolToInt(p.BatteryHeaterOn),
+		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm, boolPtrToInt(p.BatteryHeaterOn),
 		p.OutsideTempC, p.InsideTempC, p.FanStatus, p.DriverTempSettingC, p.PassengerTempSettingC,
-		boolToInt(p.IsClimateOn), boolToInt(p.IsRearDefrosterOn), boolToInt(p.IsFrontDefrosterOn),
+		boolPtrToInt(p.IsClimateOn), boolPtrToInt(p.IsRearDefrosterOn), boolPtrToInt(p.IsFrontDefrosterOn),
 		p.TpmsPressureFL, p.TpmsPressureFR, p.TpmsPressureRL, p.TpmsPressureRR,
-		p.ShiftState, boolToInt(p.SentryMode), boolToInt(p.IsUserPresent), boolToInt(p.ValetMode), nullIfEmpty(p.ClimateKeeperMode))
+		p.ShiftState, boolPtrToInt(p.SentryMode), boolPtrToInt(p.IsUserPresent), boolPtrToInt(p.ValetMode), nullIfEmpty(p.ClimateKeeperMode))
 	if err != nil {
 		return fmt.Errorf("append position: %w", err)
 	}
@@ -1013,12 +1048,25 @@ func (s *Store) LatestBatteryReading(vehicleID int64) (ok bool, level int, range
 	if driveID, derr := s.OpenDriveID(vehicleID); derr != nil {
 		return false, 0, 0, 0, "", derr
 	} else if driveID != 0 {
+		// ideal_range_km can genuinely be NULL on the single most recent
+		// position row: streaming-derived samples (the majority of any
+		// drive's rows, since streaming reports far more often than the
+		// REST poll interval) don't carry it at all - see
+		// PositionSample's doc comment. Falling back to the latest
+		// non-null value (typically only a few seconds stale, since
+		// ideal range itself barely changes moment to moment) is a far
+		// better answer than erroring, or than silently reporting 0 as
+		// if the reading were genuinely "no range".
+		var idealRangeKmNull sql.NullFloat64
 		scanErr := s.db.QueryRow(`
-			SELECT battery_level, range_km, ideal_range_km, timestamp FROM positions
-			WHERE drive_id = ? ORDER BY timestamp DESC LIMIT 1
-		`, driveID).Scan(&level, &rangeKm, &idealRangeKm, &at)
+			SELECT battery_level, range_km, timestamp,
+			       (SELECT ideal_range_km FROM positions
+			        WHERE drive_id = ? AND ideal_range_km IS NOT NULL
+			        ORDER BY timestamp DESC LIMIT 1)
+			FROM positions WHERE drive_id = ? ORDER BY timestamp DESC LIMIT 1
+		`, driveID, driveID).Scan(&level, &rangeKm, &at, &idealRangeKmNull)
 		if scanErr == nil {
-			return true, level, rangeKm, idealRangeKm, at, nil
+			return true, level, rangeKm, idealRangeKmNull.Float64, at, nil
 		} else if scanErr != sql.ErrNoRows {
 			return false, 0, 0, 0, "", scanErr
 		}
