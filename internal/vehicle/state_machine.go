@@ -196,6 +196,18 @@ type Machine struct {
 	driving  bool
 	charging bool
 
+	// lastDrivingAt/lastChargingAt are the timestamp of the most
+	// recent successful OnVehicleData observation while driving/
+	// charging - i.e. the last time we actually heard from the
+	// vehicle with real telemetry, as opposed to "now" (when we
+	// happen to notice it's unreachable). OnUnreachable measures its
+	// grace period against this, matching TeslaMate's own real
+	// behavior (verified against its source, lib/teslamate/vehicles/
+	// vehicle.ex): it tracks offline_since as the last known-good
+	// drive_state.timestamp, not the moment the timeout check runs.
+	lastDrivingAt  time.Time
+	lastChargingAt time.Time
+
 	updateInProgress bool
 	updateVersion    string
 }
@@ -304,30 +316,56 @@ func (m *Machine) OnSummary(now time.Time, rawState string) []Event {
 // summary check finds the vehicle ASLEEP/OFFLINE while a drive or
 // charge was believed still in progress - i.e. the vehicle stopped
 // reporting entirely instead of ever confirming a normal stop via
-// OnVehicleData's shift_state/charging_state observation. Found live:
-// a real drive that went unreachable mid-drive (car drove into a
-// connectivity gap, or the polling process itself lost contact) and
-// only came back hours later, still reporting the OLD drive as
-// "in progress" - so the fresh drive that started when it came back
-// online would otherwise have been treated as a continuation of the
-// stale one (wrong distance/duration, positions from two unrelated
-// trips merged into one row), not merely left incomplete the way
-// TeslaMate's own history shows the same underlying failure mode
-// producing (its "Incomplete Drives" report, with no auto-recovery).
-// Resetting driving/charging here is what prevents that merge; closing
-// the abandoned row itself (using its last known recorded sample, since
-// this check carries no telemetry) is the runner's job - see
-// persist()'s EvDriveAbandoned/EvChargeAbandoned handling.
-func (m *Machine) OnUnreachable(now time.Time) []Event {
+// OnVehicleData's shift_state/charging_state observation. rawState is
+// OnSummary's own rawState parameter ("asleep" or "offline" - this is
+// only ever called from the asleep-like branch, so no other value is
+// expected); driveTimeout matches TeslaMate's own @drive_timeout_min
+// (default 15 minutes).
+//
+// The exact rules below are copied from TeslaMate's real behavior
+// (verified directly against lib/teslamate/vehicles/vehicle.ex's
+// source, not reconstructed from memory/docs - see this project's
+// commit history for why that distinction matters), not invented:
+//
+//   - DRIVING + asleep: abandon immediately. The vehicle actively
+//     reporting itself as fully asleep while we thought it was
+//     driving is a strong, immediate signal something changed -
+//     TeslaMate doesn't wait here either.
+//   - DRIVING + offline: only abandon once unreachable for at least
+//     driveTimeout, measured from the last time we actually heard
+//     from it (lastDrivingAt) - NOT from now. A car that reconnects
+//     within the grace period (e.g. a brief tunnel/parking-garage
+//     dead zone) is left alone entirely; no event, no premature split
+//     of one real drive into two.
+//   - CHARGING + asleep: abandon immediately, matching TeslaMate's
+//     own "asleep while charging (?)" handling.
+//   - CHARGING + offline: never auto-abandoned. TeslaMate itself just
+//     keeps re-checking forever in this case (logging a warning, no
+//     timeout at all) - a charging session left plugged in is in no
+//     hurry to be closed on a guess, unlike a drive.
+func (m *Machine) OnUnreachable(now time.Time, rawState string, driveTimeout time.Duration) []Event {
 	var events []Event
+
 	if m.driving {
-		events = append(events, Event{Kind: EvDriveAbandoned, At: now})
-		m.driving = false
+		switch rawState {
+		case "asleep":
+			events = append(events, Event{Kind: EvDriveAbandoned, At: now})
+			m.driving = false
+		case "offline":
+			if !m.lastDrivingAt.IsZero() && now.Sub(m.lastDrivingAt) >= driveTimeout {
+				events = append(events, Event{Kind: EvDriveAbandoned, At: now})
+				m.driving = false
+			}
+			// else: still within the grace period - keep waiting.
+		}
 	}
-	if m.charging {
+
+	if m.charging && rawState == "asleep" {
 		events = append(events, Event{Kind: EvChargeAbandoned, At: now})
 		m.charging = false
 	}
+	// charging + "offline": deliberately no timeout at all - see doc comment.
+
 	return events
 }
 
@@ -389,6 +427,7 @@ func (m *Machine) handleDriving(snap Snapshot) []Event {
 	} else {
 		events = append(events, Event{Kind: EvDrivePoint, At: snap.Time, Snapshot: snap})
 	}
+	m.lastDrivingAt = snap.Time
 	return events
 }
 
@@ -408,6 +447,7 @@ func (m *Machine) handleCharging(snap Snapshot) []Event {
 	} else {
 		events = append(events, Event{Kind: EvChargePoint, At: snap.Time, Snapshot: snap})
 	}
+	m.lastChargingAt = snap.Time
 	return events
 }
 

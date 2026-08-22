@@ -105,9 +105,15 @@ The state machine (`internal/vehicle/state_machine.go`) enforces one rule
 mechanically:
 
 ```
-ASLEEP / SUSPENDED  ->  only the cheap GET /api/1/vehicles check
-                        (never wakes the car), every suspended_check_interval
-                        (default 15m)
+ASLEEP / OFFLINE    ->  only the cheap GET /api/1/vehicles check
+                        (never wakes the car), every asleep_interval
+                        (default 30s, matches TeslaMate's own
+                        @asleep_interval - verified directly against
+                        its source, applies identically to both states)
+
+SUSPENDED           ->  same cheap check, but every suspended_check_interval
+                        (default 21m, matches TeslaMate's own
+                        car_settings.suspend_min)
 
 DRIVING              ->  full vehicle_data poll every driving_interval
                         (default 2.5s, matches TeslaMate's own default)
@@ -118,8 +124,22 @@ CHARGING             ->  full vehicle_data poll every charging_interval
 ONLINE / IDLE        ->  full vehicle_data poll every online_interval
                         (default 15s, matches TeslaMate's own default)
 
-IDLE for >= idle_timeout (default 3m)  ->  transition to SUSPENDED,
-                        stop calling vehicle_data, let the car sleep
+IDLE for >= idle_timeout (default 15m, matches TeslaMate's own
+                        car_settings.suspend_after_idle_min)  ->
+                        transition to SUSPENDED, stop calling
+                        vehicle_data, let the car sleep
+
+Vehicle goes unreachable mid-DRIVE or mid-CHARGE (see
+                        vehicle.Machine.OnUnreachable) -> ASLEEP
+                        abandons immediately; OFFLINE while driving
+                        waits out drive_timeout (default 15m, matches
+                        TeslaMate's own @drive_timeout_min) measured
+                        from the last real observation, not "now";
+                        OFFLINE while charging is never auto-abandoned
+                        (matches TeslaMate - it just keeps checking).
+                        An abandoned drive/charge is closed using its
+                        last known recorded sample rather than left
+                        open forever.
 ```
 
 `wake_up` is called from exactly one place in the whole codebase: the
@@ -134,13 +154,14 @@ never calls it.
                   /    |     \
                  ▼     ▼      ▼
            DRIVING  CHARGING  IDLE
-               │       │        │ idle_timeout elapsed
+               │       │        │ idle_timeout elapsed (15m default)
                │       │        ▼
                │       │    SUSPENDED
                └───────┴────────┘
                        │
                        ▼
-              ASLEEP / OFFLINE (confirmed by next cheap check)
+              ASLEEP / OFFLINE (confirmed by next cheap check,
+                                every 30s default)
 ```
 
 (`ASLEEP` vs `OFFLINE` mirrors the Owner API's own vehicle summary state
@@ -511,8 +532,10 @@ See `config.example.toml` for every field with inline docs. Key ones:
 | `polling.driving_interval` | `2.5s` | `vehicle_data` poll rate while driving (matches TeslaMate's default) |
 | `polling.charging_interval` | `5s` | `vehicle_data` poll rate while charging (matches TeslaMate's default) |
 | `polling.online_interval` | `15s` | `vehicle_data` poll rate while online-idle (matches TeslaMate's default) |
-| `polling.idle_timeout` | `3m` | how long idle-online before we suspend polling |
-| `polling.suspended_check_interval` | `15m` | how often we check "is it awake yet" while asleep |
+| `polling.idle_timeout` | `15m` | how long idle-online before we suspend polling (matches TeslaMate's `suspend_after_idle_min`) |
+| `polling.suspended_check_interval` | `21m` | how often we check "is it awake yet" once suspended (matches TeslaMate's `suspend_min`) |
+| `polling.asleep_interval` | `30s` | how often we check "is it awake yet" while asleep/offline (matches TeslaMate's `@asleep_interval`) |
+| `polling.drive_timeout` | `15m` | how long a drive can go OFFLINE before it's abandoned/closed (matches TeslaMate's `@drive_timeout_min`) |
 | `backup.retention_days` | `30` | days of nightly backups to keep |
 | `vehicle.efficiency_wh_km` | `0` (off) | stored on the vehicle row, informational only |
 | `charging.efficiency` | `0` (off) | if set, estimates `charge_energy_used_kwh` from energy added |

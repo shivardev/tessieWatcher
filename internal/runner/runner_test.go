@@ -606,7 +606,7 @@ func TestWakingUpDoesNotWaitOutTheFullSuspendedInterval(t *testing.T) {
 // and ~11 km of a drive that started from OFFLINE, because it was
 // still waiting out a 15-minute SuspendedCheckInterval while TeslaMate
 // (checking far more often) caught the same drive within about a
-// minute. This pins OfflineCheckInterval as the one actually governing
+// minute. This pins AsleepInterval as the one actually governing
 // OFFLINE's check cadence, independent of SuspendedCheckInterval.
 func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
 	const vin = "5YJ3E1EA1PF000001"
@@ -659,7 +659,7 @@ func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
 			SuspendedCheckInterval: 5 * time.Second,
 			// Short: this is the one that should actually govern
 			// OFFLINE's check cadence.
-			OfflineCheckInterval: 2 * time.Millisecond,
+			AsleepInterval: 2 * time.Millisecond,
 		},
 		Streaming: config.StreamingConfig{Enabled: false},
 		Backup:    config.BackupConfig{Enabled: false},
@@ -687,9 +687,9 @@ func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
 	<-runErrCh
 
 	if !polled {
-		t.Fatalf("vehicle_data was never called within 2s of coming online from OFFLINE - OfflineCheckInterval (%s) was not honored, "+
+		t.Fatalf("vehicle_data was never called within 2s of coming online from OFFLINE - AsleepInterval (%s) was not honored, "+
 			"the daemon fell back to the much longer SuspendedCheckInterval (%s) instead",
-			cfg.Polling.OfflineCheckInterval, cfg.Polling.SuspendedCheckInterval)
+			cfg.Polling.AsleepInterval, cfg.Polling.SuspendedCheckInterval)
 	}
 }
 

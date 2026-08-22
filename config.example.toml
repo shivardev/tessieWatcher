@@ -20,22 +20,33 @@ charging_interval = "5s"
 online_interval   = "15s"
 
 # How long the car can sit online-but-idle (parked, not charging)
-# before we stop polling and let it sleep. This is the single most
-# important setting for not keeping the car awake — TeslaMate itself
-# defaults to a similar ~3 minute idle window.
-idle_timeout = "3m"
+# before we stop polling at online_interval and switch to the much
+# cheaper suspended_check_interval cadence instead. Matches TeslaMate's
+# own car_settings.suspend_after_idle_min exactly (verified directly
+# against its source, not guessed - an earlier version of this default
+# here was wrong by 5x).
+idle_timeout = "15m"
 
 # How often we perform the cheap "is it awake yet" check
-# (GET /api/1/vehicles, which never wakes the car) while
-# genuinely asleep/suspended - deliberately slow, since leaving a
-# sleeping car alone is the whole point here.
-suspended_check_interval = "15m"
-# Same kind of cheap, non-waking check, but for OFFLINE specifically -
-# unlike asleep/suspended, offline carries no "leave it alone" reason
-# for a slow interval (it just means the last check couldn't reach the
-# car), so this defaults much shorter. Checking more often costs
-# nothing here since the call never wakes anything either way.
-offline_check_interval = "1m"
+# (GET /api/1/vehicles, which never wakes the car) once suspended (see
+# idle_timeout above) - deliberately slow, since leaving the car alone
+# at that point is the whole point. Matches TeslaMate's own
+# car_settings.suspend_min exactly.
+suspended_check_interval = "21m"
+# Same kind of cheap, non-waking check, but for ASLEEP/OFFLINE
+# specifically - unlike the deliberate suspended state above, being
+# asleep or offline carries no "leave it alone" reason for a slow
+# interval (asleep just means the API confirms it's sleeping, which
+# checking again doesn't disturb; offline just means the last check
+# couldn't reach the car). Matches TeslaMate's own @asleep_interval
+# exactly, which applies identically to both states.
+asleep_interval = "30s"
+
+# How long a drive can go OFFLINE (not ASLEEP - see the README) before
+# it's considered abandoned and closed using its last known position,
+# instead of staying open forever or silently absorbing a later,
+# unrelated drive. Matches TeslaMate's own @drive_timeout_min exactly.
+drive_timeout = "15m"
 
 [streaming]
 enabled = true

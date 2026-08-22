@@ -285,13 +285,14 @@ func TestOnUnreachablePreventsMergingAFutureDriveIntoAnAbandonedOne(t *testing.T
 		t.Fatalf("expected EvDriveStart, got %+v", kindsOf(events))
 	}
 
-	// The vehicle goes unreachable mid-drive - no more OnVehicleData
-	// calls at all, just the cheap summary check finding it offline.
-	events = m.OnSummary(t0().Add(2*time.Minute), "offline")
+	// The vehicle reports itself fully asleep mid-drive (not just
+	// offline - see OnUnreachable's doc comment for why "asleep"
+	// abandons immediately with no grace period, unlike "offline").
+	events = m.OnSummary(t0().Add(2*time.Minute), "asleep")
 	if !containsKind(events, EvStateChanged) {
-		t.Fatalf("expected EvStateChanged to offline, got %+v", kindsOf(events))
+		t.Fatalf("expected EvStateChanged to asleep, got %+v", kindsOf(events))
 	}
-	events = m.OnUnreachable(t0().Add(2 * time.Minute))
+	events = m.OnUnreachable(t0().Add(2*time.Minute), "asleep", 15*time.Minute)
 	if !containsKind(events, EvDriveAbandoned) {
 		t.Fatalf("expected EvDriveAbandoned, got %+v", kindsOf(events))
 	}
@@ -316,17 +317,55 @@ func TestOnUnreachableIsANoOpWhenNothingWasInProgress(t *testing.T) {
 	m := New(3 * time.Minute)
 	m.OnSummary(t0(), "online") // idle, not driving/charging
 
-	if events := m.OnUnreachable(t0().Add(time.Minute)); len(events) != 0 {
+	if events := m.OnUnreachable(t0().Add(time.Minute), "offline", 15*time.Minute); len(events) != 0 {
 		t.Fatalf("expected no events when nothing was in progress, got %+v", kindsOf(events))
+	}
+}
+
+// TestOnUnreachableOfflineWhileDrivingWaitsOutTheGracePeriod pins
+// TeslaMate's real behavior (verified directly against its source):
+// OFFLINE while driving is NOT abandoned immediately - only once
+// unreachable for at least driveTimeout, measured from the last time
+// the vehicle actually reported in, not from "now". A brief
+// reconnect-within-the-grace-period (e.g. a tunnel) must not emit
+// anything at all.
+func TestOnUnreachableOfflineWhileDrivingWaitsOutTheGracePeriod(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online")
+	m.OnVehicleData(Snapshot{Time: t0(), ShiftState: "D", OdometerKm: 1000, BatteryLevel: 76, RangeKm: 300})
+
+	// Only 2 minutes since the last real observation - well within a
+	// 15-minute grace period.
+	m.OnSummary(t0().Add(2*time.Minute), "offline")
+	if events := m.OnUnreachable(t0().Add(2*time.Minute), "offline", 15*time.Minute); len(events) != 0 {
+		t.Fatalf("expected no abandonment within the grace period, got %+v", kindsOf(events))
+	}
+
+	// 16 minutes since the last real observation - past the grace period.
+	if events := m.OnUnreachable(t0().Add(16*time.Minute), "offline", 15*time.Minute); !containsKind(events, EvDriveAbandoned) {
+		t.Fatalf("expected EvDriveAbandoned once past the grace period, got %+v", kindsOf(events))
+	}
+}
+
+// TestOnUnreachableOfflineWhileChargingNeverAbandons pins TeslaMate's
+// real behavior (verified directly against its source): unlike
+// driving, a charging session is NEVER auto-abandoned just for going
+// OFFLINE, no matter how long - only ASLEEP closes it. TeslaMate
+// itself just keeps re-checking indefinitely in this case.
+func TestOnUnreachableOfflineWhileChargingNeverAbandons(t *testing.T) {
+	m := Resume(3*time.Minute, false, true)
+	if events := m.OnUnreachable(t0().Add(365*24*time.Hour), "offline", 15*time.Minute); len(events) != 0 {
+		t.Fatalf("expected charging to never auto-abandon on OFFLINE regardless of elapsed time, got %+v", kindsOf(events))
 	}
 }
 
 func TestOnUnreachableAbandonsBothDriveAndCharge(t *testing.T) {
 	// Mirrors handleDriving's own defensive "can't drive while
 	// charging" case: shouldn't normally happen, but if it did,
-	// OnUnreachable should still close out whichever ones were open.
+	// OnUnreachable should still close out whichever ones were open
+	// once the vehicle reports itself fully asleep.
 	m := Resume(3*time.Minute, true, true)
-	events := m.OnUnreachable(t0())
+	events := m.OnUnreachable(t0(), "asleep", 15*time.Minute)
 	if !containsKind(events, EvDriveAbandoned) || !containsKind(events, EvChargeAbandoned) {
 		t.Fatalf("expected both EvDriveAbandoned and EvChargeAbandoned, got %+v", kindsOf(events))
 	}

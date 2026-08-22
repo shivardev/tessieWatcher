@@ -306,19 +306,17 @@ func isAsleepLike(s vehicle.State) bool {
 
 // checkInterval picks how long to wait before the next cheap,
 // non-waking summary check, for whichever isAsleepLike state s is.
-// OFFLINE/UNKNOWN get the short interval: unlike ASLEEP/SUSPENDED,
-// neither carries any "leave it alone" rationale - OFFLINE just means
-// the last check couldn't reach the car (a connectivity blip, or the
-// car about to come online for a drive), and checking it again sooner
-// costs nothing since ListVehicles never wakes anything regardless of
-// how often it's called. See OfflineCheckInterval's doc comment for
-// the real-world drive-tracking gap this fixes.
+// ASLEEP/OFFLINE/UNKNOWN all get AsleepInterval (matching TeslaMate's
+// own @asleep_interval, which applies identically to both asleep and
+// offline - see PollingConfig.AsleepInterval's doc comment). Only
+// SUSPENDED - a deliberate choice made after IdleTimeout, not a raw
+// API-reported state - gets the much longer SuspendedCheckInterval.
 func (l *loopState) checkInterval(s vehicle.State) time.Duration {
 	switch s {
-	case vehicle.StateOffline, vehicle.StateUnknown:
-		return l.cfg.Polling.OfflineCheckInterval
-	default: // StateAsleep, StateSuspended
+	case vehicle.StateSuspended:
 		return l.cfg.Polling.SuspendedCheckInterval
+	default: // StateAsleep, StateOffline, StateUnknown
+		return l.cfg.Polling.AsleepInterval
 	}
 }
 
@@ -342,7 +340,7 @@ func (l *loopState) checkSummary(ctx context.Context) error {
 	// drive/charge was believed in progress, abandon it - see
 	// OnUnreachable's doc comment for why this is more than cosmetic.
 	if isAsleepLike(l.machine.State()) {
-		events = append(events, l.machine.OnUnreachable(now)...)
+		events = append(events, l.machine.OnUnreachable(now, rawState, l.cfg.Polling.DriveTimeout)...)
 	}
 	return l.persist(events)
 }

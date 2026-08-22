@@ -132,30 +132,46 @@ type PollingConfig struct {
 	ChargingInterval time.Duration
 	OnlineInterval   time.Duration
 	// IdleTimeout is how long the vehicle can sit IDLE (online, parked,
-	// not charging) before we stop polling and let it sleep.
+	// not charging) before we stop polling at OnlineInterval and switch
+	// to the much cheaper SuspendedCheckInterval cadence instead - i.e.
+	// how long we keep watching closely before deciding to leave it
+	// alone. Matches TeslaMate's own car_settings.suspend_after_idle_min
+	// default exactly (15 - verified directly against
+	// lib/teslamate/settings/car_settings.ex's schema, not guessed):
+	// an earlier default of 3 minutes here meant teslalog gave up on
+	// active polling 5x sooner than TeslaMate does, e.g. missing
+	// sentry-mode-relevant activity during a 5-10 minute errand stop
+	// that TeslaMate would still have been watching closely.
 	IdleTimeout time.Duration
 	// SuspendedCheckInterval is how often we perform a *lightweight*
-	// check (no vehicle_data, no wake) while SUSPENDED/ASLEEP to see if
-	// the car has become active on its own. Deliberately long: this is
-	// the one state where a slow interval is the whole point (leaving
-	// a genuinely sleeping car alone).
+	// check (no vehicle_data, no wake) once SUSPENDED (see IdleTimeout)
+	// to see if the car has become active on its own. Matches
+	// TeslaMate's own car_settings.suspend_min default exactly (21).
 	SuspendedCheckInterval time.Duration
-	// OfflineCheckInterval is the same kind of lightweight, non-waking
-	// check, but for OFFLINE specifically - which, unlike ASLEEP/
-	// SUSPENDED, carries no "leave it alone" rationale at all: it just
-	// means the last poll couldn't reach the car (temporary
-	// connectivity blip, or the car about to come online for a drive).
-	// Found live, head-to-head against a real TeslaMate instance
-	// polling the same car: with this bucketed under
-	// SuspendedCheckInterval's default 15-minute cadence (the original
-	// behavior - see isAsleepLike), teslalog missed the first ~10
+	// AsleepInterval is the same kind of lightweight, non-waking check,
+	// but for ASLEEP and OFFLINE specifically. Matches TeslaMate's own
+	// @asleep_interval exactly (30s - verified directly against its
+	// source, lib/teslamate/vehicles/vehicle.ex; applies identically to
+	// both states there, confirmed by its `when state in [:asleep,
+	// :offline]` guard clause). Found live, head-to-head against a real
+	// TeslaMate instance polling the same car: with ASLEEP/OFFLINE
+	// bucketed under a single, much longer interval (the original
+	// behavior here - see isAsleepLike), teslalog missed the first ~10
 	// minutes and ~11 km of a real drive that started from OFFLINE,
-	// where TeslaMate (checking far more often) caught it within about
-	// a minute. ListVehicles is cheap and never wakes the car
-	// regardless of how often it's called, so there's no sleep-
-	// preservation cost to checking OFFLINE much more often than
-	// ASLEEP - only the cost of the API call itself.
-	OfflineCheckInterval time.Duration
+	// where TeslaMate caught the same drive within about a minute.
+	// ListVehicles is cheap and never wakes the car regardless of how
+	// often it's called - TeslaMate's own default reflects that there's
+	// no cost to checking ASLEEP/OFFLINE this often, only SUSPENDED
+	// (a deliberate choice, see IdleTimeout) is meant to be slow.
+	AsleepInterval time.Duration
+	// DriveTimeout is how long a drive can go OFFLINE (not ASLEEP -
+	// see vehicle.Machine.OnUnreachable) before it's considered
+	// abandoned and closed using its last known position. Matches
+	// TeslaMate's own @drive_timeout_min exactly (verified directly
+	// against its source, lib/teslamate/vehicles/vehicle.ex) -
+	// deliberately not invented independently, given how easy it is
+	// to get this kind of edge case subtly wrong without checking.
+	DriveTimeout time.Duration
 }
 
 type StreamingConfig struct {
@@ -190,7 +206,8 @@ type rawConfig struct {
 		OnlineInterval         string `toml:"online_interval"`
 		IdleTimeout            string `toml:"idle_timeout"`
 		SuspendedCheckInterval string `toml:"suspended_check_interval"`
-		OfflineCheckInterval   string `toml:"offline_check_interval"`
+		AsleepInterval         string `toml:"asleep_interval"`
+		DriveTimeout           string `toml:"drive_timeout"`
 	} `toml:"polling"`
 
 	Streaming struct {
@@ -256,17 +273,19 @@ func Default() Config {
 		Polling: PollingConfig{
 			// TeslaMate's own published defaults (Vehicle.driving_interval/
 			// charging_interval/default_interval).
-			DrivingInterval:        2500 * time.Millisecond,
-			ChargingInterval:       5 * time.Second,
-			OnlineInterval:         15 * time.Second,
-			IdleTimeout:            3 * time.Minute,
-			SuspendedCheckInterval: 15 * time.Minute,
-			// Short: see OfflineCheckInterval's doc comment - this
-			// specific value (1 minute) was picked to comfortably beat
-			// TeslaMate's own real-world detection time on the same
-			// vehicle (observed at ~67s), so a drive starting from
-			// OFFLINE isn't missed for anywhere near as long.
-			OfflineCheckInterval: 1 * time.Minute,
+			DrivingInterval:  2500 * time.Millisecond,
+			ChargingInterval: 5 * time.Second,
+			OnlineInterval:   15 * time.Second,
+			// The following four all match TeslaMate's own real
+			// defaults exactly, verified directly against its source
+			// (car_settings.ex's schema, vehicle.ex's @asleep_interval/
+			// @drive_timeout_min) rather than reconstructed from memory
+			// or documentation - see each field's doc comment on
+			// PollingConfig for why that distinction mattered here.
+			IdleTimeout:            15 * time.Minute,
+			SuspendedCheckInterval: 21 * time.Minute,
+			AsleepInterval:         30 * time.Second,
+			DriveTimeout:           15 * time.Minute,
 		},
 		Streaming: StreamingConfig{
 			Enabled: true,
@@ -361,10 +380,15 @@ func Load(path string) (Config, error) {
 	} else {
 		cfg.Polling.SuspendedCheckInterval = d
 	}
-	if d, err := parseDurationOr(raw.Polling.OfflineCheckInterval, cfg.Polling.OfflineCheckInterval); err != nil {
-		return cfg, fmt.Errorf("polling.offline_check_interval: %w", err)
+	if d, err := parseDurationOr(raw.Polling.AsleepInterval, cfg.Polling.AsleepInterval); err != nil {
+		return cfg, fmt.Errorf("polling.asleep_interval: %w", err)
 	} else {
-		cfg.Polling.OfflineCheckInterval = d
+		cfg.Polling.AsleepInterval = d
+	}
+	if d, err := parseDurationOr(raw.Polling.DriveTimeout, cfg.Polling.DriveTimeout); err != nil {
+		return cfg, fmt.Errorf("polling.drive_timeout: %w", err)
+	} else {
+		cfg.Polling.DriveTimeout = d
 	}
 
 	if raw.Streaming.Enabled != nil {

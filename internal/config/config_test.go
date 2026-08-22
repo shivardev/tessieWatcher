@@ -73,29 +73,56 @@ func TestLoadOmittedBooleansKeepDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadOfflineCheckIntervalOverride(t *testing.T) {
-	path := writeTemp(t, "[polling]\noffline_check_interval = \"30s\"\n")
+func TestLoadAsleepIntervalOverride(t *testing.T) {
+	path := writeTemp(t, "[polling]\nasleep_interval = \"45s\"\n")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Polling.OfflineCheckInterval != 30*time.Second {
-		t.Fatalf("expected offline_check_interval override to apply, got %s", cfg.Polling.OfflineCheckInterval)
+	if cfg.Polling.AsleepInterval != 45*time.Second {
+		t.Fatalf("expected asleep_interval override to apply, got %s", cfg.Polling.AsleepInterval)
 	}
 }
 
-func TestLoadOfflineCheckIntervalDefaultsShorterThanSuspended(t *testing.T) {
-	// Regression guard for the bug itself: OfflineCheckInterval must
-	// default to something well under SuspendedCheckInterval's 15
-	// minutes, or a fresh install regains the exact drive-tracking gap
-	// this was added to fix.
+func TestLoadAsleepIntervalDefaultsShorterThanSuspended(t *testing.T) {
+	// Regression guard for the bug itself: AsleepInterval must default
+	// to something well under SuspendedCheckInterval's 21 minutes, or a
+	// fresh install regains the exact drive-tracking gap this was added
+	// to fix. Also pins the corrected default itself (30s, matching
+	// TeslaMate's real @asleep_interval - an earlier value here was a
+	// guess, not verified against TeslaMate's actual source).
 	cfg := Default()
-	if cfg.Polling.OfflineCheckInterval <= 0 {
-		t.Fatalf("expected a positive default offline_check_interval, got %s", cfg.Polling.OfflineCheckInterval)
+	if cfg.Polling.AsleepInterval != 30*time.Second {
+		t.Fatalf("expected default asleep_interval of 30s (matching TeslaMate's real @asleep_interval), got %s", cfg.Polling.AsleepInterval)
 	}
-	if cfg.Polling.OfflineCheckInterval >= cfg.Polling.SuspendedCheckInterval {
-		t.Fatalf("expected offline_check_interval (%s) to default well under suspended_check_interval (%s)",
-			cfg.Polling.OfflineCheckInterval, cfg.Polling.SuspendedCheckInterval)
+	if cfg.Polling.AsleepInterval >= cfg.Polling.SuspendedCheckInterval {
+		t.Fatalf("expected asleep_interval (%s) to default well under suspended_check_interval (%s)",
+			cfg.Polling.AsleepInterval, cfg.Polling.SuspendedCheckInterval)
+	}
+}
+
+// TestDefaultPollingMatchesTeslaMateRealDefaults pins every polling
+// default that's meant to match TeslaMate's own real, verified values
+// (not a memory/documentation-based guess - see each field's doc
+// comment on PollingConfig) directly against the exact numbers found
+// in TeslaMate's actual source. An earlier version of this project had
+// IdleTimeout wrong by 5x (3m instead of 15m) and SuspendedCheckInterval
+// wrong (15m instead of 21m) - both looked individually reasonable and
+// both were silently incorrect until checked against ground truth.
+func TestDefaultPollingMatchesTeslaMateRealDefaults(t *testing.T) {
+	cfg := Default()
+	cases := map[string]struct {
+		got, want time.Duration
+	}{
+		"idle_timeout (car_settings.suspend_after_idle_min)":  {cfg.Polling.IdleTimeout, 15 * time.Minute},
+		"suspended_check_interval (car_settings.suspend_min)": {cfg.Polling.SuspendedCheckInterval, 21 * time.Minute},
+		"asleep_interval (@asleep_interval)":                  {cfg.Polling.AsleepInterval, 30 * time.Second},
+		"drive_timeout (@drive_timeout_min)":                  {cfg.Polling.DriveTimeout, 15 * time.Minute},
+	}
+	for name, c := range cases {
+		if c.got != c.want {
+			t.Errorf("%s: expected %s to match TeslaMate's real default, got %s", name, c.want, c.got)
+		}
 	}
 }
 
