@@ -24,7 +24,7 @@ import (
 	"teslalog/internal/tesla"
 )
 
-const version = "0.4.2"
+const version = "0.4.3"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -264,7 +264,7 @@ func runDaemon(configPath string) error {
 	defer stop()
 
 	slog.Info("teslalog starting", "version", version, "database", cfg.Database)
-	err = runner.Run(ctx, cfg)
+	err = runner.Run(ctx, cfg, version)
 	if err != nil && ctx.Err() != nil {
 		// Clean shutdown via signal, not a real error.
 		slog.Info("teslalog stopped")

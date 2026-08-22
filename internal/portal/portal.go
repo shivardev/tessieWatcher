@@ -42,6 +42,7 @@ type Server struct {
 	store    *storage.Store
 	dbPath   string
 	logs     *LogBuffer
+	version  string
 	imperial bool
 }
 
@@ -54,8 +55,8 @@ type Server struct {
 // displays numbers (mi instead of km) - stored values, /download's
 // snapshot, and /api/status's JSON are always km, matching every other
 // distance value in the database.
-func New(store *storage.Store, dbPath string, logs *LogBuffer, units string) *Server {
-	return &Server{store: store, dbPath: dbPath, logs: logs, imperial: units == "imperial"}
+func New(store *storage.Store, dbPath string, logs *LogBuffer, units, version string) *Server {
+	return &Server{store: store, dbPath: dbPath, logs: logs, imperial: units == "imperial", version: version}
 }
 
 const kmPerMi = 1.609344
@@ -156,6 +157,7 @@ type indexData struct {
 	IdealRangeKm float64
 	BatteryAt    string
 	Firmware     string
+	Version      string
 	HasLifetime  bool
 	OdometerKm   float64
 	TotalDrives  int
@@ -281,7 +283,7 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 </head>
 <body>
   <h1>{{.VehicleName}}</h1>
-  <div class="subtitle">teslalog{{if .Firmware}} &middot; firmware {{.Firmware}}{{end}}</div>
+  <div class="subtitle">teslalog{{if .Version}} v{{.Version}}{{end}}{{if .Firmware}} &middot; firmware {{.Firmware}}{{end}}</div>
   <div class="warn">This page has no login - only reachable on your local network. Anyone on this Wi-Fi/LAN can see this page and download the database.</div>
 
   <div class="card">
@@ -386,11 +388,15 @@ type apiStatus struct {
 	Firmware       string   `json:"firmware,omitempty"`
 	ActiveDriveID  *int64   `json:"active_drive_id,omitempty"`
 	ActiveChargeID *int64   `json:"active_charge_id,omitempty"`
-	UpdatedAt      string   `json:"updated_at"`
+	// Version is the running teslalog build, so "did my update
+	// actually land?" is answerable without SSH-ing in or inferring
+	// it from the database's schema shape.
+	Version   string `json:"version,omitempty"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
-	out := apiStatus{VehicleName: "Vehicle", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	out := apiStatus{VehicleName: "Vehicle", Version: s.version, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 
 	var vehicleID int64
 	var displayName, firmware string
@@ -473,7 +479,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit()}
+	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit(), Version: s.version}
 
 	var vehicleID int64
 	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)

@@ -35,7 +35,7 @@ func TestAPIStatusReportsVehicleAndBattery(t *testing.T) {
 		t.Fatalf("open drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -70,7 +70,7 @@ func TestAPIStatusReportsVehicleAndBattery(t *testing.T) {
 
 func TestAPIStatusWithNoVehicleYetDoesNotError(t *testing.T) {
 	store := openTestStore(t)
-	srv := New(store, "unused.db", nil, "metric")
+	srv := New(store, "unused.db", nil, "metric", "test")
 
 	req := httptest.NewRequest("GET", "/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestAPIMetaReportsFreshness(t *testing.T) {
 	}
 	defer store.Close()
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/api/meta", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -123,7 +123,7 @@ func TestAPIMetaReportsFreshness(t *testing.T) {
 
 func TestCORSHeadersPresentOnEveryRoute(t *testing.T) {
 	store := openTestStore(t)
-	srv := New(store, "unused.db", nil, "metric")
+	srv := New(store, "unused.db", nil, "metric", "test")
 
 	for _, path := range []string{"/", "/api/status", "/api/meta"} {
 		req := httptest.NewRequest("GET", path, nil)
@@ -137,7 +137,7 @@ func TestCORSHeadersPresentOnEveryRoute(t *testing.T) {
 
 func TestCORSPreflightShortCircuits(t *testing.T) {
 	store := openTestStore(t)
-	srv := New(store, "unused.db", nil, "metric")
+	srv := New(store, "unused.db", nil, "metric", "test")
 
 	req := httptest.NewRequest("OPTIONS", "/api/status", nil)
 	rec := httptest.NewRecorder()
@@ -148,5 +148,28 @@ func TestCORSPreflightShortCircuits(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("expected wildcard CORS header on preflight, got %q", got)
+	}
+}
+
+// TestAPIStatusReportsRunningVersion pins that the portal surfaces the
+// running build. Without it, "did my update actually land?" can only
+// be answered by SSH-ing in or by inferring the version from the
+// database's schema shape - which is exactly what had to be done in
+// practice, and is a poor diagnostic for a daemon whose main update
+// path is a self-updating binary.
+func TestAPIStatusReportsRunningVersion(t *testing.T) {
+	store := openTestStore(t)
+	srv := New(store, "unused.db", nil, "metric", "9.9.9")
+
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+
+	var out apiStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.Version != "9.9.9" {
+		t.Fatalf("expected the running version in /api/status, got %q", out.Version)
 	}
 }

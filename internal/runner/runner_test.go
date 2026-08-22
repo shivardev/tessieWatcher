@@ -197,7 +197,7 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 	defer cancel()
 
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx, cfg) }()
+	go func() { runErrCh <- Run(ctx, cfg, "test") }()
 
 	// Poll the DB (a second connection to the same file) until the
 	// state machine has recorded a 'suspended' state, proving the
@@ -410,7 +410,7 @@ func TestRestartRecoversOpenDriveInsteadOfDuplicating(t *testing.T) {
 
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	runErrCh1 := make(chan error, 1)
-	go func() { runErrCh1 <- Run(ctx1, cfgFor(server1.URL)) }()
+	go func() { runErrCh1 <- Run(ctx1, cfgFor(server1.URL), "test") }()
 
 	// Wait for a drive to actually be open (not just a fixed sleep) before
 	// "crashing" it, so this isn't flaky under slow/cold-start conditions
@@ -473,7 +473,7 @@ func TestRestartRecoversOpenDriveInsteadOfDuplicating(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx2, cfgFor(server2.URL)) }()
+	go func() { runErrCh <- Run(ctx2, cfgFor(server2.URL), "test") }()
 
 	deadline := time.Now().Add(8 * time.Second)
 	var closed bool
@@ -595,7 +595,7 @@ func TestWakingUpDoesNotWaitOutTheFullSuspendedInterval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx, cfg) }()
+	go func() { runErrCh <- Run(ctx, cfg, "test") }()
 
 	deadline := time.Now().Add(2 * time.Second) // well under SuspendedCheckInterval
 	var polled bool
@@ -693,7 +693,7 @@ func TestOfflineIsCheckedOnItsOwnShorterInterval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx, cfg) }()
+	go func() { runErrCh <- Run(ctx, cfg, "test") }()
 
 	deadline := time.Now().Add(2 * time.Second) // well under SuspendedCheckInterval
 	var polled bool
@@ -824,7 +824,7 @@ func TestChargeWhileOfflineIsRecordedEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx, cfg) }()
+	go func() { runErrCh <- Run(ctx, cfg, "test") }()
 
 	// Wait for a closed charging session to appear.
 	deadline := time.Now().Add(8 * time.Second)
@@ -1021,7 +1021,7 @@ func TestDriveAndChargeLocationsResolveViaGeofence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	runErrCh := make(chan error, 1)
-	go func() { runErrCh <- Run(ctx, cfg) }()
+	go func() { runErrCh <- Run(ctx, cfg, "test") }()
 
 	deadline := time.Now().Add(8 * time.Second)
 	var chargeSeen bool

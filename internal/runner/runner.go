@@ -32,7 +32,7 @@ import (
 )
 
 // Run starts the teslalog daemon loop and blocks until ctx is canceled.
-func Run(ctx context.Context, cfg config.Config) error {
+func Run(ctx context.Context, cfg config.Config, version string) error {
 	var logBuf *portal.LogBuffer // wired up below only if cfg.Portal.Enabled
 
 	store, err := storage.Open(cfg.Database)
@@ -83,7 +83,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 		logBuf = portal.NewLogBuffer(200)
 		slog.SetDefault(slog.New(teeHandler{slog.NewTextHandler(os.Stderr, nil), logBuf.Handler()}))
 
-		srv := portal.New(store, cfg.Database, logBuf, cfg.Portal.Units)
+		srv := portal.New(store, cfg.Database, logBuf, cfg.Portal.Units, version)
 		go func() {
 			if err := srv.Run(ctx, cfg.Portal.Addr); err != nil {
 				slog.Error("portal server failed", "error", err)

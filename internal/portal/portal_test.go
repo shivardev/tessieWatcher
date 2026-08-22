@@ -50,7 +50,7 @@ func TestIndexShowsVehicleAndTodayStats(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -100,7 +100,7 @@ func TestIndexShowsMilesWhenUnitsIsImperial(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "imperial")
+	srv := New(store, dbPath, nil, "imperial", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -119,7 +119,7 @@ func TestIndexShowsMilesWhenUnitsIsImperial(t *testing.T) {
 
 func TestIndexWithNoVehicleYetDoesNotError(t *testing.T) {
 	store := openTestStore(t)
-	srv := New(store, "unused.db", nil, "metric")
+	srv := New(store, "unused.db", nil, "metric", "test")
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
@@ -143,7 +143,7 @@ func TestDownloadServesAValidSQLiteSnapshot(t *testing.T) {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/download", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -197,7 +197,7 @@ func TestIndexShowsCurrentStateAndRecentActivity(t *testing.T) {
 	logger := slog.New(logs.Handler())
 	logger.Info("drive started", "drive_id", 1)
 
-	srv := New(store, dbPath, logs, "metric")
+	srv := New(store, dbPath, logs, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -217,7 +217,7 @@ func TestIndexWithNoStateYetShowsPlaceholder(t *testing.T) {
 		t.Fatalf("upsert vehicle: %v", err)
 	}
 
-	srv := New(store, "unused.db", nil, "metric")
+	srv := New(store, "unused.db", nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -259,7 +259,7 @@ func TestIndexShowsRecentDrivesWithLocations(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -306,7 +306,7 @@ func TestIndexShowsBatteryAndRecentCharges(t *testing.T) {
 		t.Fatalf("close charging session: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -352,7 +352,7 @@ func TestIndexShowsFirmwareAndLifetimeTotals(t *testing.T) {
 		t.Fatalf("close drive: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
@@ -385,7 +385,7 @@ func TestIndexShowsAsleepPercentage(t *testing.T) {
 		t.Fatalf("open asleep state: %v", err)
 	}
 
-	srv := New(store, dbPath, nil, "metric")
+	srv := New(store, dbPath, nil, "metric", "test")
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	srv.handler().ServeHTTP(rec, req)
