@@ -209,7 +209,11 @@ checked against TeslaMate's real source rather than approximate. Per table:
   `positions` field-for-field — rated/ideal/estimated range as three
   separate figures, raw vs. usable battery %, full climate state (inside/
   outside temp, fan status, driver/passenger temp settings, defrosters,
-  climate on/off), all four TPMS tire pressures, battery heater status.
+  climate on/off), all four TPMS tire pressures, and all three battery
+  heater signals (`battery_heater_on` from `charge_state`, plus
+  `battery_heater`/`battery_heater_no_power` from `climate_state` —
+  genuinely different signals that disagree in real data, e.g. the pack
+  conditioning itself while not actively charging).
   teslalog additionally keeps `shift_state` and `heading` per position,
   which TeslaMate derives/stores differently.
 - **drives**: start/end odometer, distance, duration, battery %, rated
@@ -226,10 +230,14 @@ checked against TeslaMate's real source rather than approximate. Per table:
   rated *and* ideal range, battery heater / "not enough power to heat"
   flags, avg outside temp. Two figures the Owner API doesn't report
   directly (TeslaMate doesn't get them from the API either — it *models*
-  them) are opt-in via config: `charge_energy_used_kwh` (estimated from
-  a configurable charging-efficiency factor) and `cost` (from a flat
-  `price_per_kwh`, vs. TeslaMate's per-geofence pricing). Both are `NULL`
-  until you set the corresponding config value. `is_dc_fast_charge` is
+  them) are computed the same way TeslaMate computes them:
+  `charge_energy_used_kwh`, integrated from measured charger power over
+  the session's samples (with a configurable efficiency factor only as a
+  fallback when no usable power readings exist), and `cost`, from
+  per-geofence pricing including per-kWh or per-minute billing, flat
+  session fees, and free supercharging — see
+  [Charging prices per location](#charging-prices-per-location).
+  `is_dc_fast_charge` is
   derived at close time from whether any sample in the session ever saw
   `fast_charger_present` — the AC/DC "type" split TeslaMate's own
   Charging Stats dashboard shows, computed here instead of stored raw by
@@ -553,8 +561,13 @@ See `config.example.toml` for every field with inline docs. Key ones:
 | `polling.drive_timeout` | `15m` | how long a drive can go OFFLINE before it's abandoned/closed (matches TeslaMate's `@drive_timeout_min`) |
 | `backup.retention_days` | `30` | days of nightly backups to keep |
 | `vehicle.efficiency_wh_km` | `0` (off) | starting estimate only — teslalog derives the real figure from your own charging history and overwrites it, as TeslaMate does |
-| `charging.efficiency` | `0` (off) | if set, estimates `charge_energy_used_kwh` from energy added |
-| `charging.price_per_kwh` | `0` (off) | if set, computes `charging_sessions.cost` |
+| `charging.efficiency` | `0` (off) | fallback only — energy used is normally integrated from measured charger power; this covers sessions with no usable power readings |
+| `charging.price_per_kwh` | `0` (off) | fallback rate for charges outside every priced geofence — per-location prices live on the geofences themselves, see [Charging prices per location](#charging-prices-per-location) |
+| `charging.free_supercharging` | `false` | any Tesla-branded fast charge costs 0, overriding all other pricing |
+| `geofence.cost_per_unit` | (unset) | per-location charging price; `0` means free, unset means cost unknown |
+| `geofence.billing_type` | `per_kwh` | or `per_minute` |
+| `geofence.session_fee` | `0` | flat amount added once per charging session |
+| `polling.offline_charge_min_gap` | (see config) | minimum unobserved gap before a range increase is recorded as a charge that happened while teslalog couldn't see it |
 
 ## CLI reference
 
@@ -652,6 +665,33 @@ open that address from your phone/laptop while on the same Wi-Fi as the
 Pi. Do not port-forward this address to the public internet; the
 database is a complete log of everywhere the vehicle has been and when.
 
+### JSON endpoints
+
+Alongside the page and the download button, the portal serves two small
+JSON endpoints, meant for a frontend or a script that wants live status
+without re-downloading and re-parsing the whole database each time:
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/status` | current state, battery %, rated/ideal range, odometer, firmware, the running teslalog version, and the active drive/charge id if one is in progress |
+| `GET /api/meta` | `{"last_updated", "size_bytes"}` for the live database file, so a caller can tell whether re-downloading is even worth it |
+
+Fields that aren't known are omitted rather than sent as null, so check
+for the key rather than assuming it's present.
+
+Confirming an update actually landed is one request:
+
+```bash
+curl -s http://<pi>:8083/api/status | grep -o '"version":"[^"]*"'
+```
+
+Every route (including `/` and `/download`) sends a permissive CORS
+header, so a frontend served from a different origin or port can fetch
+them directly. Note that a page served over **HTTPS** cannot fetch these
+plain-HTTP endpoints — browsers block that as mixed content — so a
+browser frontend that polls them has to be served over HTTP on the same
+network, not from an HTTPS host.
+
 ### Viewing the data in Grafana
 
 The daemon itself still doesn't bundle or run Grafana (see
@@ -722,6 +762,64 @@ Raw `start_lat`/`start_lng` (etc.) are always stored regardless of
 whether either layer resolves a name, so nothing is ever lost — a
 location just shows up as coordinates instead of a name until you add a
 geofence for it or turn geocoding on.
+
+### Charging prices per location
+
+A geofence can also carry its own charging price, which is how
+per-location rates are expressed: electricity costs differ between
+home, a paid apartment charger, and a free one at a store, so a single
+global rate can't be right for all of them. A geofence's price always
+takes precedence over `[charging].price_per_kwh`, which is only the
+fallback for charges outside every priced zone.
+
+```toml
+[[geofence]]
+name          = "Home"
+lat           = 35.108234
+lng           = -85.063226
+radius_m      = 50
+cost_per_unit = 0.125
+
+[[geofence]]
+name          = "Apartment charger"
+lat           = 36.122018
+lng           = -86.774588
+radius_m      = 50
+cost_per_unit = 0.30
+session_fee   = 0.45      # flat, added once per session
+
+[[geofence]]
+name          = "Free charger at the store"
+lat           = 36.128838
+lng           = -86.778273
+radius_m      = 50
+cost_per_unit = 0         # 0 means free - distinct from omitting it
+```
+
+- `billing_type` is `"per_kwh"` (default) or `"per_minute"`.
+- Per-kWh billing charges for the **greater** of energy added and
+  energy drawn from the wall, matching TeslaMate. (Energy drawn is what
+  a supplier meters; teslalog derives it by integrating measured
+  charger power over each session — see
+  [Data model & TeslaMate parity](#data-model--teslamate-parity).)
+- Omitting `cost_per_unit` leaves the cost *unknown* (SQL `NULL`) for
+  charges there, which is deliberately different from `0` meaning
+  *free* — so unpriced charges never quietly count as zero in a total.
+- `[charging] free_supercharging = true` makes any charge at a
+  Tesla-branded fast charger cost 0, overriding everything else. Note
+  this keys on the charger *type*, not brand: a Tesla wall connector at
+  home reports the Tesla brand too, and must still be billed.
+
+**On radius:** anything under ~50 m is risky. Whether a given poll
+lands inside the circle depends on GPS noise and on exactly when the
+poll fires; a real drive was observed starting 20.84 m from a
+20 m-radius zone and missing it by 84 cm. Overlapping zones resolve to
+the *nearest* one, so a generous radius costs nothing.
+
+If a location fails to resolve (geofence added later, geocoder
+temporarily unreachable), teslalog retries it on a periodic sweep and
+fills it in retroactively — a blank "from"/"to" repairs itself rather
+than staying blank forever.
 
 ## Testing without a real car
 

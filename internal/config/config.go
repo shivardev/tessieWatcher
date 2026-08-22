@@ -240,6 +240,7 @@ type rawConfig struct {
 		SuspendedCheckInterval string `toml:"suspended_check_interval"`
 		AsleepInterval         string `toml:"asleep_interval"`
 		DriveTimeout           string `toml:"drive_timeout"`
+		OfflineChargeMinGap    string `toml:"offline_charge_min_gap"`
 	} `toml:"polling"`
 
 	Streaming struct {
@@ -432,6 +433,11 @@ func Load(path string) (Config, error) {
 		return cfg, fmt.Errorf("polling.drive_timeout: %w", err)
 	} else {
 		cfg.Polling.DriveTimeout = d
+	}
+	if d, err := parseDurationOr(raw.Polling.OfflineChargeMinGap, cfg.Polling.OfflineChargeMinGap); err != nil {
+		return cfg, fmt.Errorf("polling.offline_charge_min_gap: %w", err)
+	} else {
+		cfg.Polling.OfflineChargeMinGap = d
 	}
 
 	if raw.Streaming.Enabled != nil {

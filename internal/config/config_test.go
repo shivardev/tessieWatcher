@@ -235,3 +235,23 @@ func TestLoadNoGeofencesLeavesEmptySlice(t *testing.T) {
 		t.Fatalf("expected geocoding disabled by default")
 	}
 }
+
+func TestLoadOfflineChargeMinGapOverride(t *testing.T) {
+	path := writeTemp(t, "[polling]\noffline_charge_min_gap = \"12m\"\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Polling.OfflineChargeMinGap != 12*time.Minute {
+		t.Fatalf("expected offline_charge_min_gap override to apply, got %s", cfg.Polling.OfflineChargeMinGap)
+	}
+	// Omitting it must keep the built-in default rather than zeroing it,
+	// since 0 would make every tiny range reading look like a charge.
+	def, err := Load(writeTemp(t, "database = \"x.db\"\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if def.Polling.OfflineChargeMinGap <= 0 {
+		t.Fatalf("expected a positive default offline_charge_min_gap, got %s", def.Polling.OfflineChargeMinGap)
+	}
+}

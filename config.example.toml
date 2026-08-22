@@ -48,6 +48,13 @@ asleep_interval = "30s"
 # unrelated drive. Matches TeslaMate's own @drive_timeout_min exactly.
 drive_timeout = "15m"
 
+# How long the vehicle must have been unobservable before a range
+# INCREASE across that gap is recorded as a charging session that
+# happened while teslalog could not see it (car charged somewhere
+# with no connectivity, or the logger was down). Below this, a range
+# gain is treated as ordinary reading noise rather than a charge.
+offline_charge_min_gap = "5m"
+
 [streaming]
 enabled = true
 url     = "wss://streaming.vn.teslamotors.com/streaming/"
