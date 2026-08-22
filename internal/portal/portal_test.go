@@ -40,6 +40,12 @@ func TestIndexShowsVehicleAndTodayStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
 	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(2 * time.Minute), OdometerKm: 103, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(5 * time.Minute), OdometerKm: 105, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 2: %v", err)
+	}
 	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 110, BatteryLevel: 75}); err != nil {
 		t.Fatalf("close drive: %v", err)
 	}
@@ -83,6 +89,12 @@ func TestIndexShowsMilesWhenUnitsIsImperial(t *testing.T) {
 	driveID, err := store.OpenDrive(storage.DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 100, BatteryLevel: 80})
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(2 * time.Minute), OdometerKm: 104, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(5 * time.Minute), OdometerKm: 108, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 2: %v", err)
 	}
 	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 116.09344, BatteryLevel: 75}); err != nil {
 		t.Fatalf("close drive: %v", err)
@@ -235,6 +247,12 @@ func TestIndexShowsRecentDrivesWithLocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
 	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(2 * time.Minute), OdometerKm: 102, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(5 * time.Minute), OdometerKm: 104, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 2: %v", err)
+	}
 	if err := store.CloseDrive(storage.DriveEnd{
 		DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 108, BatteryLevel: 74, EndLocation: "Work",
 	}); err != nil {
@@ -323,6 +341,12 @@ func TestIndexShowsFirmwareAndLifetimeTotals(t *testing.T) {
 	driveID, err := store.OpenDrive(storage.DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 1000})
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(2 * time.Minute), OdometerKm: 1005, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(5 * time.Minute), OdometerKm: 1010, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 2: %v", err)
 	}
 	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 1020}); err != nil {
 		t.Fatalf("close drive: %v", err)

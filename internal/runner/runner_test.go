@@ -253,12 +253,20 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 		t.Fatalf("expected ~13.7 km distance (matching the design doc's Drive #1 example), got %.2f km", d.DistanceKm)
 	}
 
+	// Regression pin: TeslaMate's own start_drive/drive-end handlers
+	// record a position for the first and last observation too, not
+	// just the ones in between (verified directly against its source,
+	// lib/teslamate/vehicles/vehicle.ex) - teslalog used to only
+	// record EvDrivePoint samples, silently dropping the first and
+	// last GPS point of every single drive it ever logged. The script
+	// has 3 driving-state fixtures (driveStart, driveMid, driveEnd),
+	// so all 3 must now be recorded, not just 1.
 	var positionCount int
 	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM positions WHERE drive_id = ?`, d.ID).Scan(&positionCount); err != nil {
 		t.Fatalf("count positions: %v", err)
 	}
-	if positionCount == 0 {
-		t.Fatalf("expected at least one GPS position recorded for the drive")
+	if positionCount != 3 {
+		t.Fatalf("expected 3 positions (start+mid+end) recorded for the drive, got %d", positionCount)
 	}
 
 	charges, err := store.ListCharges(vehicleID, 0)
@@ -274,6 +282,19 @@ func TestFullDriveAndChargeLifecycle(t *testing.T) {
 	}
 	if diff := c.EnergyAddedKwh - 34.8; diff > 0.01 || diff < -0.01 {
 		t.Fatalf("expected 34.8 kWh added, got %.2f", c.EnergyAddedKwh)
+	}
+
+	// Same regression pin as the drive's positions above, for charging
+	// samples: TeslaMate's start_charging_process/complete_
+	// charging_process both record a sample too, not just the polls in
+	// between. The script has 3 charging-state fixtures (chargeStart,
+	// chargeMid, chargeDone).
+	var chargeSampleCount int
+	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM charging_samples WHERE charging_session_id = ?`, c.ID).Scan(&chargeSampleCount); err != nil {
+		t.Fatalf("count charging samples: %v", err)
+	}
+	if chargeSampleCount != 3 {
+		t.Fatalf("expected 3 charging samples (start+mid+end) recorded for the session, got %d", chargeSampleCount)
 	}
 
 	var firmware sql.NullString
@@ -771,9 +792,15 @@ func TestDriveAndChargeLocationsResolveViaGeofence(t *testing.T) {
 		return f
 	}
 	script := []fixture{
-		fx(homeLat, homeLng, "D", "Disconnected", 76, 1000), // drive start, at "Home"
-		fx(workLat, workLng, "", "Disconnected", 70, 1010),  // drive end, at "Work"
-		fx(homeLat, homeLng, "", "Charging", 70, 1010),      // charge start, back at "Home"
+		fx(homeLat, homeLng, "D", "Disconnected", 76, 1000),                         // drive start, at "Home"
+		fx((homeLat+workLat)/2, (homeLng+workLng)/2, "D", "Disconnected", 73, 1005), // mid-drive (still moving) -
+		// needed so this drive has >= 2 recorded positions - see
+		// storage.CloseDrive's minDrivePositions check (matches
+		// TeslaMate's own close_drive validity filter); a drive with
+		// only its start position gets discarded as noise, same as a
+		// bumped shifter would be.
+		fx(workLat, workLng, "", "Disconnected", 70, 1010), // drive end, at "Work"
+		fx(homeLat, homeLng, "", "Charging", 70, 1010),     // charge start, back at "Home"
 	}
 
 	var vehicleDataCalls int64

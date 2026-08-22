@@ -410,6 +410,18 @@ type DriveEnd struct {
 // inside temp, ascent/descent), then marks status 'closed'. Aggregates
 // are derived from the recorded positions plus start/end odometer so
 // the numbers are correct even if some samples were missed.
+// minDrivePositions/minDriveDistanceKm match TeslaMate's own close_drive
+// validity check exactly (verified directly against its source,
+// lib/teslamate/log.ex: `count >= 2 and distance >= 0.01`) - a drive
+// that never reaches this bar (a bumped shifter, GPS jitter briefly
+// registering as movement) is discarded entirely rather than kept as
+// a permanent, meaningless row. Without this, teslalog kept every such
+// blip forever - TeslaMate never does.
+const (
+	minDrivePositions  = 2
+	minDriveDistanceKm = 0.01
+)
+
 func (s *Store) CloseDrive(e DriveEnd) error {
 	var startTimeStr string
 	var startOdometer float64
@@ -429,11 +441,16 @@ func (s *Store) CloseDrive(e DriveEnd) error {
 	}
 	duration := e.Time.Sub(startTime).Minutes()
 
+	var count int64
 	var maxSpeed, maxPower, minPower, avgOutside, avgInside sql.NullFloat64
 	_ = s.db.QueryRow(`
-		SELECT MAX(speed_kmh), MAX(power_kw), MIN(power_kw), AVG(outside_temp_c), AVG(inside_temp_c)
+		SELECT COUNT(*), MAX(speed_kmh), MAX(power_kw), MIN(power_kw), AVG(outside_temp_c), AVG(inside_temp_c)
 		FROM positions WHERE drive_id = ?
-	`, e.DriveID).Scan(&maxSpeed, &maxPower, &minPower, &avgOutside, &avgInside)
+	`, e.DriveID).Scan(&count, &maxSpeed, &maxPower, &minPower, &avgOutside, &avgInside)
+
+	if count < minDrivePositions || distance < minDriveDistanceKm {
+		return s.discardTrivialDrive(e.DriveID)
+	}
 
 	ascent, descent, err := s.elevationChange(e.DriveID)
 	if err != nil {
@@ -458,14 +475,36 @@ func (s *Store) CloseDrive(e DriveEnd) error {
 	return nil
 }
 
+// discardTrivialDrive removes a drive (and its positions) that never
+// reached minDrivePositions/minDriveDistanceKm - see CloseDrive.
+// Positions are deleted first since drives.id is a foreign key they
+// reference.
+func (s *Store) discardTrivialDrive(driveID int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM positions WHERE drive_id = ?`, driveID); err != nil {
+		return fmt.Errorf("discard trivial drive %d (positions): %w", driveID, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM drives WHERE id = ?`, driveID); err != nil {
+		return fmt.Errorf("discard trivial drive %d: %w", driveID, err)
+	}
+	return tx.Commit()
+}
+
 // CloseDriveFromLastPosition closes a drive that was abandoned - the
 // vehicle stopped reporting entirely mid-drive rather than confirming
 // a normal stop (see vehicle.Machine.OnUnreachable's doc comment) -
 // using whatever position was last actually recorded for it, since
 // there's no fresh telemetry to close it with otherwise. If not even
 // one position was ever recorded, there's nothing to derive end values
-// from at all; the row is still marked closed (so it stops looking
-// "in progress" forever) but every end_* field stays NULL.
+// from at all - discarded outright, same as CloseDrive's own
+// minDrivePositions check would (a single-digit-second "drive" that
+// went unreachable before a single sample landed is exactly the kind
+// of noise that check exists to filter).
 func (s *Store) CloseDriveFromLastPosition(driveID int64, at time.Time) error {
 	var lastTimestamp string
 	var odometerKm, rangeKm float64
@@ -479,9 +518,8 @@ func (s *Store) CloseDriveFromLastPosition(driveID int64, at time.Time) error {
 		FROM positions WHERE drive_id = ? ORDER BY timestamp DESC LIMIT 1
 	`, driveID, driveID).Scan(&lastTimestamp, &odometerKm, &batteryLevel, &rangeKm, &lat, &lng, &idealRangeKm)
 	if err == sql.ErrNoRows {
-		_, err := s.db.Exec(`UPDATE drives SET end_time = ?, status = 'closed' WHERE id = ? AND status = 'open'`, fmtTime(at), driveID)
-		if err != nil {
-			return fmt.Errorf("close abandoned drive %d (no positions recorded): %w", driveID, err)
+		if err := s.discardTrivialDrive(driveID); err != nil {
+			return fmt.Errorf("discard abandoned drive %d (no positions recorded): %w", driveID, err)
 		}
 		return nil
 	}
@@ -648,19 +686,33 @@ type ChargeEnd struct {
 }
 
 func (s *Store) CloseChargingSession(e ChargeEnd) error {
-	var maxPower, avgOutside sql.NullFloat64
+	var maxPower, avgOutside, maxEnergyAdded sql.NullFloat64
 	var everFastCharger sql.NullInt64
 	_ = s.db.QueryRow(`
-		SELECT MAX(charger_power_kw), AVG(outside_temp_c), MAX(fast_charger_present) FROM charging_samples WHERE charging_session_id = ?
-	`, e.ChargingSessionID).Scan(&maxPower, &avgOutside, &everFastCharger)
+		SELECT MAX(charger_power_kw), AVG(outside_temp_c), MAX(fast_charger_present), MAX(charge_energy_added_kwh)
+		FROM charging_samples WHERE charging_session_id = ?
+	`, e.ChargingSessionID).Scan(&maxPower, &avgOutside, &everFastCharger, &maxEnergyAdded)
+
+	// Known Tesla API quirk: the very last poll before a charge ends
+	// sometimes reports charge_energy_added as 0 even though real
+	// energy was added throughout - TeslaMate's own
+	// complete_charging_process guards against exactly this
+	// (`coalesce(nullif(last_value, 0), max(...))`, verified directly
+	// against its source) rather than trusting the literal last
+	// reading. Same fallback here: prefer the max ever seen across
+	// this session's samples if the final snapshot reads exactly 0.
+	energyAdded := e.EnergyAddedKwh
+	if energyAdded == 0 && maxEnergyAdded.Valid && maxEnergyAdded.Float64 > 0 {
+		energyAdded = maxEnergyAdded.Float64
+	}
 
 	var energyUsed sql.NullFloat64
 	if e.ChargingEfficiency > 0 {
-		energyUsed = sql.NullFloat64{Float64: e.EnergyAddedKwh / e.ChargingEfficiency, Valid: true}
+		energyUsed = sql.NullFloat64{Float64: energyAdded / e.ChargingEfficiency, Valid: true}
 	}
 	var cost sql.NullFloat64
 	if e.PricePerKwh > 0 {
-		cost = sql.NullFloat64{Float64: e.EnergyAddedKwh * e.PricePerKwh, Valid: true}
+		cost = sql.NullFloat64{Float64: energyAdded * e.PricePerKwh, Valid: true}
 	}
 
 	_, err := s.db.Exec(`
@@ -670,7 +722,7 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 			outside_temp_avg_c = ?, cost = ?, is_dc_fast_charge = ?, status = 'closed'
 		WHERE id = ?
 	`, fmtTime(e.Time), e.BatteryLevel, e.RangeKm, e.IdealRangeKm,
-		e.EnergyAddedKwh, energyUsed, maxPower.Float64,
+		energyAdded, energyUsed, maxPower.Float64,
 		avgOutside.Float64, cost, everFastCharger.Int64, e.ChargingSessionID)
 	return err
 }

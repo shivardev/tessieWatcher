@@ -137,12 +137,18 @@ func TestCloseDriveFromLastPositionUsesLastRecordedSample(t *testing.T) {
 		t.Fatalf("open drive: %v", err)
 	}
 
+	if err := s.AppendPosition(PositionSample{
+		DriveID: driveID, VehicleID: vehicleID, Time: start.Add(time.Minute),
+		Lat: 35.02, Lng: -85.02, SpeedKmh: 60, OdometerKm: 1003, BatteryLevel: 78, RangeKm: 296, ShiftState: "D",
+	}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
 	lastKnown := start.Add(5 * time.Minute)
 	if err := s.AppendPosition(PositionSample{
 		DriveID: driveID, VehicleID: vehicleID, Time: lastKnown,
 		Lat: 35.05, Lng: -85.05, SpeedKmh: 60, OdometerKm: 1008, BatteryLevel: 74, RangeKm: 288, ShiftState: "D",
 	}); err != nil {
-		t.Fatalf("append position: %v", err)
+		t.Fatalf("append position 2: %v", err)
 	}
 
 	// The vehicle goes unreachable here - detected/closed much later
@@ -176,7 +182,7 @@ func TestCloseDriveFromLastPositionUsesLastRecordedSample(t *testing.T) {
 	}
 }
 
-func TestCloseDriveFromLastPositionWithNoPositionsStillClosesTheRow(t *testing.T) {
+func TestCloseDriveFromLastPositionWithNoPositionsDiscardsTheRow(t *testing.T) {
 	s := openTestStore(t)
 	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-ABANDON-2", TeslaID: "9", DisplayName: "Car"})
 	start := time.Now().UTC()
@@ -186,22 +192,132 @@ func TestCloseDriveFromLastPositionWithNoPositionsStillClosesTheRow(t *testing.T
 	}
 
 	// No positions ever recorded (the vehicle went unreachable before
-	// a single sample landed) - should still mark the row closed
-	// rather than erroring, so it doesn't sit "open" forever either.
+	// a single sample landed) - matches TeslaMate's own close_drive
+	// validity check (count >= 2, verified directly against its
+	// source): discarded outright rather than kept as a permanent,
+	// meaningless row with every end_* field NULL.
 	if err := s.CloseDriveFromLastPosition(driveID, start.Add(time.Hour)); err != nil {
 		t.Fatalf("close abandoned drive with no positions: %v", err)
 	}
 
-	var status string
-	var endTime sql.NullString
-	if err := s.db.QueryRow(`SELECT status, end_time FROM drives WHERE id = ?`, driveID).Scan(&status, &endTime); err != nil {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM drives WHERE id = ?`, driveID).Scan(&count); err != nil {
 		t.Fatalf("query drive: %v", err)
 	}
-	if status != "closed" {
-		t.Fatalf("expected status closed even with no positions, got %q", status)
+	if count != 0 {
+		t.Fatalf("expected the drive to be discarded (no positions ever recorded), but it still exists")
 	}
-	if !endTime.Valid {
-		t.Fatalf("expected end_time to be set even with no positions")
+}
+
+// TestCloseDriveDiscardsTrivialDrives is a regression test for a real
+// gap: teslalog's very first summarized read of TeslaMate's source
+// claimed "no minimum-duration/distance filtering exists" - false.
+// TeslaMate's real close_drive (verified directly against its source,
+// lib/teslamate/log.ex) discards any drive with fewer than 2 positions
+// or less than 0.01 km of distance (a bumped shifter, GPS jitter
+// briefly registering as movement) rather than keeping it as a
+// permanent, meaningless row.
+func TestCloseDriveDiscardsTrivialDrives(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-TRIVIAL", TeslaID: "10", DisplayName: "Car"})
+	start := time.Now().UTC()
+
+	t.Run("only one position ever recorded", func(t *testing.T) {
+		driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 1000, BatteryLevel: 80})
+		if err != nil {
+			t.Fatalf("open drive: %v", err)
+		}
+		if err := s.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: start, OdometerKm: 1000.005, ShiftState: "D"}); err != nil {
+			t.Fatalf("append position: %v", err)
+		}
+		if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: start.Add(time.Second), OdometerKm: 1000.005}); err != nil {
+			t.Fatalf("close drive: %v", err)
+		}
+		var count int
+		s.db.QueryRow(`SELECT COUNT(*) FROM drives WHERE id = ?`, driveID).Scan(&count)
+		if count != 0 {
+			t.Fatalf("expected a single-position drive to be discarded")
+		}
+	})
+
+	t.Run("two positions but under the distance threshold", func(t *testing.T) {
+		driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 2000, BatteryLevel: 80})
+		if err != nil {
+			t.Fatalf("open drive: %v", err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := s.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: start.Add(time.Duration(i) * time.Second), OdometerKm: 2000.001, ShiftState: "D"}); err != nil {
+				t.Fatalf("append position %d: %v", i, err)
+			}
+		}
+		// 0.001 km moved - well under the 0.01 km threshold.
+		if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: start.Add(2 * time.Second), OdometerKm: 2000.001}); err != nil {
+			t.Fatalf("close drive: %v", err)
+		}
+		var count int
+		s.db.QueryRow(`SELECT COUNT(*) FROM drives WHERE id = ?`, driveID).Scan(&count)
+		if count != 0 {
+			t.Fatalf("expected a sub-10-meter drive to be discarded")
+		}
+	})
+
+	t.Run("a real drive is kept", func(t *testing.T) {
+		driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 3000, BatteryLevel: 80})
+		if err != nil {
+			t.Fatalf("open drive: %v", err)
+		}
+		for i := 0; i < 3; i++ {
+			if err := s.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: start.Add(time.Duration(i) * time.Minute), OdometerKm: 3000 + float64(i), ShiftState: "D"}); err != nil {
+				t.Fatalf("append position %d: %v", i, err)
+			}
+		}
+		if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: start.Add(3 * time.Minute), OdometerKm: 3002}); err != nil {
+			t.Fatalf("close drive: %v", err)
+		}
+		var count int
+		var status string
+		s.db.QueryRow(`SELECT COUNT(*), status FROM drives WHERE id = ?`, driveID).Scan(&count, &status)
+		if count != 1 || status != "closed" {
+			t.Fatalf("expected a real 2km drive to be kept and closed, got count=%d status=%q", count, status)
+		}
+	})
+}
+
+// TestCloseChargingSessionFallsBackToMaxEnergyAddedWhenLastReadIsZero
+// is a regression test matching a known Tesla API quirk TeslaMate's
+// own complete_charging_process explicitly guards against (verified
+// directly against its source): the very last sample before a charge
+// ends sometimes reports charge_energy_added as exactly 0, even though
+// real energy was added throughout the session.
+func TestCloseChargingSessionFallsBackToMaxEnergyAddedWhenLastReadIsZero(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-ZEROQUIRK", TeslaID: "11", DisplayName: "Car"})
+	start := time.Now().UTC()
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+
+	for i, added := range []float64{0, 5.2, 11.8} {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID, Time: start.Add(time.Duration(i) * time.Minute),
+			BatteryLevel: 20 + i*10, EnergyAddedKwh: added,
+		}); err != nil {
+			t.Fatalf("append charging sample %d: %v", i, err)
+		}
+	}
+
+	// The final snapshot at close time reads exactly 0 (the quirk).
+	if err := s.CloseChargingSession(ChargeEnd{ChargingSessionID: sessionID, Time: start.Add(3 * time.Minute), BatteryLevel: 50, EnergyAddedKwh: 0}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	var energyAdded float64
+	if err := s.db.QueryRow(`SELECT charge_energy_added_kwh FROM charging_sessions WHERE id = ?`, sessionID).Scan(&energyAdded); err != nil {
+		t.Fatalf("query charging session: %v", err)
+	}
+	if energyAdded != 11.8 {
+		t.Fatalf("expected the max energy_added seen across samples (11.8) as a fallback for a literal-0 final reading, got %v", energyAdded)
 	}
 }
 
@@ -499,6 +615,11 @@ func TestDriveSummaryEfficiencyRatio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
 	}
+	for i, odo := range []float64{101, 105, 110} {
+		if err := s.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: start.Add(time.Duration(i+1) * 3 * time.Minute), OdometerKm: odo, ShiftState: "D"}); err != nil {
+			t.Fatalf("append position %d: %v", i, err)
+		}
+	}
 	if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: start.Add(10 * time.Minute), OdometerKm: 110, RangeKm: 290}); err != nil {
 		t.Fatalf("close drive: %v", err)
 	}
@@ -550,6 +671,11 @@ func TestLifetimeAggregatesDrivesAndCharges(t *testing.T) {
 	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 1000})
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
+	}
+	for i, odo := range []float64{1005, 1012, 1020} {
+		if err := s.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(time.Duration(i+1) * 3 * time.Minute), OdometerKm: odo, ShiftState: "D"}); err != nil {
+			t.Fatalf("append position %d: %v", i, err)
+		}
 	}
 	if err := s.CloseDrive(DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 1020}); err != nil {
 		t.Fatalf("close drive: %v", err)

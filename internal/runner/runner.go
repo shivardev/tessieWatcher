@@ -402,6 +402,16 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				return fmt.Errorf("open drive: %w", err)
 			}
 			l.driveID = id
+			// TeslaMate's own start_drive records a position for this
+			// exact same first sample, in the same transaction as
+			// starting the drive (verified directly against its
+			// source, lib/teslamate/vehicles/vehicle.ex) - every drive
+			// teslalog logged before this fix was missing its first
+			// GPS point compared to what TeslaMate would have recorded
+			// for the identical drive.
+			if err := l.store.AppendPosition(positionFromSnapshot(id, l.vehicleDBID, ev.At, s)); err != nil {
+				return fmt.Errorf("append start position: %w", err)
+			}
 			slog.Info("drive started", "drive_id", id, "odometer_km", s.OdometerKm)
 
 		case vehicle.EvDrivePoint:
@@ -417,6 +427,13 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				continue
 			}
 			s := ev.Snapshot
+			// TeslaMate's own drive-end handler records a position for
+			// this final "now parked" sample too, immediately before
+			// calling close_drive (same source, same transaction) -
+			// same gap as EvDriveStart's, fixed the same way.
+			if err := l.store.AppendPosition(positionFromSnapshot(l.driveID, l.vehicleDBID, ev.At, s)); err != nil {
+				return fmt.Errorf("append end position: %w", err)
+			}
 			if err := l.store.CloseDrive(storage.DriveEnd{
 				DriveID: l.driveID, Time: ev.At, OdometerKm: s.OdometerKm,
 				BatteryLevel: s.BatteryLevel, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
@@ -438,25 +455,21 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				return fmt.Errorf("open charging session: %w", err)
 			}
 			l.chargeID = id
+			// TeslaMate's own start_charging_process records a sample
+			// for this exact same first observation, in the same
+			// transaction as starting the session (verified directly
+			// against its source) - same gap as drives had, fixed the
+			// same way.
+			if err := l.store.AppendChargingSample(chargingSampleFromSnapshot(id, l.vehicleDBID, ev.At, s)); err != nil {
+				return fmt.Errorf("append start charging sample: %w", err)
+			}
 			slog.Info("charging started", "session_id", id, "battery_level", s.BatteryLevel)
 
 		case vehicle.EvChargePoint:
 			if l.chargeID == 0 {
 				continue
 			}
-			s := ev.Snapshot
-			if err := l.store.AppendChargingSample(storage.ChargingSample{
-				ChargingSessionID: l.chargeID, VehicleID: l.vehicleDBID, Time: ev.At,
-				BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
-				ChargerPowerKw: s.ChargerPowerKw, ChargerVoltage: s.ChargerVoltage,
-				ChargerCurrent: s.ChargerActualCurrent, ChargerPilotCurrent: s.ChargerPilotCurrent,
-				ChargerPhases: s.ChargerPhases, ConnChargeCable: s.ConnChargeCable,
-				FastChargerPresent: s.FastChargerPresent, FastChargerBrand: s.FastChargerBrand,
-				FastChargerType: s.FastChargerType,
-				EnergyAddedKwh:  s.ChargeEnergyAddedKwh, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
-				BatteryHeaterOn: s.BatteryHeaterOn, NotEnoughPowerToHeat: s.NotEnoughPowerToHeat,
-				OutsideTempC: s.OutsideTempC, ChargeLimitSoc: s.ChargeLimitSoc,
-			}); err != nil {
+			if err := l.store.AppendChargingSample(chargingSampleFromSnapshot(l.chargeID, l.vehicleDBID, ev.At, ev.Snapshot)); err != nil {
 				return fmt.Errorf("append charging sample: %w", err)
 			}
 
@@ -465,6 +478,13 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				continue
 			}
 			s := ev.Snapshot
+			// TeslaMate's own charge-end handler records a sample for
+			// this final observation too, immediately before calling
+			// complete_charging_process (same source) - same gap,
+			// fixed the same way.
+			if err := l.store.AppendChargingSample(chargingSampleFromSnapshot(l.chargeID, l.vehicleDBID, ev.At, s)); err != nil {
+				return fmt.Errorf("append end charging sample: %w", err)
+			}
 			if err := l.store.CloseChargingSession(storage.ChargeEnd{
 				ChargingSessionID: l.chargeID, Time: ev.At, BatteryLevel: s.BatteryLevel,
 				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EnergyAddedKwh: s.ChargeEnergyAddedKwh,
@@ -638,6 +658,27 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 
 		SentryMode: boolPtr(s.SentryMode), IsUserPresent: boolPtr(s.IsUserPresent), ValetMode: boolPtr(s.ValetMode),
 		ClimateKeeperMode: s.ClimateKeeperMode,
+	}
+}
+
+// chargingSampleFromSnapshot builds a charging_samples row from a full
+// REST vehicle_data poll. Used identically for the first, every
+// intermediate, and the final sample of a charging session - matching
+// TeslaMate's own behavior (verified directly against its source: it
+// calls insert_charge on every one of those, not just the ones in
+// between).
+func chargingSampleFromSnapshot(chargingSessionID, vehicleDBID int64, at time.Time, s vehicle.Snapshot) storage.ChargingSample {
+	return storage.ChargingSample{
+		ChargingSessionID: chargingSessionID, VehicleID: vehicleDBID, Time: at,
+		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: s.UsableBatteryLevel,
+		ChargerPowerKw: s.ChargerPowerKw, ChargerVoltage: s.ChargerVoltage,
+		ChargerCurrent: s.ChargerActualCurrent, ChargerPilotCurrent: s.ChargerPilotCurrent,
+		ChargerPhases: s.ChargerPhases, ConnChargeCable: s.ConnChargeCable,
+		FastChargerPresent: s.FastChargerPresent, FastChargerBrand: s.FastChargerBrand,
+		FastChargerType: s.FastChargerType,
+		EnergyAddedKwh:  s.ChargeEnergyAddedKwh, RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm,
+		BatteryHeaterOn: s.BatteryHeaterOn, NotEnoughPowerToHeat: s.NotEnoughPowerToHeat,
+		OutsideTempC: s.OutsideTempC, ChargeLimitSoc: s.ChargeLimitSoc,
 	}
 }
 

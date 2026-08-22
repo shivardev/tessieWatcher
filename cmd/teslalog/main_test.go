@@ -128,6 +128,12 @@ func TestRunExportIncludesDerivedColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open drive: %v", err)
 	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(3 * time.Minute), OdometerKm: 3, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 1: %v", err)
+	}
+	if err := store.AppendPosition(storage.PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: now.Add(6 * time.Minute), OdometerKm: 6, ShiftState: "D"}); err != nil {
+		t.Fatalf("append position 2: %v", err)
+	}
 	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 10, RangeKm: 290}); err != nil {
 		t.Fatalf("close drive: %v", err)
 	}
