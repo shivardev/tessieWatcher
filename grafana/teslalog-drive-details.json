@@ -38,6 +38,62 @@
       },
       {
         "current": {
+          "selected": true,
+          "text": "mi",
+          "value": "mi"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "length unit",
+        "multi": false,
+        "name": "length_unit",
+        "options": [
+          {
+            "selected": false,
+            "text": "km",
+            "value": "km"
+          },
+          {
+            "selected": true,
+            "text": "mi",
+            "value": "mi"
+          }
+        ],
+        "query": "km,mi",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "F",
+          "value": "F"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "temp unit",
+        "multi": false,
+        "name": "temp_unit",
+        "options": [
+          {
+            "selected": false,
+            "text": "C",
+            "value": "C"
+          },
+          {
+            "selected": true,
+            "text": "F",
+            "value": "F"
+          }
+        ],
+        "query": "C,F",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
           "selected": false,
           "text": "",
           "value": ""
@@ -56,7 +112,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Distance",
+      "title": "Distance ($length_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -73,8 +129,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT ROUND(distance_km, 1) AS value FROM drives WHERE id = $drive_id",
-          "rawQueryText": "SELECT ROUND(distance_km, 1) AS value FROM drives WHERE id = $drive_id",
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -85,7 +141,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "lengthkm",
+          "unit": "none",
           "decimals": 1
         },
         "overrides": []
@@ -195,7 +251,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Max speed",
+      "title": "Max speed ($length_unit/h)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -212,8 +268,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT ROUND(max_speed_kmh, 0) AS value FROM drives WHERE id = $drive_id",
-          "rawQueryText": "SELECT ROUND(max_speed_kmh, 0) AS value FROM drives WHERE id = $drive_id",
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -224,7 +280,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "velocitykmh",
+          "unit": "none",
           "decimals": 0
         },
         "overrides": []
@@ -378,8 +434,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, speed_kmh AS \"Speed (km/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, speed_kmh AS \"Speed (km/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -412,7 +468,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Elevation",
+      "title": "Elevation (m if km, ft if mi)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -429,8 +485,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, elevation_m AS \"Elevation (m)\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, elevation_m AS \"Elevation (m)\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -441,7 +497,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "lengthm",
+          "unit": "none",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 1,
@@ -464,7 +520,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Temperatures",
+      "title": "Temperatures (°$temp_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -481,8 +537,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, outside_temp_c AS \"Outside\", inside_temp_c AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -493,7 +549,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "celsius",
+          "unit": "none",
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
