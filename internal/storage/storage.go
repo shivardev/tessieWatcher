@@ -856,7 +856,12 @@ type ChargeEnd struct {
 	// the authoritative energy/duration figures it needs (they're
 	// derived from the session's own samples here, not known upfront).
 	// Returning ok=false leaves the cost unrecorded.
-	CostFunc func(energyAddedKwh, energyUsedKwh, durationMin float64) (cost float64, ok bool)
+	//
+	// fastChargerType is the session's modal fast_charger_type (see
+	// modalFastChargerType) - needed for the free-supercharging rule,
+	// and derived here for the same reason as the energy figures: it
+	// comes from the samples, which this package owns.
+	CostFunc func(energyAddedKwh, energyUsedKwh, durationMin float64, fastChargerType string) (cost float64, ok bool)
 }
 
 func (s *Store) CloseChargingSession(e ChargeEnd) error {
@@ -903,7 +908,11 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 				durationMin = e.Time.Sub(st).Minutes()
 			}
 		}
-		if c, ok := e.CostFunc(energyAdded, energyUsed.Float64, durationMin); ok {
+		chargerType, err := s.modalFastChargerType(e.ChargingSessionID)
+		if err != nil {
+			return fmt.Errorf("determine charger type for session %d: %w", e.ChargingSessionID, err)
+		}
+		if c, ok := e.CostFunc(energyAdded, energyUsed.Float64, durationMin, chargerType); ok {
 			cost = sql.NullFloat64{Float64: c, Valid: true}
 		}
 	case e.PricePerKwh > 0:
@@ -926,6 +935,39 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		energyAdded, energyUsed, maxPower.Float64,
 		avgOutside.Float64, cost, everFastCharger.Int64, e.ChargingSessionID)
 	return err
+}
+
+// modalFastChargerType returns the most frequently reported
+// fast_charger_type across a session's samples, considering only
+// samples where power was actually flowing.
+//
+// Mirrors TeslaMate's own `mode() WITHIN GROUP (ORDER BY
+// fast_charger_type) ... where charger_power > 0` (verified directly
+// against lib/teslamate/log.ex). The mode rather than the last
+// reading, because this field really does report junk intermittently:
+// in real recorded data, "<invalid>" appears in thousands of samples,
+// so a session whose final sample happened to be one of those would
+// be misclassified. Filtering to charger_power > 0 likewise skips the
+// idle/transitional samples at either end of a session, which don't
+// describe the charger actually used.
+//
+// Returns "" if the session has no samples with power flowing.
+func (s *Store) modalFastChargerType(sessionID int64) (string, error) {
+	var t sql.NullString
+	err := s.db.QueryRow(`
+		SELECT fast_charger_type FROM charging_samples
+		WHERE charging_session_id = ? AND charger_power_kw > 0 AND fast_charger_type IS NOT NULL
+		GROUP BY fast_charger_type
+		ORDER BY COUNT(*) DESC
+		LIMIT 1
+	`, sessionID).Scan(&t)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return t.String, nil
 }
 
 // calculateEnergyUsed integrates measured charger power over time

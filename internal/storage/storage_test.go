@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -481,6 +482,115 @@ func TestRecalculateEfficiencyIsANoOpWithTooFewCharges(t *testing.T) {
 		t.Fatalf("recalculate efficiency: %v", err)
 	} else if ok {
 		t.Fatalf("expected no derivation from a single charge - not enough evidence yet")
+	}
+}
+
+// TestModalFastChargerTypeIgnoresJunkAndIdleSamples pins TeslaMate's
+// own `mode() WITHIN GROUP (ORDER BY fast_charger_type) WHERE
+// charger_power > 0` (verified against lib/teslamate/log.ex).
+//
+// Both halves matter against real data. The mode rather than the last
+// reading: this field genuinely reports "<invalid>" intermittently
+// (thousands of such samples appear in real recorded history), so a
+// session whose final sample happened to be junk would be
+// misclassified. And the charger_power > 0 filter: the idle samples
+// at either end of a session don't describe the charger actually
+// used.
+func TestModalFastChargerTypeIgnoresJunkAndIdleSamples(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-MODE", TeslaID: "19", DisplayName: "Car"})
+	start := time.Now().UTC()
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+
+	add := func(i int, power float64, chargerType string) {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID,
+			Time: start.Add(time.Duration(i) * time.Minute), BatteryLevel: 20 + i,
+			ChargerPowerKw: power, FastChargerType: chargerType,
+		}); err != nil {
+			t.Fatalf("append sample %d: %v", i, err)
+		}
+	}
+	// An idle "Tesla" sample at the start (no power yet) - must be
+	// ignored despite looking like a Supercharger.
+	add(0, 0, "Tesla")
+	// The real charge: a Tesla wall connector at home.
+	add(1, 11, "MCSingleWireCAN")
+	add(2, 11, "MCSingleWireCAN")
+	add(3, 11, "MCSingleWireCAN")
+	// A junk reading mid-session, and again as the very last sample.
+	add(4, 11, "<invalid>")
+	add(5, 11, "<invalid>")
+
+	got, err := s.modalFastChargerType(sessionID)
+	if err != nil {
+		t.Fatalf("modal fast charger type: %v", err)
+	}
+	if got != "MCSingleWireCAN" {
+		t.Fatalf("expected the modal type across powered samples (MCSingleWireCAN), got %q "+
+			"(using the last sample would wrongly give \"<invalid>\"; ignoring the power filter could give \"Tesla\")", got)
+	}
+}
+
+// TestFreeSuperchargingMustNotZeroOutHomeCharging is a regression test
+// for a real bug caught against actual recorded data: teslalog checked
+// fast_charger_BRAND for the "Tesla" prefix, but the brand reads
+// "Tesla" for a home Tesla wall connector too - roughly 98,000 of
+// ~104,000 real samples, versus ~100 for actual Superchargers.
+// Testing the brand marked every home charge free and zeroed the
+// entire electricity bill. TeslaMate tests fast_charger_TYPE, which
+// only reads "Tesla" at a real Supercharger.
+func TestFreeSuperchargingMustNotZeroOutHomeCharging(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-FREESC", TeslaID: "20", DisplayName: "Car"})
+	start := time.Now().UTC()
+
+	// A home charge on a Tesla wall connector: brand "Tesla", type
+	// "MCSingleWireCAN" - exactly the shape seen in real data.
+	sessionID, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start, BatteryLevel: 20})
+	if err != nil {
+		t.Fatalf("open charging session: %v", err)
+	}
+	for i := 0; i <= 2; i++ {
+		if err := s.AppendChargingSample(ChargingSample{
+			ChargingSessionID: sessionID, VehicleID: vehicleID,
+			Time: start.Add(time.Duration(i) * 30 * time.Minute), BatteryLevel: 20 + i*10,
+			ChargerPowerKw: 11, FastChargerBrand: "Tesla", FastChargerType: "MCSingleWireCAN",
+			EnergyAddedKwh: float64(i) * 5,
+		}); err != nil {
+			t.Fatalf("append sample %d: %v", i, err)
+		}
+	}
+
+	// The pricing rule a free-supercharging user would have: free at a
+	// Supercharger, $0.125/kWh otherwise. Mirrors runner.chargeCostFunc.
+	costFunc := func(added, used, durationMin float64, fastChargerType string) (float64, bool) {
+		if strings.HasPrefix(fastChargerType, "Tesla") {
+			return 0, true
+		}
+		kwh := added
+		if used > kwh {
+			kwh = used
+		}
+		return kwh * 0.125, true
+	}
+
+	if err := s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: sessionID, Time: start.Add(time.Hour),
+		BatteryLevel: 40, EnergyAddedKwh: 10, CostFunc: costFunc,
+	}); err != nil {
+		t.Fatalf("close charging session: %v", err)
+	}
+
+	var cost sql.NullFloat64
+	if err := s.db.QueryRow(`SELECT cost FROM charging_sessions WHERE id = ?`, sessionID).Scan(&cost); err != nil {
+		t.Fatalf("query cost: %v", err)
+	}
+	if !cost.Valid || cost.Float64 <= 0 {
+		t.Fatalf("a home charge on a Tesla wall connector must still cost money with free supercharging enabled, got %v", cost)
 	}
 }
 

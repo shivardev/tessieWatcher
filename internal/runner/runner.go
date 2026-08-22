@@ -15,6 +15,7 @@ package runner
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
@@ -110,6 +111,27 @@ func Run(ctx context.Context, cfg config.Config) error {
 		slog.Info("resuming charging session left open across restart", "session_id", openChargeID)
 	}
 
+	// Resolved below, after the geofence resolver exists: a charging
+	// session resumed across a restart must recover which geofence it
+	// started in, or it would be priced at the global fallback rate
+	// instead of that location's own. TeslaMate keeps this on the
+	// charging_processes row so it survives restarts; teslalog stores
+	// the coordinates instead and re-resolves from them, which gets to
+	// the same place without a schema change.
+	var resumedChargeLat, resumedChargeLng float64
+	var haveResumedChargeCoords bool
+	if openChargeID != 0 {
+		var lat, lng sql.NullFloat64
+		if err := store.DB().QueryRow(
+			`SELECT latitude, longitude FROM charging_sessions WHERE id = ?`, openChargeID,
+		).Scan(&lat, &lng); err != nil {
+			slog.Warn("could not read resumed charging session's location", "error", err)
+		} else if lat.Valid && lng.Valid {
+			resumedChargeLat, resumedChargeLng = lat.Float64, lng.Float64
+			haveResumedChargeCoords = true
+		}
+	}
+
 	geofences := make([]geocode.Geofence, 0, len(cfg.Geofences))
 	for _, g := range cfg.Geofences {
 		geofences = append(geofences, geocode.Geofence{
@@ -135,6 +157,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 		geo:         geo,
 		driveID:     openDriveID,
 		chargeID:    openChargeID,
+	}
+	if haveResumedChargeCoords {
+		loop.chargeGeofence, loop.haveChargeGeofence = geo.FindGeofence(resumedChargeLat, resumedChargeLng)
 	}
 	return loop.run(ctx)
 }
@@ -552,7 +577,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				ChargingSessionID: l.chargeID, Time: ev.At, BatteryLevel: s.BatteryLevel,
 				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, EnergyAddedKwh: s.ChargeEnergyAddedKwh,
 				ChargingEfficiency: l.cfg.Charging.Efficiency, PricePerKwh: l.cfg.Charging.PricePerKwh,
-				CostFunc: l.chargeCostFunc(s.FastChargerBrand),
+				CostFunc: l.chargeCostFunc(),
 			}); err != nil {
 				return fmt.Errorf("close charging session: %w", err)
 			}
@@ -622,9 +647,14 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			// answered from the last reading we have instead of a live
 			// one. No charger brand is known for an unobserved charge,
 			// so free-supercharging can't apply.
-			var offlineCost func(float64, float64, float64) (float64, bool)
+			// No charger type is known for a charge nobody observed, so
+			// the free-supercharging rule can't apply here - only the
+			// location's own pricing.
+			var offlineCost func(float64, float64, float64, string) (float64, bool)
 			if g, ok := l.geo.FindGeofence(before.Lat, before.Lng); ok && g.HasPricing {
-				offlineCost = g.Cost
+				offlineCost = func(added, used, durationMin float64, _ string) (float64, bool) {
+					return g.Cost(added, used, durationMin)
+				}
 			}
 			if err := l.store.CloseChargingSession(storage.ChargeEnd{
 				ChargingSessionID: id, Time: after.Time, BatteryLevel: after.BatteryLevel,
@@ -801,23 +831,39 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 
 // chargeCostFunc returns the pricing rule for the charging session
 // that's currently ending, or nil to fall back to the flat global rate
-// (storage.ChargeEnd.PricePerKwh). fastChargerBrand is the session's
-// reported charger brand, used for the free-supercharging rule.
+// (storage.ChargeEnd.PricePerKwh).
 //
 // Order matches TeslaMate's put_cost exactly (verified against
 // lib/teslamate/log.ex): free supercharging short-circuits everything,
 // then the geofence's own pricing applies, then nothing.
-func (l *loopState) chargeCostFunc(fastChargerBrand string) func(float64, float64, float64) (float64, bool) {
-	if l.cfg.Charging.FreeSupercharging && strings.HasPrefix(fastChargerBrand, "Tesla") {
-		return func(float64, float64, float64) (float64, bool) { return 0, true }
-	}
+//
+// The free-supercharging test is on fast_charger_TYPE, not brand -
+// this distinction is load-bearing, not pedantic. In real recorded
+// data the brand reads "Tesla" for ~98,000 samples including every
+// home charge (a Tesla wall connector is, after all, a Tesla
+// product), while the type reads "Tesla" only for actual
+// Superchargers. Testing the brand would mark every home charge free
+// and zero out the entire electricity bill.
+func (l *loopState) chargeCostFunc() func(float64, float64, float64, string) (float64, bool) {
+	freeSupercharging := l.cfg.Charging.FreeSupercharging
+	var priced *geocode.Geofence
 	if l.haveChargeGeofence && l.chargeGeofence.HasPricing {
 		g := l.chargeGeofence
-		return func(added, used, durationMin float64) (float64, bool) {
-			return g.Cost(added, used, durationMin)
-		}
+		priced = &g
 	}
-	return nil
+	if !freeSupercharging && priced == nil {
+		return nil // nothing to say; let the flat fallback rate apply
+	}
+
+	return func(added, used, durationMin float64, fastChargerType string) (float64, bool) {
+		if freeSupercharging && strings.HasPrefix(fastChargerType, "Tesla") {
+			return 0, true
+		}
+		if priced != nil {
+			return priced.Cost(added, used, durationMin)
+		}
+		return 0, false
+	}
 }
 
 // backfillLocations retries place-name resolution for drive/charge
