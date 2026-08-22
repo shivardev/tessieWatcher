@@ -120,6 +120,91 @@ func TestDriveRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCloseDriveFromLastPositionUsesLastRecordedSample is a regression
+// test for a real, live-found bug (see vehicle.Machine.OnUnreachable's
+// doc comment): when the vehicle stops reporting entirely mid-drive,
+// there's no fresh telemetry to close the drive with - this closes it
+// using whatever position was last actually recorded instead of
+// leaving it open forever (TeslaMate's own real history shows this
+// exact failure mode with no auto-recovery - "Incomplete Drives").
+func TestCloseDriveFromLastPositionUsesLastRecordedSample(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-ABANDON", TeslaID: "8", DisplayName: "Car"})
+
+	start := time.Date(2026, 8, 21, 23, 9, 0, 0, time.UTC)
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 1000, BatteryLevel: 80, RangeKm: 300, Lat: 35.0, Lng: -85.0})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+
+	lastKnown := start.Add(5 * time.Minute)
+	if err := s.AppendPosition(PositionSample{
+		DriveID: driveID, VehicleID: vehicleID, Time: lastKnown,
+		Lat: 35.05, Lng: -85.05, SpeedKmh: 60, OdometerKm: 1008, BatteryLevel: 74, RangeKm: 288, ShiftState: "D",
+	}); err != nil {
+		t.Fatalf("append position: %v", err)
+	}
+
+	// The vehicle goes unreachable here - detected/closed much later
+	// (simulating hours offline), but the drive's end_time should
+	// reflect the LAST REAL SAMPLE (lastKnown), not the detection time.
+	detectedAt := lastKnown.Add(3 * time.Hour)
+	if err := s.CloseDriveFromLastPosition(driveID, detectedAt); err != nil {
+		t.Fatalf("close abandoned drive: %v", err)
+	}
+
+	var endTime string
+	var endOdometer, endRange float64
+	var endBattery int
+	var status string
+	if err := s.db.QueryRow(`SELECT end_time, end_odometer_km, end_battery_level, end_range_km, status FROM drives WHERE id = ?`, driveID).
+		Scan(&endTime, &endOdometer, &endBattery, &endRange, &status); err != nil {
+		t.Fatalf("query closed drive: %v", err)
+	}
+	if status != "closed" {
+		t.Fatalf("expected status closed, got %q", status)
+	}
+	if endOdometer != 1008 || endBattery != 74 || endRange != 288 {
+		t.Fatalf("expected end values from the last recorded position (odo=1008 batt=74 range=288), got odo=%v batt=%v range=%v", endOdometer, endBattery, endRange)
+	}
+	gotEnd, err := time.Parse(timeLayout, endTime)
+	if err != nil {
+		t.Fatalf("parse end_time: %v", err)
+	}
+	if !gotEnd.Equal(lastKnown) {
+		t.Fatalf("expected end_time to be the last recorded position's timestamp (%s), not the detection time - got %s", lastKnown, gotEnd)
+	}
+}
+
+func TestCloseDriveFromLastPositionWithNoPositionsStillClosesTheRow(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN-ABANDON-2", TeslaID: "9", DisplayName: "Car"})
+	start := time.Now().UTC()
+	driveID, err := s.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start, OdometerKm: 1000, BatteryLevel: 80})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+
+	// No positions ever recorded (the vehicle went unreachable before
+	// a single sample landed) - should still mark the row closed
+	// rather than erroring, so it doesn't sit "open" forever either.
+	if err := s.CloseDriveFromLastPosition(driveID, start.Add(time.Hour)); err != nil {
+		t.Fatalf("close abandoned drive with no positions: %v", err)
+	}
+
+	var status string
+	var endTime sql.NullString
+	if err := s.db.QueryRow(`SELECT status, end_time FROM drives WHERE id = ?`, driveID).Scan(&status, &endTime); err != nil {
+		t.Fatalf("query drive: %v", err)
+	}
+	if status != "closed" {
+		t.Fatalf("expected status closed even with no positions, got %q", status)
+	}
+	if !endTime.Valid {
+		t.Fatalf("expected end_time to be set even with no positions")
+	}
+}
+
 func TestChargingRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 	vehicleID, _ := s.UpsertVehicle(VehicleMeta{VIN: "VIN2", TeslaID: "2", DisplayName: "Car", Model: "model3", TrimBadging: ""})

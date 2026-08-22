@@ -336,7 +336,14 @@ func (l *loopState) checkSummary(ctx context.Context) error {
 			break
 		}
 	}
-	events := l.machine.OnSummary(time.Now().UTC(), rawState)
+	now := time.Now().UTC()
+	events := l.machine.OnSummary(now, rawState)
+	// If that just left us (or already had us) asleep-like, and a
+	// drive/charge was believed in progress, abandon it - see
+	// OnUnreachable's doc comment for why this is more than cosmetic.
+	if isAsleepLike(l.machine.State()) {
+		events = append(events, l.machine.OnUnreachable(now)...)
+	}
 	return l.persist(events)
 }
 
@@ -468,6 +475,26 @@ func (l *loopState) persist(events []vehicle.Event) error {
 				return fmt.Errorf("close charging session: %w", err)
 			}
 			slog.Info("charging ended", "session_id", l.chargeID, "energy_added_kwh", s.ChargeEnergyAddedKwh)
+			l.chargeID = 0
+
+		case vehicle.EvDriveAbandoned:
+			if l.driveID == 0 {
+				continue
+			}
+			if err := l.store.CloseDriveFromLastPosition(l.driveID, ev.At); err != nil {
+				return fmt.Errorf("close abandoned drive: %w", err)
+			}
+			slog.Warn("drive abandoned: vehicle stopped reporting mid-drive, closed using last known position", "drive_id", l.driveID)
+			l.driveID = 0
+
+		case vehicle.EvChargeAbandoned:
+			if l.chargeID == 0 {
+				continue
+			}
+			if err := l.store.CloseChargingSessionFromLastSample(l.chargeID, ev.At, l.cfg.Charging.Efficiency, l.cfg.Charging.PricePerKwh); err != nil {
+				return fmt.Errorf("close abandoned charging session: %w", err)
+			}
+			slog.Warn("charging session abandoned: vehicle stopped reporting mid-charge, closed using last known sample", "session_id", l.chargeID)
 			l.chargeID = 0
 
 		case vehicle.EvBatterySample:

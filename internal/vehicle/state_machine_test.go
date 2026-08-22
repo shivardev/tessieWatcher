@@ -263,3 +263,71 @@ func TestResumeClosesOpenDriveIfNoLongerDriving(t *testing.T) {
 		t.Fatalf("expected StateIdle, got %s", m.State())
 	}
 }
+
+// TestOnUnreachablePreventsMergingAFutureDriveIntoAnAbandonedOne is a
+// regression test for a real, live-found bug more severe than just
+// "the drive stays incomplete": if the vehicle went unreachable
+// mid-drive (see OnUnreachable's doc comment - confirmed to happen for
+// real, not just theoretically) and the internal "we're mid-drive"
+// belief were never reset, a LATER drive starting directly from that
+// same unreachable period would be silently treated as a *continuation*
+// of the abandoned one (EvDrivePoint instead of EvDriveStart) - merging
+// two unrelated real-world trips, with a multi-hour gap in the middle,
+// into a single corrupted row. OnUnreachable must reset that belief so
+// the next real drive starts clean.
+func TestOnUnreachablePreventsMergingAFutureDriveIntoAnAbandonedOne(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online")
+
+	// Drive starts normally.
+	events := m.OnVehicleData(Snapshot{Time: t0().Add(time.Second), ShiftState: "D", OdometerKm: 1000, BatteryLevel: 76, RangeKm: 300})
+	if !containsKind(events, EvDriveStart) {
+		t.Fatalf("expected EvDriveStart, got %+v", kindsOf(events))
+	}
+
+	// The vehicle goes unreachable mid-drive - no more OnVehicleData
+	// calls at all, just the cheap summary check finding it offline.
+	events = m.OnSummary(t0().Add(2*time.Minute), "offline")
+	if !containsKind(events, EvStateChanged) {
+		t.Fatalf("expected EvStateChanged to offline, got %+v", kindsOf(events))
+	}
+	events = m.OnUnreachable(t0().Add(2 * time.Minute))
+	if !containsKind(events, EvDriveAbandoned) {
+		t.Fatalf("expected EvDriveAbandoned, got %+v", kindsOf(events))
+	}
+
+	// Hours later, it comes back online and immediately starts a
+	// brand new, unrelated drive - exactly the sequence seen live
+	// (offline -> online -> driving in the same poll cycle).
+	m.OnSummary(t0().Add(3*time.Hour), "online")
+	events = m.OnVehicleData(Snapshot{
+		Time: t0().Add(3*time.Hour + time.Second), ShiftState: "D",
+		OdometerKm: 1050, BatteryLevel: 90, RangeKm: 310, // unrelated odometer/battery - a different trip
+	})
+	if !containsKind(events, EvDriveStart) {
+		t.Fatalf("expected a fresh EvDriveStart for the new drive, got %+v (bug: would silently merge into the abandoned drive instead)", kindsOf(events))
+	}
+	if containsKind(events, EvDrivePoint) {
+		t.Fatalf("must not emit EvDrivePoint here - that would mean this got merged into the abandoned drive: %+v", kindsOf(events))
+	}
+}
+
+func TestOnUnreachableIsANoOpWhenNothingWasInProgress(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online") // idle, not driving/charging
+
+	if events := m.OnUnreachable(t0().Add(time.Minute)); len(events) != 0 {
+		t.Fatalf("expected no events when nothing was in progress, got %+v", kindsOf(events))
+	}
+}
+
+func TestOnUnreachableAbandonsBothDriveAndCharge(t *testing.T) {
+	// Mirrors handleDriving's own defensive "can't drive while
+	// charging" case: shouldn't normally happen, but if it did,
+	// OnUnreachable should still close out whichever ones were open.
+	m := Resume(3*time.Minute, true, true)
+	events := m.OnUnreachable(t0())
+	if !containsKind(events, EvDriveAbandoned) || !containsKind(events, EvChargeAbandoned) {
+		t.Fatalf("expected both EvDriveAbandoned and EvChargeAbandoned, got %+v", kindsOf(events))
+	}
+}

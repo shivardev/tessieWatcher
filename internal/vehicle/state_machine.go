@@ -154,6 +154,19 @@ const (
 	EvBatterySample     EventKind = "battery_sample"
 	EvSoftwareUpdateBeg EventKind = "software_update_start"
 	EvSoftwareUpdateEnd EventKind = "software_update_end"
+	// EvDriveAbandoned/EvChargeAbandoned mean the vehicle stopped
+	// reporting entirely (went unreachable, per OnUnreachable) while a
+	// drive/charge was believed in progress - never a normal shift_state/
+	// charging_state observation confirming it actually stopped. There is
+	// no Snapshot to close the row with (a cheap summary check carries no
+	// telemetry) - the runner closes it from the last position/sample
+	// already recorded instead. See OnUnreachable's doc comment for why
+	// this matters beyond just "the row stays incomplete": without it,
+	// a later drive starting directly from the same unreachable period
+	// (which real-world testing confirmed does happen) would otherwise
+	// be silently treated as a continuation of the abandoned one.
+	EvDriveAbandoned  EventKind = "drive_abandoned"
+	EvChargeAbandoned EventKind = "charge_abandoned"
 )
 
 // Event is a single thing the runner should persist. Not every field is
@@ -285,6 +298,37 @@ func (m *Machine) OnSummary(now time.Time, rawState string) []Event {
 		return m.transition(now, target)
 	}
 	return nil
+}
+
+// OnUnreachable is called (in addition to OnSummary) whenever a cheap
+// summary check finds the vehicle ASLEEP/OFFLINE while a drive or
+// charge was believed still in progress - i.e. the vehicle stopped
+// reporting entirely instead of ever confirming a normal stop via
+// OnVehicleData's shift_state/charging_state observation. Found live:
+// a real drive that went unreachable mid-drive (car drove into a
+// connectivity gap, or the polling process itself lost contact) and
+// only came back hours later, still reporting the OLD drive as
+// "in progress" - so the fresh drive that started when it came back
+// online would otherwise have been treated as a continuation of the
+// stale one (wrong distance/duration, positions from two unrelated
+// trips merged into one row), not merely left incomplete the way
+// TeslaMate's own history shows the same underlying failure mode
+// producing (its "Incomplete Drives" report, with no auto-recovery).
+// Resetting driving/charging here is what prevents that merge; closing
+// the abandoned row itself (using its last known recorded sample, since
+// this check carries no telemetry) is the runner's job - see
+// persist()'s EvDriveAbandoned/EvChargeAbandoned handling.
+func (m *Machine) OnUnreachable(now time.Time) []Event {
+	var events []Event
+	if m.driving {
+		events = append(events, Event{Kind: EvDriveAbandoned, At: now})
+		m.driving = false
+	}
+	if m.charging {
+		events = append(events, Event{Kind: EvChargeAbandoned, At: now})
+		m.charging = false
+	}
+	return events
 }
 
 // Suspend forces a transition to StateSuspended. The runner calls this

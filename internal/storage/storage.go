@@ -458,6 +458,46 @@ func (s *Store) CloseDrive(e DriveEnd) error {
 	return nil
 }
 
+// CloseDriveFromLastPosition closes a drive that was abandoned - the
+// vehicle stopped reporting entirely mid-drive rather than confirming
+// a normal stop (see vehicle.Machine.OnUnreachable's doc comment) -
+// using whatever position was last actually recorded for it, since
+// there's no fresh telemetry to close it with otherwise. If not even
+// one position was ever recorded, there's nothing to derive end values
+// from at all; the row is still marked closed (so it stops looking
+// "in progress" forever) but every end_* field stays NULL.
+func (s *Store) CloseDriveFromLastPosition(driveID int64, at time.Time) error {
+	var lastTimestamp string
+	var odometerKm, rangeKm float64
+	var batteryLevel int
+	var lat, lng, idealRangeKm sql.NullFloat64
+	err := s.db.QueryRow(`
+		SELECT timestamp, odometer_km, battery_level, range_km, latitude, longitude,
+		       (SELECT ideal_range_km FROM positions
+		        WHERE drive_id = ? AND ideal_range_km IS NOT NULL
+		        ORDER BY timestamp DESC LIMIT 1)
+		FROM positions WHERE drive_id = ? ORDER BY timestamp DESC LIMIT 1
+	`, driveID, driveID).Scan(&lastTimestamp, &odometerKm, &batteryLevel, &rangeKm, &lat, &lng, &idealRangeKm)
+	if err == sql.ErrNoRows {
+		_, err := s.db.Exec(`UPDATE drives SET end_time = ?, status = 'closed' WHERE id = ? AND status = 'open'`, fmtTime(at), driveID)
+		if err != nil {
+			return fmt.Errorf("close abandoned drive %d (no positions recorded): %w", driveID, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find last position for abandoned drive %d: %w", driveID, err)
+	}
+	endTime, err := time.Parse(timeLayout, lastTimestamp)
+	if err != nil {
+		return fmt.Errorf("parse last position timestamp for abandoned drive %d: %w", driveID, err)
+	}
+	return s.CloseDrive(DriveEnd{
+		DriveID: driveID, Time: endTime, OdometerKm: odometerKm, BatteryLevel: batteryLevel,
+		RangeKm: rangeKm, IdealRangeKm: idealRangeKm.Float64, Lat: lat.Float64, Lng: lng.Float64,
+	})
+}
+
 // elevationChange sums positive (ascent) and negative (descent, as a
 // positive magnitude) deltas between consecutive elevation_m readings
 // for a drive, skipping NULLs (elevation only comes from the streaming
@@ -633,6 +673,41 @@ func (s *Store) CloseChargingSession(e ChargeEnd) error {
 		e.EnergyAddedKwh, energyUsed, maxPower.Float64,
 		avgOutside.Float64, cost, everFastCharger.Int64, e.ChargingSessionID)
 	return err
+}
+
+// CloseChargingSessionFromLastSample is CloseDriveFromLastPosition's
+// counterpart for an abandoned charging session - see its doc comment
+// and vehicle.Machine.OnUnreachable's. chargingEfficiency/pricePerKwh
+// are passed through the same as a normal close, so an abandoned
+// session's cost/energy-used estimate is computed consistently with
+// every other session's.
+func (s *Store) CloseChargingSessionFromLastSample(sessionID int64, at time.Time, chargingEfficiency, pricePerKwh float64) error {
+	var lastTimestamp string
+	var batteryLevel int
+	var rangeKm, idealRangeKm, energyAdded sql.NullFloat64
+	err := s.db.QueryRow(`
+		SELECT timestamp, battery_level, range_km, ideal_range_km, charge_energy_added_kwh
+		FROM charging_samples WHERE charging_session_id = ? ORDER BY timestamp DESC LIMIT 1
+	`, sessionID).Scan(&lastTimestamp, &batteryLevel, &rangeKm, &idealRangeKm, &energyAdded)
+	if err == sql.ErrNoRows {
+		_, err := s.db.Exec(`UPDATE charging_sessions SET end_time = ?, status = 'closed' WHERE id = ? AND status = 'open'`, fmtTime(at), sessionID)
+		if err != nil {
+			return fmt.Errorf("close abandoned charging session %d (no samples recorded): %w", sessionID, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find last sample for abandoned charging session %d: %w", sessionID, err)
+	}
+	endTime, err := time.Parse(timeLayout, lastTimestamp)
+	if err != nil {
+		return fmt.Errorf("parse last sample timestamp for abandoned charging session %d: %w", sessionID, err)
+	}
+	return s.CloseChargingSession(ChargeEnd{
+		ChargingSessionID: sessionID, Time: endTime, BatteryLevel: batteryLevel,
+		RangeKm: rangeKm.Float64, IdealRangeKm: idealRangeKm.Float64, EnergyAddedKwh: energyAdded.Float64,
+		ChargingEfficiency: chargingEfficiency, PricePerKwh: pricePerKwh,
+	})
 }
 
 // OpenChargingSessionID returns the id of the currently open charging
