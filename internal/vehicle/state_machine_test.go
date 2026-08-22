@@ -90,6 +90,41 @@ func TestDriveLifecycle(t *testing.T) {
 	}
 }
 
+// TestNeutralCountsAsDriving pins TeslaMate's own shift-state
+// handling (verified directly against its source: every driving check
+// is `shift_state in ~w(D N R)`, and only nil/"P" ends a drive).
+// teslalog previously treated N as parked, which would cut a drive
+// short the moment the car coasted in neutral - through a car wash,
+// being towed, rolling in a driveway - and start a spurious second
+// drive when it shifted back.
+func TestNeutralCountsAsDriving(t *testing.T) {
+	m := New(3 * time.Minute)
+	m.OnSummary(t0(), "online")
+
+	events := m.OnVehicleData(Snapshot{Time: t0(), ShiftState: "D", OdometerKm: 1000, BatteryLevel: 80, RangeKm: 300})
+	if !containsKind(events, EvDriveStart) {
+		t.Fatalf("expected EvDriveStart, got %+v", kindsOf(events))
+	}
+
+	// Shifts to neutral mid-drive - must NOT end the drive.
+	events = m.OnVehicleData(Snapshot{Time: t0().Add(time.Minute), ShiftState: "N", OdometerKm: 1002, BatteryLevel: 79, RangeKm: 297})
+	if containsKind(events, EvDriveEnd) {
+		t.Fatalf("neutral must not end a drive, got %+v", kindsOf(events))
+	}
+	if !containsKind(events, EvDrivePoint) {
+		t.Fatalf("expected the neutral sample to be recorded as a drive point, got %+v", kindsOf(events))
+	}
+	if m.State() != StateDriving {
+		t.Fatalf("expected to still be StateDriving in neutral, got %s", m.State())
+	}
+
+	// Actually parking does end it.
+	events = m.OnVehicleData(Snapshot{Time: t0().Add(2 * time.Minute), ShiftState: "P", OdometerKm: 1003, BatteryLevel: 79, RangeKm: 296})
+	if !containsKind(events, EvDriveEnd) {
+		t.Fatalf("expected EvDriveEnd when actually parked, got %+v", kindsOf(events))
+	}
+}
+
 func TestChargeLifecycle(t *testing.T) {
 	m := New(3 * time.Minute)
 	m.OnSummary(t0(), "online")

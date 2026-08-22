@@ -136,8 +136,21 @@ type Snapshot struct {
 	Firmware string
 }
 
+// isDriving reports whether the vehicle is in a moving gear. Matches
+// TeslaMate exactly: it treats D, N and R alike as driving, and only
+// nil/"P" as parked (verified directly against its source - all five
+// of its driving checks use `shift_state in ~w(D N R)`, and its
+// drive-end check is `shift_state in [nil, "P"]`). Neutral matters:
+// coasting, rolling through a car wash, or being towed/pushed all
+// report N, and treating that as parked would cut a drive short
+// mid-trip and start a spurious second one when it shifts back.
 func (s Snapshot) isDriving() bool {
-	return s.ShiftState == "D" || s.ShiftState == "R"
+	switch s.ShiftState {
+	case "D", "N", "R":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Snapshot) isCharging() bool {
