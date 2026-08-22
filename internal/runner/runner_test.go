@@ -23,6 +23,7 @@ import (
 	"teslalog/internal/config"
 	"teslalog/internal/storage"
 	"teslalog/internal/tesla"
+	"teslalog/internal/vehicle"
 )
 
 const milesPerKm = 1 / 1.609344
@@ -1061,5 +1062,51 @@ func TestDriveAndChargeLocationsResolveViaGeofence(t *testing.T) {
 	}
 	if chargeLoc.String != "Home" {
 		t.Fatalf("expected charging_sessions.location 'Home', got %q", chargeLoc.String)
+	}
+}
+
+// TestBackfillRunsWhileIdleNotOnlyWhenAsleep is a regression test for a
+// starvation bug found live on a real Pi: the location backfill sweep
+// was gated on the vehicle being asleep/offline, on the reasoning that
+// that's when nothing else competes for the geocoder's rate limit. In
+// practice a parked car keeps reporting "online" to the cheap check for
+// hours, so the machine cycles idle -> suspended -> online -> idle and
+// is essentially never in an asleep-like state at the moment the check
+// runs - the sweep never fired, and blank from/to locations stayed
+// blank indefinitely. It now runs whenever a drive or charge isn't
+// actively being logged.
+func TestBackfillRunsWhileIdleNotOnlyWhenAsleep(t *testing.T) {
+	l := &loopState{machine: vehicle.Resume(time.Hour, false, false)}
+
+	// Idle (not driving/charging) and never swept: must be allowed.
+	if l.machine.State() == vehicle.StateDriving || l.machine.State() == vehicle.StateCharging {
+		t.Fatalf("precondition: expected a non-driving/charging state, got %s", l.machine.State())
+	}
+	if !l.backfillDue() {
+		t.Fatalf("expected a backfill to be due while idle and never swept")
+	}
+
+	// Immediately after a sweep, throttled.
+	l.lastBackfillAt = time.Now()
+	if l.backfillDue() {
+		t.Fatalf("expected backfill to be throttled right after a sweep")
+	}
+
+	// Long enough later, due again.
+	l.lastBackfillAt = time.Now().Add(-backfillMinInterval - time.Minute)
+	if !l.backfillDue() {
+		t.Fatalf("expected backfill to be due again after backfillMinInterval")
+	}
+
+	// While actively logging a drive, never - that's the one case the
+	// original gating was actually protecting.
+	l.machine = vehicle.Resume(time.Hour, true, false)
+	l.machine.OnVehicleData(vehicle.Snapshot{Time: time.Now(), ShiftState: "D", OdometerKm: 10})
+	if l.machine.State() != vehicle.StateDriving {
+		t.Fatalf("precondition: expected StateDriving, got %s", l.machine.State())
+	}
+	l.lastBackfillAt = time.Time{}
+	if l.backfillDue() {
+		t.Fatalf("expected no backfill while a drive is actively being logged")
 	}
 }

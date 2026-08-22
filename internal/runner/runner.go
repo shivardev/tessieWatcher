@@ -227,6 +227,9 @@ type loopState struct {
 	// looked up yet".
 	chargeGeofence     geocode.Geofence
 	haveChargeGeofence bool
+	// lastBackfillAt throttles the location backfill sweep - see
+	// maybeBackfillLocations.
+	lastBackfillAt time.Time
 
 	stream *tesla.StreamConn
 	// lastStreamAt is the timestamp of the most recent streaming
@@ -258,11 +261,6 @@ func (l *loopState) run(ctx context.Context) error {
 				slog.Warn("vehicle summary check failed", "error", err)
 			}
 			if isAsleepLike(l.machine.State()) {
-				// The car is asleep/offline and we have nothing else to
-				// do - a good moment to retry any place names that
-				// failed to resolve earlier, without competing with
-				// active drive/charge logging for time or rate limit.
-				l.backfillLocations(ctx)
 				sleepFor = l.checkInterval(l.machine.State())
 			} else {
 				// checkSummary just found the car active (e.g. woke up on
@@ -316,6 +314,8 @@ func (l *loopState) run(ctx context.Context) error {
 				sleepFor = l.cfg.Polling.OnlineInterval
 			}
 		}
+
+		l.maybeBackfillLocations(ctx)
 
 		select {
 		case <-ctx.Done():
@@ -878,6 +878,43 @@ func (l *loopState) chargeCostFunc() func(float64, float64, float64, string) (fl
 // Bounded per sweep so a large backlog can't stall the poll loop or
 // hammer the geocoding service; the next sweep picks up where this
 // one left off.
+// backfillMinInterval is the minimum gap between backfill sweeps. The
+// geocoder self-throttles to 1 request/second (see
+// geocode.reverseGeocode), so a full sweep is already bounded in rate;
+// this just stops the loop from re-running one every poll interval.
+const backfillMinInterval = 5 * time.Minute
+
+// maybeBackfillLocations runs a bounded backfill sweep unless a drive
+// or charge is actively being logged, or one ran too recently.
+//
+// This used to be gated on the vehicle being asleep/offline, on the
+// reasoning that that's when nothing else needs the time or the
+// geocoder's rate limit. Found live that this starves it in practice:
+// a parked car keeps reporting "online" to the cheap check for hours,
+// so the state machine cycles idle -> suspended -> online -> idle
+// without ever settling in an asleep-like state at the moment the
+// check runs, and the sweep never fires. Gating on "not actively
+// logging" instead preserves the original intent while letting it
+// actually run during the long idle stretches it was meant for.
+func (l *loopState) maybeBackfillLocations(ctx context.Context) {
+	if !l.backfillDue() {
+		return
+	}
+	l.lastBackfillAt = time.Now()
+	l.backfillLocations(ctx)
+}
+
+// backfillDue reports whether a sweep should run now - split out from
+// maybeBackfillLocations so the scheduling rule is testable without
+// standing up a store and a geocoder.
+func (l *loopState) backfillDue() bool {
+	switch l.machine.State() {
+	case vehicle.StateDriving, vehicle.StateCharging:
+		return false
+	}
+	return l.lastBackfillAt.IsZero() || time.Since(l.lastBackfillAt) >= backfillMinInterval
+}
+
 func (l *loopState) backfillLocations(ctx context.Context) {
 	const perSweep = 25
 
