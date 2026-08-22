@@ -323,6 +323,16 @@ type rawVehicleData struct {
 			FanStatus            int     `json:"fan_status"`
 			IsRearDefrosterOn    bool    `json:"is_rear_defroster_on"`
 			IsFrontDefrosterOn   bool    `json:"is_front_defroster_on"`
+			// BatteryHeater is the battery's thermal-management heater
+			// running, which is NOT the same thing as charge_state's
+			// battery_heater_on above - they come from different API
+			// objects and genuinely disagree. In real recorded data
+			// battery_heater is true while battery_heater_on is false
+			// in hundreds of samples (the pack being conditioned while
+			// not actively charging). TeslaMate stores both, from
+			// exactly these two sources.
+			BatteryHeater        bool `json:"battery_heater"`
+			BatteryHeaterNoPower bool `json:"battery_heater_no_power"`
 			// ClimateKeeperMode: "off"/"dog"/"camp"/"on" - not tracked by
 			// TeslaMate at all, but it's in the same climate_state object.
 			ClimateKeeperMode string `json:"climate_keeper_mode"`
@@ -443,6 +453,8 @@ func (c *Client) VehicleData(ctx context.Context, id int64) (vehicle.Snapshot, V
 		IsClimateOn:           cl.IsClimateOn,
 		IsRearDefrosterOn:     cl.IsRearDefrosterOn,
 		IsFrontDefrosterOn:    cl.IsFrontDefrosterOn,
+		BatteryHeater:         cl.BatteryHeater,
+		BatteryHeaterNoPower:  cl.BatteryHeaterNoPower,
 		ClimateKeeperMode:     cl.ClimateKeeperMode,
 
 		TpmsPressureFL: vs.TpmsPressureFL,

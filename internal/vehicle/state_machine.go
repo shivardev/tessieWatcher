@@ -78,11 +78,22 @@ type Snapshot struct {
 	RangeKm            float64 // rated_battery_range_km
 	IdealRangeKm       float64
 	EstRangeKm         float64
-	// BatteryHeaterOn is the only real API field here - Tesla's actual
-	// charge_state has no separate bare "battery_heater" (confirmed
-	// against the community API reference); "no power to heat" is
-	// NotEnoughPowerToHeat below, a genuinely distinct real field.
+	// BatteryHeaterOn (charge_state.battery_heater_on) and
+	// BatteryHeater (climate_state.battery_heater) are DIFFERENT
+	// fields from different API objects, and they genuinely disagree:
+	// in real recorded data BatteryHeater is true while
+	// BatteryHeaterOn is false in hundreds of samples - the pack being
+	// thermally conditioned while not actively charging. An earlier
+	// comment here wrongly claimed no separate battery_heater existed;
+	// the real data disproved it. TeslaMate stores both, from exactly
+	// these two sources.
 	BatteryHeaterOn bool
+	BatteryHeater   bool
+	// BatteryHeaterNoPower (climate_state.battery_heater_no_power):
+	// the pack wants heating but there isn't power available to do it.
+	// Distinct again from NotEnoughPowerToHeat below, which is
+	// charge_state's charging-specific equivalent.
+	BatteryHeaterNoPower bool
 
 	// Charging-specific.
 	ChargeEnergyAddedKwh float64

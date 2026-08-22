@@ -130,7 +130,14 @@ CREATE TABLE IF NOT EXISTS positions (
 	range_km                 REAL, -- rated
 	ideal_range_km           REAL,
 	est_range_km             REAL,
+	-- battery_heater_on comes from charge_state; battery_heater and
+	-- battery_heater_no_power come from climate_state. They are
+	-- genuinely different signals that disagree in real data (the pack
+	-- being conditioned while not charging), which is why TeslaMate
+	-- stores all three and so does this.
 	battery_heater_on        INTEGER,
+	battery_heater           INTEGER,
+	battery_heater_no_power  INTEGER,
 	outside_temp_c           REAL,
 	inside_temp_c            REAL,
 	fan_status               INTEGER,

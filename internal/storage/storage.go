@@ -87,6 +87,8 @@ var columnMigrations = []string{
 	`ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER`,
 	`ALTER TABLE charging_sessions ADD COLUMN is_dc_fast_charge INTEGER`,
 	`ALTER TABLE vehicles ADD COLUMN firmware_version TEXT`,
+	`ALTER TABLE positions ADD COLUMN battery_heater INTEGER`,
+	`ALTER TABLE positions ADD COLUMN battery_heater_no_power INTEGER`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -496,7 +498,12 @@ type PositionSample struct {
 	UsableBatteryLevel *int
 	IdealRangeKm       *float64
 	EstRangeKm         *float64
-	BatteryHeaterOn    *bool
+	// BatteryHeaterOn is charge_state's; BatteryHeater and
+	// BatteryHeaterNoPower are climate_state's - see
+	// vehicle.Snapshot's doc comment for why all three exist.
+	BatteryHeaterOn      *bool
+	BatteryHeater        *bool
+	BatteryHeaterNoPower *bool
 
 	OutsideTempC          *float64
 	InsideTempC           *float64
@@ -529,15 +536,17 @@ func (s *Store) AppendPosition(p PositionSample) error {
 		INSERT INTO positions (
 			drive_id, vehicle_id, timestamp, latitude, longitude, speed_kmh,
 			heading, elevation_m, power_kw, odometer_km,
-			battery_level, usable_battery_level, range_km, ideal_range_km, est_range_km, battery_heater_on,
+			battery_level, usable_battery_level, range_km, ideal_range_km, est_range_km,
+			battery_heater_on, battery_heater, battery_heater_no_power,
 			outside_temp_c, inside_temp_c, fan_status, driver_temp_setting_c, passenger_temp_setting_c,
 			is_climate_on, is_rear_defroster_on, is_front_defroster_on,
 			tpms_pressure_fl, tpms_pressure_fr, tpms_pressure_rl, tpms_pressure_rr,
 			shift_state, sentry_mode, is_user_present, valet_mode, climate_keeper_mode
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, p.DriveID, p.VehicleID, fmtTime(p.Time), p.Lat, p.Lng, p.SpeedKmh,
 		p.Heading, p.ElevationM, p.PowerKw, p.OdometerKm,
-		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm, boolPtrToInt(p.BatteryHeaterOn),
+		p.BatteryLevel, p.UsableBatteryLevel, p.RangeKm, p.IdealRangeKm, p.EstRangeKm,
+		boolPtrToInt(p.BatteryHeaterOn), boolPtrToInt(p.BatteryHeater), boolPtrToInt(p.BatteryHeaterNoPower),
 		p.OutsideTempC, p.InsideTempC, p.FanStatus, p.DriverTempSettingC, p.PassengerTempSettingC,
 		boolPtrToInt(p.IsClimateOn), boolPtrToInt(p.IsRearDefrosterOn), boolPtrToInt(p.IsFrontDefrosterOn),
 		p.TpmsPressureFL, p.TpmsPressureFR, p.TpmsPressureRL, p.TpmsPressureRR,

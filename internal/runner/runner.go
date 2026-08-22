@@ -814,6 +814,7 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 		BatteryLevel: s.BatteryLevel, UsableBatteryLevel: intPtr(s.UsableBatteryLevel),
 		RangeKm: s.RangeKm, IdealRangeKm: ptr(s.IdealRangeKm), EstRangeKm: ptr(s.EstRangeKm),
 		BatteryHeaterOn: boolPtr(s.BatteryHeaterOn),
+		BatteryHeater:   boolPtr(s.BatteryHeater), BatteryHeaterNoPower: boolPtr(s.BatteryHeaterNoPower),
 
 		OutsideTempC: ptr(s.OutsideTempC), InsideTempC: ptr(s.InsideTempC), FanStatus: intPtr(s.FanStatus),
 		DriverTempSettingC: ptr(s.DriverTempSettingC), PassengerTempSettingC: ptr(s.PassengerTempSettingC),
