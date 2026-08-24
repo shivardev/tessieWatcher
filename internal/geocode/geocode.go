@@ -88,8 +88,26 @@ func (g Geofence) Cost(energyAddedKwh, energyUsedKwh, durationMin float64) (cost
 // respect the geocoding service's rate limit and to avoid unnecessary
 // network calls on every drive. *storage.Store satisfies this directly.
 type Cache interface {
-	Lookup(latKey, lngKey float64) (name string, ok bool, err error)
-	Save(latKey, lngKey float64, name string) error
+	Lookup(latKey, lngKey float64) (place Place, ok bool, err error)
+	Save(latKey, lngKey float64, place Place) error
+}
+
+// Place is a resolved address. Name is the short display label used
+// everywhere a location is shown; the rest are the administrative
+// components Nominatim already returns alongside it (we pass
+// addressdetails=1 either way). They are stored so the viewer can
+// answer "how many cities/states/countries have I driven in", which
+// TeslaMate answers from its own addresses table and which a single
+// display string cannot support. Any of them may be empty - a rural
+// road has no city, and a geofence hit never reaches Nominatim at all.
+type Place struct {
+	Name     string
+	Road     string
+	City     string
+	County   string
+	State    string
+	Postcode string
+	Country  string
 }
 
 // Resolver turns coordinates into place names. Zero value is not usable
@@ -156,8 +174,8 @@ func (r *Resolver) Resolve(ctx context.Context, lat, lng float64) string {
 
 	latKey, lngKey := roundCoord(lat), roundCoord(lng)
 	if r.cache != nil {
-		if name, ok, err := r.cache.Lookup(latKey, lngKey); err == nil && ok {
-			return name
+		if place, ok, err := r.cache.Lookup(latKey, lngKey); err == nil && ok {
+			return place.Name
 		}
 	}
 
@@ -165,14 +183,14 @@ func (r *Resolver) Resolve(ctx context.Context, lat, lng float64) string {
 		return ""
 	}
 
-	name, err := r.reverseGeocode(ctx, lat, lng)
-	if err != nil || name == "" {
+	place, err := r.reverseGeocode(ctx, lat, lng)
+	if err != nil || place.Name == "" {
 		return ""
 	}
 	if r.cache != nil {
-		_ = r.cache.Save(latKey, lngKey, name)
+		_ = r.cache.Save(latKey, lngKey, place)
 	}
-	return name
+	return place.Name
 }
 
 // roundCoord buckets a coordinate to ~11m precision (4 decimal degrees)
@@ -202,8 +220,33 @@ type nominatimResponse struct {
 		Shop        string `json:"shop"`
 		Road        string `json:"road"`
 		HouseNumber string `json:"house_number"`
+		// Nominatim reports the settlement under whichever of these
+		// keys fits the place's administrative type, so all four have
+		// to be read to get a city name reliably: a US suburb is often
+		// only a "town" or "village", never a "city".
+		City         string `json:"city"`
+		Town         string `json:"town"`
+		Village      string `json:"village"`
+		Municipality string `json:"municipality"`
+		County       string `json:"county"`
+		State        string `json:"state"`
+		Postcode     string `json:"postcode"`
+		Country      string `json:"country"`
+		CountryCode  string `json:"country_code"`
 	} `json:"address"`
 	Error string `json:"error"`
+}
+
+// city returns the settlement name from whichever key Nominatim used.
+func (nr *nominatimResponse) city() string {
+	for _, candidate := range []string{
+		nr.Address.City, nr.Address.Town, nr.Address.Village, nr.Address.Municipality,
+	} {
+		if candidate != "" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // reverseGeocode queries an OSM Nominatim-compatible /reverse endpoint.
@@ -213,7 +256,7 @@ type nominatimResponse struct {
 // only ever calls this at most twice per drive and once per charge, so
 // this practically never actually waits, but it's a hard guarantee
 // rather than a hope.
-func (r *Resolver) reverseGeocode(ctx context.Context, lat, lng float64) (string, error) {
+func (r *Resolver) reverseGeocode(ctx context.Context, lat, lng float64) (Place, error) {
 	r.mu.Lock()
 	if wait := time.Second - time.Since(r.lastCall); wait > 0 {
 		time.Sleep(wait)
@@ -224,29 +267,38 @@ func (r *Resolver) reverseGeocode(ctx context.Context, lat, lng float64) (string
 	url := fmt.Sprintf("%s/reverse?format=jsonv2&lat=%f&lon=%f&zoom=18&addressdetails=1", r.baseURL, lat, lng)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return Place{}, err
 	}
 	req.Header.Set("User-Agent", r.userAgent)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return "", err
+		return Place{}, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return Place{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("reverse geocode: HTTP %d: %s", resp.StatusCode, string(body))
+		return Place{}, fmt.Errorf("reverse geocode: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	var nr nominatimResponse
 	if err := json.Unmarshal(body, &nr); err != nil {
-		return "", fmt.Errorf("decode reverse geocode response: %w", err)
+		return Place{}, fmt.Errorf("decode reverse geocode response: %w", err)
 	}
 	if nr.Error != "" {
-		return "", fmt.Errorf("reverse geocode: %s", nr.Error)
+		return Place{}, fmt.Errorf("reverse geocode: %s", nr.Error)
+	}
+
+	place := Place{
+		Road:     nr.Address.Road,
+		City:     nr.city(),
+		County:   nr.Address.County,
+		State:    nr.Address.State,
+		Postcode: nr.Address.Postcode,
+		Country:  nr.Address.Country,
 	}
 
 	// Prefer a business/POI name over a bare address, matching TeslaMate's
@@ -254,18 +306,37 @@ func (r *Resolver) reverseGeocode(ctx context.Context, lat, lng float64) (string
 	// number).
 	switch {
 	case nr.Name != "":
-		return nr.Name, nil
+		place.Name = nr.Name
 	case nr.Address.Amenity != "":
-		return nr.Address.Amenity, nil
+		place.Name = nr.Address.Amenity
 	case nr.Address.Shop != "":
-		return nr.Address.Shop, nil
+		place.Name = nr.Address.Shop
 	case nr.Address.Road != "" && nr.Address.HouseNumber != "":
-		return nr.Address.HouseNumber + " " + nr.Address.Road, nil
+		place.Name = nr.Address.HouseNumber + " " + nr.Address.Road
 	case nr.Address.Road != "":
-		return nr.Address.Road, nil
+		place.Name = nr.Address.Road
 	case nr.DisplayName != "":
-		return nr.DisplayName, nil
-	default:
-		return "", nil
+		place.Name = nr.DisplayName
 	}
+	return place, nil
+}
+
+// RefreshPlace re-resolves a cached coordinate from the geocoding
+// service and overwrites its cache row, bypassing the cache read.
+// Used to fill in address components on rows that were cached before
+// teslalog stored them - the display name is already correct, so
+// Resolve would short-circuit and they would stay incomplete forever.
+// Reports false if geocoding is disabled or the lookup failed.
+func (r *Resolver) RefreshPlace(ctx context.Context, latKey, lngKey float64) (Place, bool) {
+	if !r.enabled || r.cache == nil {
+		return Place{}, false
+	}
+	place, err := r.reverseGeocode(ctx, latKey, lngKey)
+	if err != nil || place.Name == "" {
+		return Place{}, false
+	}
+	if err := r.cache.Save(latKey, lngKey, place); err != nil {
+		return Place{}, false
+	}
+	return place, true
 }

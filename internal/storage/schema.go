@@ -249,6 +249,15 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 	lat_key    REAL NOT NULL,
 	lng_key    REAL NOT NULL,
 	name       TEXT NOT NULL,
+	-- Address components from the same Nominatim response as name.
+	-- Any may be NULL: a rural road has no city, and rows cached
+	-- before these columns existed were never re-fetched.
+	road       TEXT,
+	city       TEXT,
+	county     TEXT,
+	state      TEXT,
+	postcode   TEXT,
+	country    TEXT,
 	created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 	PRIMARY KEY (lat_key, lng_key)
 );

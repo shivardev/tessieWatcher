@@ -16,6 +16,8 @@ import (
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
+
+	"teslalog/internal/geocode"
 )
 
 const timeLayout = time.RFC3339Nano
@@ -89,6 +91,19 @@ var columnMigrations = []string{
 	`ALTER TABLE vehicles ADD COLUMN firmware_version TEXT`,
 	`ALTER TABLE positions ADD COLUMN battery_heater INTEGER`,
 	`ALTER TABLE positions ADD COLUMN battery_heater_no_power INTEGER`,
+	// Address components Nominatim already returns alongside the display
+	// name (we have always sent addressdetails=1). They were discarded
+	// until now, which left "how many cities/states/countries have I
+	// driven in" - four panels of TeslaMate's Locations dashboard -
+	// unanswerable from a single display string. Existing cache rows keep
+	// NULL here rather than being re-fetched: the rate limit makes a
+	// backfill sweep expensive, and they fill in naturally on new visits.
+	`ALTER TABLE geocode_cache ADD COLUMN road TEXT`,
+	`ALTER TABLE geocode_cache ADD COLUMN city TEXT`,
+	`ALTER TABLE geocode_cache ADD COLUMN county TEXT`,
+	`ALTER TABLE geocode_cache ADD COLUMN state TEXT`,
+	`ALTER TABLE geocode_cache ADD COLUMN postcode TEXT`,
+	`ALTER TABLE geocode_cache ADD COLUMN country TEXT`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -1179,25 +1194,35 @@ func (s *Store) CompleteSoftwareUpdate(vehicleID int64, version string, at time.
 // Lookup returns a previously-cached place name for the rounded
 // coordinate pair (latKey, lngKey; see internal/geocode.roundCoord),
 // or ok=false if nothing's cached for it yet.
-func (s *Store) Lookup(latKey, lngKey float64) (name string, ok bool, err error) {
+func (s *Store) Lookup(latKey, lngKey float64) (place geocode.Place, ok bool, err error) {
+	var road, city, county, state, postcode, country sql.NullString
 	err = s.db.QueryRow(`
-		SELECT name FROM geocode_cache WHERE lat_key = ? AND lng_key = ?
-	`, latKey, lngKey).Scan(&name)
+		SELECT name, road, city, county, state, postcode, country
+		FROM geocode_cache WHERE lat_key = ? AND lng_key = ?
+	`, latKey, lngKey).Scan(&place.Name, &road, &city, &county, &state, &postcode, &country)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return geocode.Place{}, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return geocode.Place{}, false, err
 	}
-	return name, true, nil
+	place.Road, place.City, place.County = road.String, city.String, county.String
+	place.State, place.Postcode, place.Country = state.String, postcode.String, country.String
+	return place, true, nil
 }
 
-// Save persists a resolved place name for the rounded coordinate pair.
-func (s *Store) Save(latKey, lngKey float64, name string) error {
+// Save persists a resolved place for the rounded coordinate pair.
+func (s *Store) Save(latKey, lngKey float64, place geocode.Place) error {
 	_, err := s.db.Exec(`
-		INSERT INTO geocode_cache (lat_key, lng_key, name) VALUES (?, ?, ?)
-		ON CONFLICT(lat_key, lng_key) DO UPDATE SET name = excluded.name
-	`, latKey, lngKey, name)
+		INSERT INTO geocode_cache (lat_key, lng_key, name, road, city, county, state, postcode, country)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(lat_key, lng_key) DO UPDATE SET
+			name = excluded.name, road = excluded.road, city = excluded.city,
+			county = excluded.county, state = excluded.state,
+			postcode = excluded.postcode, country = excluded.country
+	`, latKey, lngKey, place.Name, nullIfEmpty(place.Road), nullIfEmpty(place.City),
+		nullIfEmpty(place.County), nullIfEmpty(place.State),
+		nullIfEmpty(place.Postcode), nullIfEmpty(place.Country))
 	return err
 }
 
@@ -1583,4 +1608,38 @@ func (s *Store) LatestBatteryReading(vehicleID int64) (ok bool, level int, range
 		return false, 0, 0, 0, "", err
 	}
 	return true, level, rangeKm, idealRangeKm, at, nil
+}
+
+// CachedCoord is a geocode_cache primary key.
+type CachedCoord struct {
+	LatKey float64
+	LngKey float64
+}
+
+// ListPlacesMissingAddress returns cached coordinates whose address
+// components were never stored. Rows cached before those columns
+// existed have a correct display name but nothing else, so nothing
+// re-resolves them on its own; the backfill sweep uses this to fill
+// them in at the geocoder's 1 req/sec pace.
+func (s *Store) ListPlacesMissingAddress(limit int) ([]CachedCoord, error) {
+	rows, err := s.db.Query(`
+		SELECT lat_key, lng_key FROM geocode_cache
+		WHERE country IS NULL AND city IS NULL AND state IS NULL
+		ORDER BY created_at
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CachedCoord
+	for rows.Next() {
+		var c CachedCoord
+		if err := rows.Scan(&c.LatKey, &c.LngKey); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

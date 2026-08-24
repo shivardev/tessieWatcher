@@ -955,6 +955,37 @@ func (l *loopState) backfillLocations(ctx context.Context) {
 	if fixed > 0 {
 		slog.Info("backfilled previously-unresolved locations", "count", fixed)
 	}
+
+	l.backfillPlaceAddresses(ctx)
+}
+
+// backfillPlaceAddresses fills in the address components (city, state,
+// country...) of cache rows that predate teslalog storing them. Those
+// rows already have a correct display name, so nothing re-resolves them
+// on its own and the Locations dashboard's city/state/country panels
+// would read empty forever on any database logged before this.
+//
+// Deliberately smaller per sweep than the location backfill: this is a
+// cosmetic catch-up on a handful of rows, not missing data, and it
+// shares the geocoder's 1 req/sec budget with the sweep above.
+func (l *loopState) backfillPlaceAddresses(ctx context.Context) {
+	const perSweep = 5
+
+	pending, err := l.store.ListPlacesMissingAddress(perSweep)
+	if err != nil {
+		slog.Warn("list places missing address failed", "error", err)
+		return
+	}
+
+	var fixed int
+	for _, c := range pending {
+		if _, ok := l.geo.RefreshPlace(ctx, c.LatKey, c.LngKey); ok {
+			fixed++
+		}
+	}
+	if fixed > 0 {
+		slog.Info("backfilled address components for cached places", "count", fixed)
+	}
 }
 
 // refreshDerivedEfficiency re-derives the vehicle's real Wh/km from

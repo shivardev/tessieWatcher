@@ -2,6 +2,7 @@ package geocode
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,18 +10,18 @@ import (
 
 // memCache is a trivial in-memory Cache for tests.
 type memCache struct {
-	m map[[2]float64]string
+	m map[[2]float64]Place
 }
 
-func newMemCache() *memCache { return &memCache{m: map[[2]float64]string{}} }
+func newMemCache() *memCache { return &memCache{m: map[[2]float64]Place{}} }
 
-func (c *memCache) Lookup(latKey, lngKey float64) (string, bool, error) {
-	name, ok := c.m[[2]float64{latKey, lngKey}]
-	return name, ok, nil
+func (c *memCache) Lookup(latKey, lngKey float64) (Place, bool, error) {
+	place, ok := c.m[[2]float64{latKey, lngKey}]
+	return place, ok, nil
 }
 
-func (c *memCache) Save(latKey, lngKey float64, name string) error {
-	c.m[[2]float64{latKey, lngKey}] = name
+func (c *memCache) Save(latKey, lngKey float64, place Place) error {
+	c.m[[2]float64{latKey, lngKey}] = place
 	return nil
 }
 
@@ -175,7 +176,7 @@ func TestResolveUsesCacheBeforeNetwork(t *testing.T) {
 	defer server.Close()
 
 	cache := newMemCache()
-	cache.m[[2]float64{35.0, -85.0}] = "Cached Place"
+	cache.m[[2]float64{35.0, -85.0}] = Place{Name: "Cached Place"}
 
 	r := New(nil, cache, true, server.URL, "test")
 	got := r.Resolve(context.Background(), 35.0, -85.0)
@@ -214,9 +215,9 @@ func TestResolveFetchesAndCachesFromReverseGeocodeService(t *testing.T) {
 
 	// Second call for the same (rounded) coordinate must come from the
 	// cache this time, not hit the server again.
-	name, ok, err := cache.Lookup(roundCoord(35.12345), roundCoord(-85.54321))
-	if err != nil || !ok || name != "Publix Parking Lot" {
-		t.Fatalf("expected the result to have been cached, got name=%q ok=%v err=%v", name, ok, err)
+	cached, ok, err := cache.Lookup(roundCoord(35.12345), roundCoord(-85.54321))
+	if err != nil || !ok || cached.Name != "Publix Parking Lot" {
+		t.Fatalf("expected the result to have been cached, got name=%q ok=%v err=%v", cached.Name, ok, err)
 	}
 }
 
@@ -260,5 +261,67 @@ func TestResolveNominatimErrorReturnsEmptyNotPanic(t *testing.T) {
 	got := r.Resolve(context.Background(), 1, 2)
 	if got != "" {
 		t.Fatalf("expected empty string on a Nominatim error response, got %q", got)
+	}
+}
+
+// TestResolveCachesAddressComponents pins that the administrative parts
+// of the Nominatim response are kept, not just the display name. They
+// arrive in the same payload (we always send addressdetails=1) and were
+// silently discarded, which made "# of cities/states/countries visited"
+// - four panels of TeslaMate's Locations dashboard - impossible to
+// answer from teslalog's data at all.
+func TestResolveCachesAddressComponents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"name":"Publix Parking Lot","address":{
+			"road":"Gunbarrel Rd","town":"East Ridge","county":"Hamilton County",
+			"state":"Tennessee","postcode":"37412","country":"United States"}}`))
+	}))
+	defer server.Close()
+
+	cache := newMemCache()
+	r := New(nil, cache, true, server.URL, "test")
+	if got := r.Resolve(context.Background(), 35.12345, -85.54321); got != "Publix Parking Lot" {
+		t.Fatalf("expected the display name to be unchanged, got %q", got)
+	}
+
+	place, ok, err := cache.Lookup(roundCoord(35.12345), roundCoord(-85.54321))
+	if err != nil || !ok {
+		t.Fatalf("expected a cached place, got ok=%v err=%v", ok, err)
+	}
+	for _, field := range []struct{ label, got, want string }{
+		{"road", place.Road, "Gunbarrel Rd"},
+		// Nominatim files a US suburb under "town", never "city", so
+		// reading only the "city" key would have lost most settlements.
+		{"city", place.City, "East Ridge"},
+		{"county", place.County, "Hamilton County"},
+		{"state", place.State, "Tennessee"},
+		{"postcode", place.Postcode, "37412"},
+		{"country", place.Country, "United States"},
+	} {
+		if field.got != field.want {
+			t.Errorf("%s: got %q, want %q", field.label, field.got, field.want)
+		}
+	}
+}
+
+// TestCityPrefersMostSpecificSettlementKey pins the key order. A place
+// that reports both a village and a municipality is in the village; the
+// municipality is the larger administrative unit around it.
+func TestCityPrefersMostSpecificSettlementKey(t *testing.T) {
+	cases := []struct{ body, want string }{
+		{`{"address":{"city":"Chattanooga","town":"X","village":"Y","municipality":"Z"}}`, "Chattanooga"},
+		{`{"address":{"town":"East Ridge","village":"Y","municipality":"Z"}}`, "East Ridge"},
+		{`{"address":{"village":"Soddy-Daisy","municipality":"Z"}}`, "Soddy-Daisy"},
+		{`{"address":{"municipality":"Hamilton"}}`, "Hamilton"},
+		{`{"address":{"road":"Nowhere Rd"}}`, ""},
+	}
+	for _, tc := range cases {
+		var nr nominatimResponse
+		if err := json.Unmarshal([]byte(tc.body), &nr); err != nil {
+			t.Fatalf("unmarshal %s: %v", tc.body, err)
+		}
+		if got := nr.city(); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.body, got, tc.want)
+		}
 	}
 }
