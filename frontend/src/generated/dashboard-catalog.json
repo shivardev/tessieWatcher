@@ -1174,7 +1174,7 @@
     "panels": [
       {
         "id": 1,
-        "title": "Configured Wh/km (if set)",
+        "title": "Ø Consumption (net) (Wh/$length_unit)",
         "type": "stat",
         "gridPos": {
           "x": 0,
@@ -1198,12 +1198,12 @@
           "overrides": []
         },
         "queries": [
-          "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1"
+          "SELECT SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km)\n       / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (SUM(d.distance_km)) / 1.60934 ELSE (SUM(d.distance_km)) END, 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id\nWHERE d.status = 'closed'\n  AND d.distance_km IS NOT NULL\n  AND d.$start_range - d.$end_range >= 0.1\n  AND d.start_time >= datetime('now', '-90 days')"
         ]
       },
       {
         "id": 2,
-        "title": "Avg battery %/km used (90d)",
+        "title": "Ø Consumption (gross) (Wh/$length_unit)",
         "type": "stat",
         "gridPos": {
           "x": 8,
@@ -1222,17 +1222,17 @@
         "fieldConfig": {
           "defaults": {
             "unit": "none",
-            "decimals": 3
+            "decimals": 0
           },
           "overrides": []
         },
         "queries": [
-          "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')"
+          "SELECT (\nWITH events AS (\n  SELECT 'drive_start' AS event, start_time AS time, $start_range AS range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'drive_end', COALESCE(end_time, start_time), $end_range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_start', start_time, $start_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_end', COALESCE(end_time, start_time), $end_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n), ordered AS (\n  SELECT event, range, LEAD(range) OVER (ORDER BY time) AS next_range FROM events WHERE range IS NOT NULL\n), losses AS (\n  SELECT CASE\n           WHEN event = 'drive_start' THEN range - next_range\n           WHEN range - next_range > 0 THEN range - next_range\n           ELSE 0\n         END AS loss\n  FROM ordered WHERE next_range IS NOT NULL\n)\nSELECT COALESCE(SUM(loss), 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1) FROM losses) / NULLIF((SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')), 0) AS value"
         ]
       },
       {
         "id": 3,
-        "title": "Avg rated-range km lost per km driven (90d)",
+        "title": "Logged Distance ($length_unit)",
         "type": "stat",
         "gridPos": {
           "x": 16,
@@ -1251,33 +1251,104 @@
         "fieldConfig": {
           "defaults": {
             "unit": "none",
-            "decimals": 2
+            "decimals": 1
           },
           "overrides": []
         },
         "queries": [
-          "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')"
+          "SELECT (SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')) AS value"
         ]
       },
       {
         "id": 4,
-        "title": "Per-drive efficiency (most recent 200)",
-        "type": "table",
+        "title": "Current $preferred_range efficiency (Wh/$length_unit)",
+        "type": "stat",
         "gridPos": {
           "x": 0,
           "y": 4,
-          "w": 24,
-          "h": 10
+          "w": 8,
+          "h": 4
         },
         "options": {
-          "showHeader": true
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
         },
         "fieldConfig": {
-          "defaults": {},
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
           "overrides": []
         },
         "queries": [
-          "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200"
+          "SELECT efficiency_wh_km * CASE WHEN '$length_unit' = 'mi' THEN 1.60934 ELSE 1 END AS value\nFROM vehicles ORDER BY id LIMIT 1"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Temperature – Driving Efficiency",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 8,
+          "w": 24,
+          "h": 10
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH t AS (\n  SELECT CASE WHEN '$temp_unit' = 'C'\n              THEN ROUND(d.outside_temp_avg_c / 5.0) * 5\n              ELSE ROUND((d.outside_temp_avg_c * 9.0 / 5.0 + 32) / 10.0) * 10\n         END AS bucket,\n         SUM(d.$start_range - d.$end_range) AS total_range,\n         SUM(d.distance_km) AS total_distance,\n         SUM(d.duration_min) AS duration\n  FROM drives d\n  WHERE d.status = 'closed'\n    AND d.distance_km IS NOT NULL\n    AND d.outside_temp_avg_c IS NOT NULL\n    AND CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END >= $min_distance\n    AND d.$start_range - d.$end_range > 0.1\n    AND d.start_time >= datetime('now', '-90 days')\n  GROUP BY 1\n)\nSELECT bucket AS \"Outside temp (°$temp_unit)\",\n       ROUND(total_distance / NULLIF(total_range, 0), 3) AS \"Efficiency\",\n       ROUND(total_range / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1), 0) AS \"Consumption (Wh/$length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END / NULLIF(duration, 0) * 60, 1) AS \"Ø speed ($length_unit/h)\"\nFROM t\nORDER BY 1 DESC"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Derived ideal efficiencies (Wh/$length_unit)",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_ideal_range_km - start_ideal_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_ideal_range_km IS NOT NULL\n  AND end_ideal_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3"
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Derived rated efficiencies (Wh/$length_unit)",
+        "type": "table",
+        "gridPos": {
+          "x": 12,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_range_km - start_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_range_km IS NOT NULL\n  AND end_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3"
         ]
       }
     ]
@@ -1288,7 +1359,7 @@
     "panels": [
       {
         "id": 1,
-        "title": "# of distinct places visited",
+        "title": "# of Addresses",
         "type": "stat",
         "gridPos": {
           "x": 0,
@@ -1312,79 +1383,203 @@
           "overrides": []
         },
         "queries": [
-          "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'"
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n) SELECT COUNT(DISTINCT name) AS value FROM visited"
         ]
       },
       {
         "id": 2,
-        "title": "Most-visited places",
-        "type": "table",
+        "title": "# of Cities",
+        "type": "stat",
         "gridPos": {
           "x": 6,
           "y": 0,
-          "w": 18,
-          "h": 8
+          "w": 6,
+          "h": 4
         },
         "options": {
-          "showHeader": true
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
         },
         "fieldConfig": {
           "defaults": {
-            "custom": {
-              "cellOptions": {
-                "type": "gauge",
-                "mode": "lcd"
-              }
-            }
+            "unit": "none",
+            "decimals": 0
           },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Visits"
-              },
-              "properties": [
-                {
-                  "id": "custom.cellOptions",
-                  "value": {
-                    "type": "gauge",
-                    "mode": "lcd"
-                  }
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "#3ea6ff"
-                  }
-                }
-              ]
-            }
-          ]
+          "overrides": []
         },
         "queries": [
-          "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15"
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.city) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL"
         ]
       },
       {
         "id": 3,
+        "title": "# of States",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.state) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "# of Countries",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.country) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.country IS NOT NULL"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Cities",
+        "type": "bargauge",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "orientation": "horizontal"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.city AS \"City\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "States",
+        "type": "bargauge",
+        "gridPos": {
+          "x": 12,
+          "y": 4,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "orientation": "horizontal"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.state AS \"State\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+        ]
+      },
+      {
+        "id": 7,
         "title": "Last visited",
         "type": "table",
         "gridPos": {
           "x": 0,
-          "y": 8,
-          "w": 24,
+          "y": 12,
+          "w": 12,
           "h": 10
         },
-        "options": {
-          "showHeader": true
-        },
+        "options": {},
         "fieldConfig": {
-          "defaults": {},
+          "defaults": {
+            "unit": "none"
+          },
           "overrides": []
         },
         "queries": [
-          "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200"
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT MAX(v.at) AS \"Date\", v.name AS \"Place\", a.city AS \"City\"\nFROM visited v LEFT JOIN addresses a ON a.name = v.name\nGROUP BY 2, 3\nORDER BY 1 DESC\nLIMIT 100"
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Addresses",
+        "type": "table",
+        "gridPos": {
+          "x": 12,
+          "y": 12,
+          "w": 12,
+          "h": 10
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT v.name AS \"Name\", a.road AS \"Road\", a.city AS \"City\", a.county AS \"County\",\n       a.state AS \"State\", a.postcode AS \"Postcode\", a.country AS \"Country\",\n       COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nGROUP BY 1, 2, 3, 4, 5, 6, 7\nORDER BY 8 DESC\nLIMIT 100"
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Geo-fences",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 22,
+          "w": 24,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n)\nSELECT v.name AS \"Geo-fence\", COUNT(*) AS \"Visits\", MAX(v.at) AS \"Last visit\"\nFROM visited v\nWHERE v.name NOT IN (SELECT name FROM geocode_cache)\nGROUP BY 1\nORDER BY 2 DESC\nLIMIT 100"
         ]
       }
     ]
@@ -1591,76 +1786,69 @@
   },
   {
     "key": "projected-range",
-    "title": "teslalog: Projected Range",
+    "title": "teslalog: Projected range",
     "panels": [
       {
         "id": 1,
-        "title": "Projected range at 100% vs mileage",
+        "title": "Projected Range - Mileage",
         "type": "timeseries",
         "gridPos": {
           "x": 0,
           "y": 0,
           "w": 24,
-          "h": 14
+          "h": 9
         },
-        "options": {
-          "tooltip": {
-            "mode": "multi"
-          },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        },
+        "options": {},
         "fieldConfig": {
           "defaults": {
-            "custom": {
-              "drawStyle": "line",
-              "lineWidth": 1,
-              "fillOpacity": 10,
-              "pointSize": 3
-            }
+            "unit": "none"
           },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Mileage (km)"
-              },
-              "properties": [
-                {
-                  "id": "custom.axisPlacement",
-                  "value": "right"
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "#fbbf24"
-                  }
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Projected range (km)"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "#4ade80"
-                  }
-                }
-              ]
-            }
-          ]
+          "overrides": []
         },
         "queries": [
-          "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
-          "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time"
+          "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (odometer) / 1.60934 ELSE (odometer) END, 0) AS \"Odometer ($length_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE odometer IS NOT NULL\nGROUP BY 1\nORDER BY 1"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Projected Range - Battery Level",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 9,
+          "w": 12,
+          "h": 9
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT soc AS \"Battery level (%)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nGROUP BY 1\nORDER BY 1"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Projected Range - Outdoor Temp",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 9,
+          "w": 12,
+          "h": 9
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT CASE WHEN '$temp_unit' = 'C' THEN ROUND(temp) ELSE ROUND(temp * 9.0 / 5.0 + 32) END AS \"Outside temp (°$temp_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE temp IS NOT NULL\nGROUP BY 1\nORDER BY 1"
         ]
       }
     ]
@@ -1671,12 +1859,68 @@
     "panels": [
       {
         "id": 1,
-        "title": "Currently",
+        "title": "Current State",
         "type": "stat",
         "gridPos": {
           "x": 0,
           "y": 0,
-          "w": 6,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT state AS value FROM states ORDER BY started_at DESC LIMIT 1"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Last state change",
+        "type": "stat",
+        "gridPos": {
+          "x": 8,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT started_at AS value FROM states ORDER BY started_at DESC LIMIT 1"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "parked (%)",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 0,
+          "w": 8,
           "h": 4
         },
         "options": {
@@ -1690,33 +1934,80 @@
         "fieldConfig": {
           "defaults": {
             "unit": "none",
-            "decimals": 0
+            "decimals": 1
           },
           "overrides": []
         },
         "queries": [
-          "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1"
+          "SELECT (1 - SUM(duration_min)\n             / NULLIF((julianday(MAX(end_time)) - julianday(MIN(start_time))) * 1440, 0)) * 100 AS value\nFROM drives WHERE status = 'closed'"
         ]
       },
       {
-        "id": 2,
-        "title": "Recent state changes",
-        "type": "table",
+        "id": 4,
+        "title": "States",
+        "type": "state-timeline",
         "gridPos": {
           "x": 0,
           "y": 4,
           "w": 24,
-          "h": 10
+          "h": 8
         },
-        "options": {
-          "showHeader": true
-        },
+        "options": {},
         "fieldConfig": {
-          "defaults": {},
+          "defaults": {
+            "unit": "none"
+          },
           "overrides": []
         },
         "queries": [
-          "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500"
+          "SELECT started_at AS time, state AS \"State\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Recent state changes",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 12,
+          "w": 12,
+          "h": 10
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT started_at AS \"Time\", state AS \"State\", ended_at AS \"Ended\",\n       ROUND((julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 1440, 1) AS \"Duration (min)\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at DESC\nLIMIT 200"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Time in each state",
+        "type": "piechart",
+        "gridPos": {
+          "x": 12,
+          "y": 12,
+          "w": 12,
+          "h": 10
+        },
+        "options": {
+          "legend": {
+            "displayMode": "list",
+            "placement": "right"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT state AS \"State\",\n       ROUND(SUM(julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 24, 2) AS \"Hours\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nGROUP BY 1\nORDER BY 2 DESC"
         ]
       }
     ]
@@ -1727,53 +2018,23 @@
     "panels": [
       {
         "id": 1,
-        "title": "Per month",
+        "title": "Per $period",
         "type": "table",
         "gridPos": {
           "x": 0,
           "y": 0,
           "w": 24,
-          "h": 12
+          "h": 18
         },
-        "options": {
-          "showHeader": true
-        },
+        "options": {},
         "fieldConfig": {
-          "defaults": {},
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Efficiency %"
-              },
-              "properties": [
-                {
-                  "id": "custom.cellOptions",
-                  "value": {
-                    "type": "gauge",
-                    "mode": "lcd"
-                  }
-                },
-                {
-                  "id": "max",
-                  "value": 100
-                },
-                {
-                  "id": "min",
-                  "value": 0
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "continuous-GrYlRd"
-                  }
-                }
-              ]
-            }
-          ]
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
         },
         "queries": [
-          "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC"
+          "WITH drive_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', d.start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', d.start_time)\n    WHEN 'year'  THEN strftime('%Y', d.start_time)\n    ELSE strftime('%Y-%m', d.start_time)\n  END AS period,\n         SUM(d.duration_min) AS minutes,\n         SUM(d.distance_km) AS distance_km,\n         AVG(d.outside_temp_avg_c) AS temp_c,\n         COUNT(*) AS drives,\n         SUM(d.$start_range - d.$end_range) AS range_diff,\n         SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km) AS energy_wh\n  FROM drives d JOIN vehicles v ON v.id = d.vehicle_id\n  WHERE d.status = 'closed' AND d.start_time >= datetime('now', '-1 year')\n  GROUP BY 1\n), charge_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', start_time)\n    WHEN 'year'  THEN strftime('%Y', start_time)\n    ELSE strftime('%Y-%m', start_time)\n  END AS period,\n         COUNT(*) AS charges,\n         SUM(charge_energy_added_kwh) AS added_kwh,\n         SUM(MAX(COALESCE(charge_energy_added_kwh, 0), COALESCE(charge_energy_used_kwh, 0))) AS used_kwh,\n         SUM(cost) AS cost\n  FROM charging_sessions\n  WHERE status = 'closed' AND start_time >= datetime('now', '-1 year')\n    AND (charge_energy_added_kwh IS NULL OR charge_energy_added_kwh > 0)\n  GROUP BY 1\n), periods AS (\n  SELECT period FROM drive_stats UNION SELECT period FROM charge_stats\n)\nSELECT p.period AS \"Period\",\n       ROUND(d.minutes, 0) AS \"Minutes driven\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$temp_unit' = 'C' THEN d.temp_c ELSE d.temp_c * 9.0 / 5.0 + 32 END, 1) AS \"Ø temp (°$temp_unit)\",\n       d.drives AS \"# of drives\",\n       ROUND(d.distance_km / NULLIF(d.range_diff, 0) * 100, 0) AS \"Efficiency %\",\n       ROUND(d.energy_wh / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS \"Consumption (Wh/$length_unit)\",\n       c.charges AS \"# of charges\",\n       ROUND(c.added_kwh, 1) AS \"Energy added (kWh)\",\n       ROUND(c.used_kwh, 1) AS \"Energy used (kWh)\",\n       ROUND(c.used_kwh / NULLIF(c.charges, 0), 1) AS \"Ø per charge (kWh)\",\n       ROUND(c.cost, 2) AS \"Cost\"\nFROM periods p\nLEFT JOIN drive_stats d ON d.period = p.period\nLEFT JOIN charge_stats c ON c.period = p.period\nORDER BY 1 DESC"
         ]
       }
     ]
@@ -1887,7 +2148,7 @@
         "gridPos": {
           "x": 0,
           "y": 0,
-          "w": 12,
+          "w": 8,
           "h": 4
         },
         "options": {
@@ -1906,17 +2167,17 @@
           "overrides": []
         },
         "queries": [
-          "SELECT COUNT(*) AS value FROM software_updates"
+          "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'"
         ]
       },
       {
-        "id": 3,
-        "title": "Ø days between updates",
+        "id": 2,
+        "title": "Median days between updates",
         "type": "stat",
         "gridPos": {
-          "x": 12,
+          "x": 8,
           "y": 0,
-          "w": 12,
+          "w": 8,
           "h": 4
         },
         "options": {
@@ -1929,13 +2190,41 @@
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "d",
+            "unit": "none",
             "decimals": 1
           },
           "overrides": []
         },
         "queries": [
-          "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL"
+          "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Current version",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value"
         ]
       },
       {
@@ -1946,17 +2235,17 @@
           "x": 0,
           "y": 4,
           "w": 24,
-          "h": 10
+          "h": 12
         },
-        "options": {
-          "showHeader": true
-        },
+        "options": {},
         "fieldConfig": {
-          "defaults": {},
+          "defaults": {
+            "unit": "none"
+          },
           "overrides": []
         },
         "queries": [
-          "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC"
+          "SELECT start_time AS \"Started\", version AS \"Version\", status AS \"Status\", end_time AS \"Finished\",\n       ROUND((julianday(end_time) - julianday(start_time)) * 1440, 1) AS \"Install (min)\",\n       ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC\nLIMIT 200"
         ]
       }
     ]

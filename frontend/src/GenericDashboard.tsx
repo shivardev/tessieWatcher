@@ -15,7 +15,7 @@ import {
   YAxis,
 } from 'recharts'
 import { dashboardCatalog, type PanelDefinition } from './catalog'
-import { executeQueries } from './database'
+import { executeQueries, interpolateLabel } from './database'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, temperature, timestampDate, type ViewSettings } from './viewSettings'
 
@@ -34,14 +34,27 @@ export const convertLabel = (label: string, settings: ViewSettings): string =>
 
 // Panels that alias their column `value` (every catalog stat panel does)
 // carry the unit only in the panel title, so the title is the fallback
-// conversion key when the column name itself says nothing about units.
-const carriesUnit = /(?:km|mi\b|wh|°c|temp|range|distance|odometer|speed)/iu
+// conversion key for those columns.
+//
+// Deliberately restricted to placeholder column names rather than "any
+// column with no unit word in it". The looser rule handed the panel
+// title to every column of a table, so the Temperature - Driving
+// Efficiency panel had its Efficiency column converted from Celsius: the
+// word "Temperature" in the title matched, and 0.807 became 33.45.
+const placeholderColumn = /^(?:value|count|total|amount|n)$/iu
 export const unitKey = (column: string, panelTitle?: string): string =>
-  carriesUnit.test(column) || panelTitle === undefined ? column : panelTitle
+  panelTitle !== undefined && placeholderColumn.test(column.trim()) ? panelTitle : column
 
 export const convertValue = (value: QueryValue, column: string, settings: ViewSettings): QueryValue => {
   if (typeof value !== 'number') return value
   if (settings.lengthUnit === 'mi') {
+    // A column that already names the unit it is in was converted by its
+    // own SQL (the catalog files double as real Grafana dashboards, where
+    // there is no conversion layer, so some panels do it in the query).
+    // Converting again would compound the error - and the heuristics
+    // below match on words like "distance" and "range", which appear in
+    // plenty of already-converted column names.
+    if (/\b(?:mi|miles|mph)\b|Wh\/mi/iu.test(column)) return value
     if (/km\s*\/\s*h/iu.test(column)) return speed(value, settings.lengthUnit)
     // Distance divided by distance ("rated km lost per km driven") is the
     // same number in any unit; converting one side alone corrupts it.
@@ -53,7 +66,14 @@ export const convertValue = (value: QueryValue, column: string, settings: ViewSe
       return distance(value, settings.lengthUnit)
     }
   }
-  if (settings.temperatureUnit === 'F' && /(?:°C|temperature|outside|inside|temp)/iu.test(column)) {
+  if (
+    settings.temperatureUnit === 'F' &&
+    // Same already-converted guard as for distance: a column that says °F
+    // was converted by its own SQL, and running it through C->F again
+    // turned 86.7 °F into 188.1.
+    !/°F|fahrenheit/iu.test(column) &&
+    /(?:°C|temperature|outside|inside|temp)/iu.test(column)
+  ) {
     return temperature(value, settings.temperatureUnit)
   }
   return value
@@ -304,10 +324,10 @@ function StateTimelinePanel({ panel }: Readonly<{ panel: PanelState }>) {
           <div
             className={`segment state-${display(row[1]).toLowerCase()}`}
             key={`${display(row[0])}-${index}`}
-            title={`${display(row[0])}: ${display(row[1])}`}
+            title={`${displayCell(row[0])}: ${display(row[1])}`}
           >
             <b>{display(row[1])}</b>
-            <small>{display(row[0])}</small>
+            <small>{displayCell(row[0])}</small>
           </div>
         ))}
       </div>
@@ -355,19 +375,28 @@ export function GenericDashboard({
     const load = async (): Promise<void> => {
       try {
         const queries = definition.panels.flatMap((panel) => panel.queries)
-        const results = await executeQueries(databaseBytes, queries, {
+        const variables = {
           minimumIdleHours: 1,
           lengthUnit: settings.lengthUnit,
           temperatureUnit: settings.temperatureUnit,
           timeRange: settings.timeRange,
-        })
+          preferredRange: settings.preferredRange,
+          minDistance: settings.minDistance,
+          statisticsPeriod: settings.statisticsPeriod,
+        }
+        const results = await executeQueries(databaseBytes, queries, variables)
         let offset = 0
         const next = definition.panels.map((panel) => {
+          // The title is interpolated before anything reads it, because
+          // the unit conversion uses it as a fallback hint: a raw
+          // "$preferred_range" contains the word "range" and would get
+          // the panel's value converted as though it were a distance.
+          const panelTitle = interpolateLabel(panel.title, variables)
           const panelResults = results
             .slice(offset, offset + panel.queries.length)
-            .map((result) => transformResult(result, settings, panel.title))
+            .map((result) => transformResult(result, settings, panelTitle))
           offset += panel.queries.length
-          return { definition: panel, results: panelResults }
+          return { definition: { ...panel, title: panelTitle }, results: panelResults }
         })
         if (active) setPanels(next)
       } catch (reason: unknown) {

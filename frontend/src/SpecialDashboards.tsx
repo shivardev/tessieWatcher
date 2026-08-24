@@ -456,7 +456,7 @@ export function TripDashboard({
     ],
     [settings.lengthUnit, settings.timeRange],
   )
-  const { results, error } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange })
+  const { results, error } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   const points = (results[0]?.rows ?? []).flatMap((row) => {
     const latitude = number(row[0])
     const longitude = number(row[1])
@@ -587,7 +587,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
     `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings.timeRange,'started_at')} ORDER BY started_at`,
   ], [settings])
-  const {results,error}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange })
+  const {results,error}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   const row=results[0]?.rows[0]
   const value=(index:number,digits=0):string=>{const current=number(row?.[index]); return current===null?'—':current.toFixed(digits)}
   const net=number(results[1]?.rows[0]?.[0])??0
@@ -625,21 +625,23 @@ export function BatteryHealthDashboard({
          AND start_range_km IS NOT NULL AND end_range_km>start_range_km GROUP BY 1 ORDER BY 2 DESC LIMIT 1
      ), eff AS (
        SELECT COALESCE((SELECT efficiency FROM candidates),(SELECT efficiency_wh_km/10.0 FROM vehicles LIMIT 1)) value
-     ), caps AS (
-       SELECT cs.timestamp, cs.range_km*eff.value/NULLIF(cs.usable_battery_level,0) capacity,
-         cs.range_km*100.0/NULLIF(cs.usable_battery_level,0) projected_range
-       FROM charging_samples cs JOIN charging_sessions s ON s.id=cs.charging_session_id CROSS JOIN eff
-       WHERE s.end_time IS NOT NULL AND s.charge_energy_added_kwh>=eff.value
-         AND cs.usable_battery_level>0 AND cs.range_km>0
-     ), recent AS (SELECT capacity FROM caps ORDER BY timestamp DESC LIMIT 100),
-     last_samples AS (
+     ), last_samples AS (
        SELECT cs.charging_session_id,MAX(cs.timestamp) timestamp FROM charging_samples cs
        JOIN charging_sessions s ON s.id=cs.charging_session_id CROSS JOIN eff
        WHERE s.end_time IS NOT NULL AND s.charge_energy_added_kwh>=eff.value AND cs.usable_battery_level>0 GROUP BY 1
      ), last_caps AS (
-       SELECT cs.range_km*eff.value/NULLIF(cs.usable_battery_level,0) capacity FROM last_samples l
+       SELECT cs.timestamp, cs.range_km*eff.value/NULLIF(cs.usable_battery_level,0) capacity FROM last_samples l
        JOIN charging_samples cs ON cs.charging_session_id=l.charging_session_id AND cs.timestamp=l.timestamp CROSS JOIN eff
-     ), daily_ranges AS (
+       WHERE cs.usable_battery_level>0 AND cs.range_km>0
+     ),
+     -- Both the "new" and the "now" capacity come from last_caps, one
+     -- end-of-charge sample per session. They used to be drawn from two
+     -- different populations - a MAX over end-of-charge samples against an
+     -- AVG over every mid-charge sample - which is biased by construction:
+     -- with six charges logged it reported the battery as 0.6 kWh LARGER
+     -- than new while the range panel beside it showed range lost.
+     recent AS (SELECT capacity FROM last_caps ORDER BY timestamp DESC LIMIT 100),
+     daily_ranges AS (
        SELECT SUM(range_km)*100.0/NULLIF(SUM(usable_battery_level),0) projected_range
        FROM charging_samples WHERE usable_battery_level>0 AND range_km>0 GROUP BY date(timestamp)
      ), current_ranges AS (
@@ -731,7 +733,7 @@ export function ProjectedRangeDashboard({
     ],
     [settings.timeRange],
   )
-  const { results, error } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange })
+  const { results, error } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   return (
     <main>
       <Heading title="Projected range" note={settings.timeRange.toUpperCase()} />

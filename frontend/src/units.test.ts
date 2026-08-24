@@ -9,8 +9,10 @@ import type { ViewSettings } from './viewSettings'
 // number still looks like a number - so they are pinned here rather than
 // left to be caught by eye.
 
-const imperial: ViewSettings = { lengthUnit: 'mi', temperatureUnit: 'C', timeRange: 'all' }
-const metric: ViewSettings = { lengthUnit: 'km', temperatureUnit: 'C', timeRange: 'all' }
+import { defaultViewSettings } from './viewSettings'
+
+const imperial: ViewSettings = { ...defaultViewSettings, lengthUnit: 'mi', temperatureUnit: 'C', timeRange: 'all' }
+const metric: ViewSettings = { ...defaultViewSettings, lengthUnit: 'km', temperatureUnit: 'C', timeRange: 'all' }
 
 describe('convertValue', () => {
   it('divides a plain distance', () => {

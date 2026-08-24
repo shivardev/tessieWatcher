@@ -1,17 +1,35 @@
 export type LengthUnit = 'km' | 'mi'
 export type TemperatureUnit = 'C' | 'F'
 export type TimeRange = '24h' | '7d' | '30d' | '90d' | '1y' | 'all'
+// Which range figure the car's own displays are set to. Tesla reports
+// both: rated range follows the EPA/WLTP rating, ideal range the
+// manufacturer's best case. TeslaMate exposes the same choice as its
+// $preferred_range variable and every efficiency figure depends on it,
+// so a viewer fixed to one of them disagrees with the car's dash for
+// everyone set to the other.
+export type PreferredRange = 'rated' | 'ideal'
+export type StatisticsPeriod = 'day' | 'week' | 'month' | 'year'
 
 export type ViewSettings = Readonly<{
   lengthUnit: LengthUnit
   temperatureUnit: TemperatureUnit
   timeRange: TimeRange
+  preferredRange: PreferredRange
+  // Drives shorter than this are excluded from efficiency aggregates.
+  // A 300 m crawl out of the garage has a real distance and a rounded
+  // battery delta, so its implied consumption is nonsense that would
+  // otherwise dominate a temperature bucket. TeslaMate's $min_distance.
+  minDistance: number
+  statisticsPeriod: StatisticsPeriod
 }>
 
 export const defaultViewSettings: ViewSettings = {
   lengthUnit: 'mi',
   temperatureUnit: 'F',
   timeRange: '90d',
+  preferredRange: 'rated',
+  minDistance: 1,
+  statisticsPeriod: 'month',
 }
 
 export const kilometersToMiles = (kilometers: number): number => kilometers / 1.60934

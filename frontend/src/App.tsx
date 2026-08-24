@@ -25,6 +25,7 @@ import {
   type LengthUnit,
   type TemperatureUnit,
   type TimeRange,
+  type PreferredRange,
   type ViewSettings,
 } from './viewSettings'
 
@@ -272,7 +273,9 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     {
       label: 'Total charging cost',
       value: charges.reduce((sum, charge) => sum + (charge.cost ?? 0), 0),
-      unit: 'cost',
+      // No unit: teslalog has no currency setting, and every other money
+      // figure in the viewer is printed bare. "3.4 cost" read as a bug.
+      unit: '',
     },
     {
       label: 'Average duration',
@@ -519,6 +522,41 @@ export default function App() {
                 >
                   <option value="F">°F</option>
                   <option value="C">°C</option>
+                </select>
+              </label>
+              <label>
+                Range type
+                <select
+                  aria-label="Preferred range"
+                  value={settings.preferredRange}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      preferredRange: event.target.value as PreferredRange,
+                    }))
+                  }
+                >
+                  <option value="rated">Rated</option>
+                  <option value="ideal">Ideal</option>
+                </select>
+              </label>
+              <label>
+                Min drive
+                <select
+                  aria-label="Minimum drive distance for efficiency figures"
+                  value={String(settings.minDistance)}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      minDistance: Number(event.target.value),
+                    }))
+                  }
+                >
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="5">5</option>
+                  <option value="10">10</option>
+                  <option value="20">20</option>
                 </select>
               </label>
             </div>

@@ -10,7 +10,7 @@ import {
   type Metric,
   type QueryResult,
 } from './domain'
-import type { TimeRange } from './viewSettings'
+import type { PreferredRange, StatisticsPeriod, TimeRange } from './viewSettings'
 const required = [
   'vehicles',
   'states',
@@ -182,7 +182,7 @@ const metric = (db: Database, label: string, sql: string, unit: string): Metric 
 const drives = (db: Database) =>
   rows(
     db,
-    `SELECT d.id, d.start_time time, COALESCE(d.start_location, printf('%.4f, %.4f', d.start_lat, d.start_lng)) "from", COALESCE(d.end_location, printf('%.4f, %.4f', d.end_lat, d.end_lng)) "to", ROUND(d.distance_km,1) distance_km, ROUND(d.duration_min,0) duration_min, d.start_battery_level start_battery, d.end_battery_level end_battery, ROUND(d.max_speed_kmh,0) max_speed_kmh, ROUND(d.ascent_m,0) ascent_m, ROUND(d.descent_m,0) descent_m, d.outside_temp_avg_c, d.distance_km/NULLIF(d.duration_min/60.0,0) average_speed_kmh, (d.start_range_km-d.end_range_km)*v.efficiency_wh_km energy_kwh, d.start_range_km-d.end_range_km range_diff_km, v.efficiency_wh_km car_efficiency
+    `SELECT d.id, d.start_time time, COALESCE(d.start_location, printf('%.4f, %.4f', d.start_lat, d.start_lng)) "from", COALESCE(d.end_location, printf('%.4f, %.4f', d.end_lat, d.end_lng)) "to", ROUND(d.distance_km,1) distance_km, ROUND(d.duration_min,0) duration_min, d.start_battery_level start_battery, d.end_battery_level end_battery, ROUND(d.max_speed_kmh,0) max_speed_kmh, ROUND(d.ascent_m,0) ascent_m, ROUND(d.descent_m,0) descent_m, d.outside_temp_avg_c, d.distance_km/NULLIF(d.duration_min/60.0,0) average_speed_kmh, (d.start_range_km-d.end_range_km)*v.efficiency_wh_km/1000.0 energy_kwh, d.start_range_km-d.end_range_km range_diff_km, v.efficiency_wh_km car_efficiency
      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' ORDER BY d.start_time DESC LIMIT 500`,
   ).map((r) =>
     driveRowSchema.parse({
@@ -238,6 +238,9 @@ export type QueryVariables = Readonly<{
   temperatureUnit?: 'C' | 'F'
   minimumIdleHours?: number
   timeRange?: TimeRange
+  preferredRange?: PreferredRange
+  minDistance?: number
+  statisticsPeriod?: StatisticsPeriod
 }>
 const rangeExpression = (range: TimeRange): string => {
   switch (range) {
@@ -256,13 +259,56 @@ const rangeExpression = (range: TimeRange): string => {
   }
 }
 
+// queryVariables is the complete set of $names a catalog query may use.
+// Declared as data rather than a chain of replaceAll calls so the
+// catalog test can assert the dashboards use nothing that is not listed
+// here - a query referencing an unknown $variable would otherwise reach
+// SQLite verbatim and fail at runtime, on one dashboard, for one user.
+//
+// $preferred_range expands to the word "rated"/"ideal" for labels;
+// $start_range/$end_range/$pos_range expand to whole column names.
+// teslalog does not repeat "rated" in its column names the way TeslaMate
+// does (start_range_km, not start_rated_range_km), so the column name is
+// substituted rather than an infix.
+export const queryVariables = {
+  $drive_id: (v: QueryVariables) => String(Math.trunc(v.driveId ?? 0)),
+  $charging_session_id: (v: QueryVariables) => String(Math.trunc(v.chargingSessionId ?? 0)),
+  $min_idle_hours: (v: QueryVariables) => String(v.minimumIdleHours ?? 1),
+  $min_distance: (v: QueryVariables) => String(v.minDistance ?? 0),
+  $length_unit: (v: QueryVariables) => v.lengthUnit ?? 'km',
+  $temp_unit: (v: QueryVariables) => v.temperatureUnit ?? 'C',
+  $period: (v: QueryVariables) => v.statisticsPeriod ?? 'month',
+  $preferred_range: (v: QueryVariables) => v.preferredRange ?? 'rated',
+  $start_range: (v: QueryVariables) =>
+    v.preferredRange === 'ideal' ? 'start_ideal_range_km' : 'start_range_km',
+  $end_range: (v: QueryVariables) =>
+    v.preferredRange === 'ideal' ? 'end_ideal_range_km' : 'end_range_km',
+  $pos_range: (v: QueryVariables) => (v.preferredRange === 'ideal' ? 'ideal_range_km' : 'range_km'),
+} as const
+
+// Longest name first, so $preferred_range is never partly eaten by a
+// shorter name that happens to be a prefix of it.
+const substitutionOrder = Object.keys(queryVariables).toSorted((a, b) => b.length - a.length)
+
+// interpolateLabel expands the same $variables in a panel title or
+// column label. Titles carry units the query cannot ("Ø Consumption
+// (Wh/$length_unit)"), and leaving them raw does more than look wrong:
+// the viewer's unit conversion reads the title as a fallback hint, so an
+// uninterpolated "$preferred_range" contains the word "range" and gets
+// the value converted as though it were a distance.
+export const interpolateLabel = (label: string, variables: QueryVariables): string =>
+  substitutionOrder.reduce(
+    (text, name) =>
+      text.replaceAll(name, queryVariables[name as keyof typeof queryVariables](variables)),
+    label,
+  )
+
 const interpolate = (sql: string, variables: QueryVariables): string => {
-  const interpolated = sql
-    .replaceAll('$drive_id', String(Math.trunc(variables.driveId ?? 0)))
-    .replaceAll('$charging_session_id', String(Math.trunc(variables.chargingSessionId ?? 0)))
-    .replaceAll('$min_idle_hours', String(variables.minimumIdleHours ?? 1))
-    .replaceAll('$length_unit', variables.lengthUnit ?? 'km')
-    .replaceAll('$temp_unit', variables.temperatureUnit ?? 'C')
+  const interpolated = substitutionOrder.reduce(
+    (query, name) =>
+      query.replaceAll(name, queryVariables[name as keyof typeof queryVariables](variables)),
+    sql,
+  )
   return variables.timeRange
     ? interpolated.replace(
         /datetime\('now',\s*'-\d+\s+(?:hours?|days?|months?|years?)'\)/giu,
