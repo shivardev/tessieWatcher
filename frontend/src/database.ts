@@ -9,6 +9,8 @@ import {
   type LoadedDatabase,
   type Metric,
   type QueryResult,
+  type IncompleteRow,
+  type SpeedBand,
 } from './domain'
 import type { PreferredRange, StatisticsPeriod, TimeRange } from './viewSettings'
 const required = [
@@ -226,11 +228,60 @@ const charges = (db: Database) =>
       outsideTempC: nullableNum(r.outside_temp_avg_c, 'outside temperature'),
     }),
   )
+// incompleteDrives / incompleteCharges list rows that were opened and
+// never closed - the car went offline mid-drive, or teslalog was stopped
+// while charging. TeslaMate surfaces the same two tables (end_date IS
+// NULL) because these rows silently distort every total that sums over
+// them, and the only way to notice is to be shown them.
+const incompleteDrives = (db: Database): readonly IncompleteRow[] =>
+  rows(
+    db,
+    `SELECT id, start_time, end_time, ROUND(distance_km,2) AS a, ROUND(duration_min,1) AS b,
+            start_battery_level AS c, end_battery_level AS d
+     FROM drives WHERE status != 'closed' ORDER BY start_time DESC LIMIT 100`,
+  ).map((r) => ({
+    id: num(r.id, 'drive id'),
+    startTime: str(r.start_time, 'start time'),
+    endTime: typeof r.end_time === 'string' ? r.end_time : null,
+    values: [nullableNum(r.a, 'distance'), nullableNum(r.b, 'duration'), nullableNum(r.c, 'start battery'), nullableNum(r.d, 'end battery')],
+  }))
+
+const incompleteCharges = (db: Database): readonly IncompleteRow[] =>
+  rows(
+    db,
+    `SELECT id, start_time, end_time, ROUND(charge_energy_added_kwh,2) AS a, ROUND(charge_energy_used_kwh,2) AS b,
+            start_battery_level AS c, end_battery_level AS d
+     FROM charging_sessions WHERE status != 'closed' ORDER BY start_time DESC LIMIT 100`,
+  ).map((r) => ({
+    id: num(r.id, 'charge id'),
+    startTime: str(r.start_time, 'start time'),
+    endTime: typeof r.end_time === 'string' ? r.end_time : null,
+    values: [nullableNum(r.a, 'energy added'), nullableNum(r.b, 'energy used'), nullableNum(r.c, 'start battery'), nullableNum(r.d, 'end battery')],
+  }))
+
 const destinations = (db: Database): readonly Destination[] =>
   rows(
     db,
     `SELECT end_location destination, COUNT(*) visits FROM drives WHERE status='closed' AND end_location IS NOT NULL AND end_location!='' GROUP BY end_location ORDER BY COUNT(*) DESC LIMIT 10`,
   ).map((r) => ({ name: str(r.destination, 'destination'), visits: num(r.visits, 'visits') }))
+// speedHistogram weights each 10 km/h band by the seconds the car spent
+// in it, taken as the gap to the next position sample within the same
+// drive. Counting samples instead would let a dense stretch of slow
+// city driving dominate a sparsely sampled motorway run.
+const speedHistogram = (db: Database): readonly SpeedBand[] =>
+  rows(
+    db,
+    `WITH d AS (
+       SELECT ROUND(speed_kmh/10.0)*10 AS band,
+              (julianday(LEAD(timestamp) OVER (PARTITION BY drive_id ORDER BY timestamp))
+               - julianday(timestamp)) * 86400 AS seconds
+       FROM positions WHERE drive_id IS NOT NULL AND speed_kmh IS NOT NULL
+     )
+     SELECT band, SUM(seconds) seconds FROM d
+     WHERE band > 0 AND seconds IS NOT NULL AND seconds < 600
+     GROUP BY band ORDER BY band`,
+  ).map((r) => ({ speedKmh: num(r.band, 'speed band'), seconds: num(r.seconds, 'seconds') }))
+
 export type QueryVariables = Readonly<{
   driveId?: number
   chargingSessionId?: number
@@ -411,7 +462,57 @@ export const openDatabaseBytes = async (
           `SELECT COALESCE(MAX(max_speed_kmh),0) value FROM drives WHERE status='closed'`,
           'km/h',
         ),
+        // Net energy: range lost while driving, priced at the car's Wh/km.
+        // Divided by 1000 because efficiency_wh_km is Wh per km, and the
+        // card says kWh.
+        metric(
+          db,
+          'Total energy consumed (net)',
+          `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0,0) value
+           FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`,
+          'kWh',
+        ),
+        // Per-day averages divide by elapsed calendar days, not by the
+        // number of days that happen to have a drive - a car parked all
+        // week did average less per day that week, and hiding the zeroes
+        // would say otherwise. TeslaMate builds the same denominator by
+        // generating a row per day and left-joining.
+        metric(
+          db,
+          'Ø distance per day',
+          `SELECT COALESCE(SUM(distance_km)/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time))),0) value
+           FROM drives WHERE status='closed'`,
+          'km',
+        ),
+        metric(
+          db,
+          'Ø energy per day',
+          `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0
+                  /MAX(1.0,julianday(MAX(d.end_time))-julianday(MIN(d.start_time))),0) value
+           FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`,
+          'kWh',
+        ),
+        // Extrapolations use odometer delta rather than summed drive
+        // distance, so any driving teslalog missed while it was down still
+        // counts - the odometer is the car's own record.
+        metric(
+          db,
+          'Extrapolated monthly mileage',
+          `SELECT COALESCE((MAX(end_odometer_km)-MIN(start_odometer_km))
+                  /MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*(365.0/12),0) value
+           FROM drives WHERE status='closed'`,
+          'km',
+        ),
+        metric(
+          db,
+          'Extrapolated annual mileage',
+          `SELECT COALESCE((MAX(end_odometer_km)-MIN(start_odometer_km))
+                  /MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*365.0,0) value
+           FROM drives WHERE status='closed'`,
+          'km',
+        ),
       ],
+      speedHistogram: speedHistogram(db),
       destinations: destinations(db),
       charges: charges(db),
       chargeMetrics: [
@@ -440,6 +541,8 @@ export const openDatabaseBytes = async (
           'kW',
         ),
       ],
+      incompleteDrives: incompleteDrives(db),
+      incompleteCharges: incompleteCharges(db),
     }
   } catch (error: unknown) {
     throw new DatabaseError(error instanceof Error ? error.message : 'Could not read the database.')

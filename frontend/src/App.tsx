@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { CarFront, Database, Gauge, Menu, Upload, X } from 'lucide-react'
-import { groups, type Dashboard, type DriveRow, type LoadedDatabase, type Metric } from './domain'
+import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric } from './domain'
 import { openDatabase, openDatabaseBytes } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
@@ -75,6 +75,52 @@ function Page({
       </header>
       {children}
     </main>
+  )
+}
+
+// IncompleteTable surfaces rows that were opened and never closed. They
+// are worth showing rather than hiding: every total in the app sums over
+// closed rows only, so an unclosed drive is silently missing distance,
+// and the only way to know is to be told. TeslaMate ships the same two
+// tables for the same reason. An empty table is the normal, good state,
+// so it says so rather than rendering nothing.
+function IncompleteTable({
+  title,
+  rows,
+  columns,
+}: Readonly<{ title: string; rows: readonly IncompleteRow[]; columns: readonly string[] }>) {
+  return (
+    <section className="table-panel">
+      <h2 className="table-heading">{title}</h2>
+      {rows.length === 0 ? (
+        <p className="no-data">None — every record has been closed cleanly.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Started</th>
+              <th>Ended</th>
+              {columns.map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.id}</td>
+                <td>{date(row.startTime)}</td>
+                <td>{row.endTime === null ? 'still open' : date(row.endTime)}</td>
+                {row.values.map((value, index) => (
+                  <td key={columns[index] ?? index}>{cell(value, 2)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
   )
 }
 
@@ -203,6 +249,11 @@ function Drives({
         </table>
         {drives.length === 0 && <p className="no-data">No closed drives found.</p>}
       </div>
+      <IncompleteTable
+        title="Incomplete drives 🛣️"
+        rows={data.incompleteDrives}
+        columns={['Distance (km)', 'Duration (min)', '% start', '% end']}
+      />
     </Page>
   )
 }
@@ -212,6 +263,27 @@ function DriveStats({
   settings,
 }: Readonly<{ data: LoadedDatabase; settings: ViewSettings }>) {
   const maxVisits = Math.max(1, ...data.destinations.map((item) => item.visits))
+  // The query buckets in 10 km/h steps; converting each bucket to mi/h
+  // and rounding maps two of them onto one band (30 and 40 km/h both land
+  // on 20 mi/h), so they have to be merged after conversion or the chart
+  // shows the same band twice with the time split between them.
+  const speedBands = [
+    ...data.speedHistogram
+      .reduce((bands, band) => {
+        const shown = Math.round(speed(band.speedKmh, settings.lengthUnit) / 10) * 10
+        return bands.set(shown, (bands.get(shown) ?? 0) + band.seconds)
+      }, new Map<number, number>())
+      .entries(),
+  ]
+    .map(([shownSpeed, seconds]) => ({ shownSpeed, seconds }))
+    .toSorted((left, right) => left.shownSpeed - right.shownSpeed)
+  const totalBandSeconds = speedBands.reduce((sum, band) => sum + band.seconds, 0)
+  const maxBandSeconds = Math.max(1, ...speedBands.map((band) => band.seconds))
+  const clock = (seconds: number): string => {
+    const whole = Math.round(seconds)
+    const pad = (value: number): string => String(value).padStart(2, '0')
+    return `${pad(Math.floor(whole / 3600))}:${pad(Math.floor((whole % 3600) / 60))}:${pad(whole % 60)}`
+  }
   return (
     <Page title="Drive stats" eyebrow="Lifetime">
       <MetricCards
@@ -243,6 +315,23 @@ function DriveStats({
           </div>
         ))}
         {data.destinations.length === 0 && <p className="no-data">No named destinations found.</p>}
+      </section>
+      <section className="chart-panel">
+        <h2>Speed histogram ({settings.lengthUnit}/h)</h2>
+        {speedBands.map((band) => (
+          <div className="bar-row" key={band.shownSpeed}>
+            <span>{band.shownSpeed}</span>
+            <div>
+              <i style={{ width: `${(band.seconds / maxBandSeconds) * 100}%` }} />
+            </div>
+            <b title={clock(band.seconds)}>
+              {((band.seconds / Math.max(totalBandSeconds, 1)) * 100).toFixed(1)}%
+            </b>
+          </div>
+        ))}
+        {speedBands.length === 0 && (
+          <p className="no-data">No position samples with a recorded speed.</p>
+        )}
       </section>
     </Page>
   )
@@ -329,6 +418,11 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
         </table>
         {charges.length === 0 && <p className="no-data">No closed charging sessions found.</p>}
       </div>
+      <IncompleteTable
+        title="Incomplete charges 🪫"
+        rows={data.incompleteCharges}
+        columns={['Energy added (kWh)', 'Energy used (kWh)', '% start', '% end']}
+      />
     </Page>
   )
 }

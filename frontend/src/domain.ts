@@ -51,6 +51,20 @@ export const chargeRowSchema = z.object({
 export type ChargeRow = z.infer<typeof chargeRowSchema>
 export type Metric = Readonly<{ label: string; value: number; unit: string }>
 export type Destination = Readonly<{ name: string; visits: number }>
+// One bar of the speed histogram: how long the car spent in a 10 km/h
+// band. Weighted by elapsed time between position samples, not by sample
+// count, so a slow crawl with dense sampling does not outweigh a
+// motorway stretch with sparse sampling.
+export type SpeedBand = Readonly<{ speedKmh: number; seconds: number }>
+// A drive or charge that was opened and never closed. values holds the
+// two domain figures (distance/duration, or energy added/used) followed
+// by start and end battery level, so one table component renders both.
+export type IncompleteRow = Readonly<{
+  id: number
+  startTime: string
+  endTime: string | null
+  values: readonly (number | null)[]
+}>
 export type LoadedDatabase = Readonly<{
   fileName: string
   fileSize: number
@@ -60,8 +74,11 @@ export type LoadedDatabase = Readonly<{
   driveMetrics: readonly Metric[]
   lifetimeDriveMetrics: readonly Metric[]
   destinations: readonly Destination[]
+  speedHistogram: readonly SpeedBand[]
   charges: readonly ChargeRow[]
   chargeMetrics: readonly Metric[]
+  incompleteDrives: readonly IncompleteRow[]
+  incompleteCharges: readonly IncompleteRow[]
 }>
 export const queryValueSchema = z.union([
   z.string(),
