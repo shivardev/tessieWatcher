@@ -173,3 +173,72 @@ func TestAPIStatusReportsRunningVersion(t *testing.T) {
 		t.Fatalf("expected the running version in /api/status, got %q", out.Version)
 	}
 }
+
+// TestAPIMetaReportsChangeCounters pins the counters a client uses to
+// decide whether re-downloading the whole database is worthwhile.
+// /download takes a fresh full snapshot every time (~1s and ~10MB on a
+// Pi Zero 2 W); polling it on a timer would be gigabytes per day of
+// transfer and SD-card writes to observe data that changes a few times
+// a day. Drives/Charges count only CLOSED rows so they tick exactly
+// when new history becomes available.
+func TestAPIMetaReportsChangeCounters(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	vehicleID, _ := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN-META", DisplayName: "Car"})
+	now := time.Now().UTC()
+
+	read := func() (drives, charges int, posID int64) {
+		srv := New(store, dbPath, nil, "metric", "test")
+		req := httptest.NewRequest("GET", "/api/meta", nil)
+		rec := httptest.NewRecorder()
+		srv.handler().ServeHTTP(rec, req)
+		var out struct {
+			Drives           int   `json:"drives"`
+			Charges          int   `json:"charges"`
+			LatestPositionID int64 `json:"latest_position_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out.Drives, out.Charges, out.LatestPositionID
+	}
+
+	if d, c, p := read(); d != 0 || c != 0 || p != 0 {
+		t.Fatalf("expected all counters zero on an empty database, got %d/%d/%d", d, c, p)
+	}
+
+	// An OPEN drive must not tick the counter - nothing new to fetch yet.
+	driveID, err := store.OpenDrive(storage.DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 100, BatteryLevel: 80})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+	for i, odo := range []float64{101, 105} {
+		if err := store.AppendPosition(storage.PositionSample{
+			DriveID: driveID, VehicleID: vehicleID, Time: now.Add(time.Duration(i+1) * time.Minute),
+			OdometerKm: odo, ShiftState: "D",
+		}); err != nil {
+			t.Fatalf("append position: %v", err)
+		}
+	}
+	d, _, posID := read()
+	if d != 0 {
+		t.Fatalf("an in-progress drive must not count as new history, got %d", d)
+	}
+	if posID == 0 {
+		t.Fatalf("expected latest_position_id to move during an active drive")
+	}
+
+	// Closing it is what makes new history available.
+	if err := store.CloseDrive(storage.DriveEnd{DriveID: driveID, Time: now.Add(10 * time.Minute), OdometerKm: 110, BatteryLevel: 75}); err != nil {
+		t.Fatalf("close drive: %v", err)
+	}
+	if d, _, _ := read(); d != 1 {
+		t.Fatalf("expected the closed drive to tick the counter, got %d", d)
+	}
+}

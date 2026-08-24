@@ -452,6 +452,24 @@ func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 	type meta struct {
 		LastUpdated string `json:"last_updated"`
 		SizeBytes   int64  `json:"size_bytes"`
+		// Change counters, so a client can tell whether re-downloading
+		// the whole database would actually get it anything new.
+		//
+		// This matters more than it looks. /download takes a fresh
+		// consistent snapshot of the entire file on every request -
+		// measured at ~1s and ~10MB on a Pi Zero 2 W. Polling it once a
+		// minute would be ~14GB/day of transfer AND the same again in
+		// SD-card writes, to observe data that changes a few times a
+		// day. Polling this endpoint instead is ~50ms and ~100 bytes,
+		// and touches no disk.
+		//
+		// Drives/Charges count only CLOSED rows, so they tick exactly
+		// when a drive or charge finishes - the moment new history
+		// becomes available. LatestPositionID is a cheap liveness
+		// signal that moves during an active drive.
+		Drives           int   `json:"drives"`
+		Charges          int   `json:"charges"`
+		LatestPositionID int64 `json:"latest_position_id"`
 	}
 
 	info, err := os.Stat(s.dbPath)
@@ -468,7 +486,23 @@ func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, meta{LastUpdated: newest.UTC().Format(time.RFC3339Nano), SizeBytes: size})
+	out := meta{LastUpdated: newest.UTC().Format(time.RFC3339Nano), SizeBytes: size}
+	// Both counts hit the (vehicle_id, status) index; the position id is
+	// an O(1) index lookup rather than a scan. Failures here are
+	// non-fatal - the freshness fields above are still worth returning.
+	if err := s.store.DB().QueryRow(`SELECT COUNT(*) FROM drives WHERE status = 'closed'`).Scan(&out.Drives); err != nil {
+		slog.Warn("portal: api/meta drive count failed", "error", err)
+	}
+	if err := s.store.DB().QueryRow(`SELECT COUNT(*) FROM charging_sessions WHERE status = 'closed'`).Scan(&out.Charges); err != nil {
+		slog.Warn("portal: api/meta charge count failed", "error", err)
+	}
+	var maxPos sql.NullInt64
+	if err := s.store.DB().QueryRow(`SELECT MAX(id) FROM positions`).Scan(&maxPos); err != nil {
+		slog.Warn("portal: api/meta position id failed", "error", err)
+	}
+	out.LatestPositionID = maxPos.Int64
+
+	writeJSON(w, out)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
