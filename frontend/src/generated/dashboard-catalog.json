@@ -1,0 +1,2012 @@
+[
+  {
+    "key": "battery",
+    "title": "teslalog: Battery",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Battery level (%) over time",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 9
+        },
+        "options": {
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, battery_level AS \"Battery %\"\nFROM battery_samples\nORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Rated range (km) over time",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 9,
+          "w": 24,
+          "h": 9
+        },
+        "options": {
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, battery_range_km AS \"Rated range (km)\", ideal_battery_range_km AS \"Ideal range (km)\"\nFROM battery_samples\nORDER BY timestamp"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "charges",
+    "title": "teslalog: Charges",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total charges (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Energy added (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "kwatth",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Total cost (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Max charger power (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "kwatt",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(MAX(max_charger_power_kw), 0) AS value FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Charges",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  start_time AS time,\n  COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) AS \"Location\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(charge_energy_added_kwh, 1) AS \"kWh added\",\n  ROUND(charge_energy_used_kwh, 1) AS \"kWh used (est.)\",\n  ROUND(max_charger_power_kw, 1) AS \"max kW\",\n  ROUND(cost, 2) AS \"cost\",\n  ROUND((julianday(end_time) - julianday(start_time)) * 24 * 60, 0) AS \"min\"\nFROM charging_sessions\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "charging-stats",
+    "title": "teslalog: Charging Stats",
+    "panels": [
+      {
+        "id": 1,
+        "title": "# of charges",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 5,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Total energy added",
+        "type": "stat",
+        "gridPos": {
+          "x": 5,
+          "y": 0,
+          "w": 5,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "kwatth",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Total cost",
+        "type": "stat",
+        "gridPos": {
+          "x": 10,
+          "y": 0,
+          "w": 5,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Ø cost / session",
+        "type": "stat",
+        "gridPos": {
+          "x": 15,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(AVG(cost), 0) AS value FROM charging_sessions WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Ø cost / kWh",
+        "type": "stat",
+        "gridPos": {
+          "x": 19,
+          "y": 0,
+          "w": 5,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD",
+            "decimals": 3
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(cost) / SUM(charge_energy_added_kwh), 0) AS value FROM charging_sessions WHERE status = 'closed' AND charge_energy_added_kwh > 0"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "AC/DC - Energy added",
+        "type": "piechart",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 12,
+          "h": 10
+        },
+        "options": {
+          "reduceOptions": {
+            "values": true,
+            "calcs": []
+          },
+          "pieType": "pie",
+          "displayLabels": [
+            "name",
+            "value"
+          ],
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "kwatth"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM(charge_energy_added_kwh), 1) AS \"kWh\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\""
+        ]
+      },
+      {
+        "id": 7,
+        "title": "AC/DC - Duration",
+        "type": "piechart",
+        "gridPos": {
+          "x": 12,
+          "y": 4,
+          "w": 12,
+          "h": 10
+        },
+        "options": {
+          "reduceOptions": {
+            "values": true,
+            "calcs": []
+          },
+          "pieType": "pie",
+          "displayLabels": [
+            "name",
+            "value"
+          ],
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "m"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT CASE WHEN is_dc_fast_charge THEN 'DC' ELSE 'AC' END AS \"Type\", ROUND(SUM((julianday(end_time) - julianday(start_time)) * 1440), 0) AS \"Minutes\" FROM charging_sessions WHERE status = 'closed' GROUP BY \"Type\""
+        ]
+      }
+    ]
+  },
+  {
+    "key": "drive-details",
+    "title": "teslalog: Drive Details",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Distance ($length_unit)",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Duration",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "m",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(duration_min, 0) AS value FROM drives WHERE id = $drive_id"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Battery start → end",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto",
+          "orientation": "horizontal"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percent",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT start_battery_level AS \"Start\", end_battery_level AS \"End\" FROM drives WHERE id = $drive_id"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Max speed ($length_unit/h)",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Route",
+        "type": "geomap",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 12,
+          "h": 12
+        },
+        "options": {
+          "view": {
+            "id": "fit",
+            "lat": 0,
+            "lon": 0,
+            "zoom": 12,
+            "padding": 32
+          },
+          "controls": {
+            "showZoom": true,
+            "mouseWheelZoom": true,
+            "showAttribution": true,
+            "showScale": false,
+            "showMeasure": false,
+            "showDebug": false
+          },
+          "basemap": {
+            "type": "default",
+            "name": "Basemap",
+            "config": {}
+          },
+          "layers": [
+            {
+              "type": "route",
+              "name": "Route",
+              "config": {
+                "style": {
+                  "color": {
+                    "fixed": "#3ea6ff"
+                  },
+                  "size": {
+                    "fixed": 3
+                  }
+                }
+              },
+              "location": {
+                "mode": "coords",
+                "latitude": "latitude",
+                "longitude": "longitude"
+              }
+            },
+            {
+              "type": "markers",
+              "name": "Points",
+              "config": {
+                "style": {
+                  "size": {
+                    "fixed": 4
+                  },
+                  "color": {
+                    "field": "speed_kmh",
+                    "fixed": "#3ea6ff"
+                  },
+                  "symbol": {
+                    "fixed": "img/icons/marker/circle.svg"
+                  }
+                }
+              },
+              "location": {
+                "mode": "coords",
+                "latitude": "latitude",
+                "longitude": "longitude"
+              }
+            }
+          ]
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "speed_kmh"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "continuous-GrYlRd"
+                  }
+                },
+                {
+                  "id": "min",
+                  "value": 0
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT latitude, longitude, speed_kmh, timestamp AS time FROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Speed & power",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 4,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "pointSize": 3
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Elevation (m if km, ft if mi)",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 10,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 1,
+              "fillOpacity": 20,
+              "pointSize": 3
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Temperatures (°$temp_unit)",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 16,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "pointSize": 0,
+              "spanNulls": true,
+              "lineInterpolation": "smooth"
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Outside"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#4ade80"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Inside"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#fbbf24"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Tire pressure",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 16,
+          "w": 12,
+          "h": 6
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 1,
+              "fillOpacity": 0,
+              "pointSize": 3
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\", tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "drive-stats",
+    "title": "teslalog: Drive Stats",
+    "panels": [
+      {
+        "id": 1,
+        "title": "# of drives",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Total distance",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "lengthkm",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Median drive distance",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "lengthkm",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT distance_km AS value FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL\nORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status = 'closed' AND distance_km IS NOT NULL) / 2"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Max speed ever",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "velocitykmh",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Top 10 destinations",
+        "type": "barchart",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 9
+        },
+        "options": {
+          "orientation": "horizontal",
+          "xTickLabelRotation": 0
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT end_location AS \"Destination\", COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed' AND end_location IS NOT NULL AND end_location != ''\nGROUP BY end_location\nORDER BY COUNT(*) DESC\nLIMIT 10"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "drives",
+    "title": "teslalog: Drives",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Total drives (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Total distance (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "lengthkm",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(SUM(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Avg distance per drive",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "lengthkm",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(AVG(distance_km), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Max speed (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 18,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "velocitykmh",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(MAX(max_speed_kmh), 0) AS value FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Drives",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "drive_id"
+              },
+              "properties": [
+                {
+                  "id": "custom.hidden",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "start_epoch"
+              },
+              "properties": [
+                {
+                  "id": "custom.hidden",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "end_epoch"
+              },
+              "properties": [
+                {
+                  "id": "custom.hidden",
+                  "value": true
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "time"
+              },
+              "properties": [
+                {
+                  "id": "links",
+                  "value": [
+                    {
+                      "title": "Drive details",
+                      "url": "/d/teslalog-drive-details/teslalog-drive-details?var-drive_id=${__data.fields.drive_id}&from=${__data.fields.start_epoch}&to=${__data.fields.end_epoch}",
+                      "targetBlank": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT\n  id AS drive_id,\n  CAST(strftime('%s', start_time) AS INTEGER) * 1000 AS start_epoch,\n  CAST(strftime('%s', end_time) AS INTEGER) * 1000 AS end_epoch,\n  start_time AS time,\n  COALESCE(start_location, printf('%.4f, %.4f', start_lat, start_lng)) AS \"From\",\n  COALESCE(end_location, printf('%.4f, %.4f', end_lat, end_lng)) AS \"To\",\n  ROUND(distance_km, 1) AS \"km\",\n  ROUND(duration_min, 0) AS \"min\",\n  start_battery_level AS \"% start\",\n  end_battery_level AS \"% end\",\n  ROUND(max_speed_kmh, 0) AS \"max km/h\",\n  ROUND(ascent_m, 0) AS \"ascent m\",\n  ROUND(descent_m, 0) AS \"descent m\"\nFROM drives\nWHERE status = 'closed'\nORDER BY start_time DESC\nLIMIT 500"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "efficiency",
+    "title": "teslalog: Efficiency",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Configured Wh/km (if set)",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Avg battery %/km used (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 8,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 3
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Avg rated-range km lost per km driven (90d)",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Per-drive efficiency (most recent 200)",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "locations",
+    "title": "teslalog: Locations",
+    "panels": [
+      {
+        "id": 1,
+        "title": "# of distinct places visited",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Most-visited places",
+        "type": "table",
+        "gridPos": {
+          "x": 6,
+          "y": 0,
+          "w": 18,
+          "h": 8
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "cellOptions": {
+                "type": "gauge",
+                "mode": "lcd"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Visits"
+              },
+              "properties": [
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "gauge",
+                    "mode": "lcd"
+                  }
+                },
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#3ea6ff"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Last visited",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 8,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "mileage",
+    "title": "teslalog: Mileage",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Odometer",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 14
+        },
+        "options": {
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2,
+              "fillOpacity": 10
+            }
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT end_time AS time, end_odometer_km AS \"Odometer (km)\"\nFROM drives\nWHERE status = 'closed' AND end_odometer_km IS NOT NULL\nORDER BY end_time"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "overview",
+    "title": "teslalog: Overview",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Vehicle",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 8,
+          "h": 4
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT display_name AS \"Name\", model AS \"Model\" FROM vehicles LIMIT 1"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Lifetime odometer",
+        "type": "stat",
+        "gridPos": {
+          "x": 8,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "lengthkm",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT end_odometer_km AS value FROM drives WHERE status = 'closed' ORDER BY end_time DESC LIMIT 1"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Total drives",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM drives WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Total charges",
+        "type": "stat",
+        "gridPos": {
+          "x": 16,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM charging_sessions WHERE status = 'closed'"
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Software updates",
+        "type": "stat",
+        "gridPos": {
+          "x": 20,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM software_updates"
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Where to look next",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 8
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT 'Drives' AS \"Dashboard\", 'Every closed drive, click a date for the route map' AS \"What it shows\"\nUNION ALL SELECT 'Charges', 'Every closed charging session'\nUNION ALL SELECT 'Charging Stats', 'AC/DC split, totals, cost'\nUNION ALL SELECT 'Timeline', 'State-machine history as colored bands'\nUNION ALL SELECT 'Statistics', 'Per-month driving trends'\nUNION ALL SELECT 'Locations', 'Most-visited places'\nUNION ALL SELECT 'Vampire Drain', 'Battery lost while parked'\nUNION ALL SELECT 'Projected Range', 'Range at 100% vs mileage - battery health trend'\nUNION ALL SELECT 'Efficiency', 'Derived efficiency figures'\nUNION ALL SELECT 'Mileage', 'Cumulative odometer'\nUNION ALL SELECT 'Updates', 'Software update history'"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "projected-range",
+    "title": "teslalog: Projected Range",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Projected range at 100% vs mileage",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 14
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 1,
+              "fillOpacity": 10,
+              "pointSize": 3
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Mileage (km)"
+              },
+              "properties": [
+                {
+                  "id": "custom.axisPlacement",
+                  "value": "right"
+                },
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#fbbf24"
+                  }
+                }
+              ]
+            },
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Projected range (km)"
+              },
+              "properties": [
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "fixed",
+                    "fixedColor": "#4ade80"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
+          "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "states",
+    "title": "teslalog: States",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Currently",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Recent state changes",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "statistics",
+    "title": "teslalog: Statistics",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Per month",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 12
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "Efficiency %"
+              },
+              "properties": [
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "gauge",
+                    "mode": "lcd"
+                  }
+                },
+                {
+                  "id": "max",
+                  "value": 100
+                },
+                {
+                  "id": "min",
+                  "value": 0
+                },
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "continuous-GrYlRd"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "timeline",
+    "title": "teslalog: Timeline",
+    "panels": [
+      {
+        "id": 1,
+        "title": "State timeline",
+        "type": "state-timeline",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showValue": "always",
+          "alignValue": "left",
+          "mergeValues": true,
+          "rowHeight": 0.9,
+          "tooltip": {
+            "mode": "single"
+          },
+          "legend": {
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "lineWidth": 0,
+              "fillOpacity": 80
+            },
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "driving": {
+                    "color": "#3ea6ff",
+                    "index": 0
+                  },
+                  "charging": {
+                    "color": "#4ade80",
+                    "index": 1
+                  },
+                  "online": {
+                    "color": "#fbbf24",
+                    "index": 2
+                  },
+                  "idle": {
+                    "color": "#f59e0b",
+                    "index": 3
+                  },
+                  "suspended": {
+                    "color": "#6b7280",
+                    "index": 4
+                  },
+                  "asleep": {
+                    "color": "#374151",
+                    "index": 5
+                  },
+                  "offline": {
+                    "color": "#1f2937",
+                    "index": 6
+                  }
+                }
+              }
+            ]
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT started_at AS time, state AS \"State\" FROM states ORDER BY started_at"
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Time in each state (7d)",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 10,
+          "w": 24,
+          "h": 8
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  state AS \"State\",\n  COUNT(*) AS \"Transitions\",\n  ROUND(SUM((julianday(COALESCE(ended_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))) - julianday(started_at)) * 24), 1) AS \"Total hours\"\nFROM states\nWHERE started_at >= datetime('now', '-7 days')\nGROUP BY state\nORDER BY \"Total hours\" DESC"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "updates",
+    "title": "teslalog: Updates",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Updates",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 12,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 0
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT COUNT(*) AS value FROM software_updates"
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Ø days between updates",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 0,
+          "w": 12,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "d",
+            "decimals": 1
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL"
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Update history",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 24,
+          "h": 10
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": []
+        },
+        "queries": [
+          "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC"
+        ]
+      }
+    ]
+  },
+  {
+    "key": "vampire-drain",
+    "title": "teslalog: Vampire Drain",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Vampire drain",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 14
+        },
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {},
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "SoC diff"
+              },
+              "properties": [
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "color-text"
+                  }
+                },
+                {
+                  "id": "color",
+                  "value": {
+                    "mode": "continuous-GrYlRd"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "queries": [
+          "WITH samples AS (\n  SELECT\n    timestamp,\n    battery_level,\n    battery_range_km,\n    LAG(timestamp) OVER (ORDER BY timestamp) AS prev_ts,\n    LAG(battery_level) OVER (ORDER BY timestamp) AS prev_level,\n    LAG(battery_range_km) OVER (ORDER BY timestamp) AS prev_range\n  FROM battery_samples\n)\nSELECT\n  prev_ts AS time,\n  timestamp AS \"End\",\n  ROUND((julianday(timestamp) - julianday(prev_ts)) * 24, 1) AS \"Period (h)\",\n  prev_level AS \"Start %\",\n  battery_level AS \"End %\",\n  (battery_level - prev_level) AS \"SoC diff\",\n  ROUND(prev_range - battery_range_km, 2) AS \"Range loss (km)\",\n  ROUND((prev_range - battery_range_km) / ((julianday(timestamp) - julianday(prev_ts)) * 24), 2) AS \"km lost / h\"\nFROM samples\nWHERE prev_ts IS NOT NULL\n  AND (julianday(timestamp) - julianday(prev_ts)) * 24 >= $min_idle_hours\n  AND NOT EXISTS (SELECT 1 FROM drives WHERE start_time > prev_ts AND start_time < timestamp)\n  AND NOT EXISTS (SELECT 1 FROM charging_sessions WHERE start_time > prev_ts AND start_time < timestamp)\n  AND ABS(battery_level - prev_level) <= 15\nORDER BY prev_ts DESC\nLIMIT 200"
+        ]
+      }
+    ]
+  }
+]
