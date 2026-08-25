@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1313,5 +1314,88 @@ func TestUpsertVehicleAcceptsAChangedName(t *testing.T) {
 	}
 	if name != "New Name" {
 		t.Errorf("expected the rename to stick, got %q", name)
+	}
+}
+
+// TestElevationDataMigrationRunsOnceAndFixesTheScale covers the one-time
+// correction for elevations written while the stream's metres were being
+// treated as feet. Running it twice would multiply the data again, so
+// the marker guard is the part that actually matters.
+func TestElevationDataMigrationRunsOnceAndFixesTheScale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "elev.db")
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	vehicleID, err := store.UpsertVehicle(VehicleMeta{VIN: "VIN-ELEV"})
+	if err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	now := time.Now().UTC()
+	driveID, err := store.OpenDrive(DriveStart{VehicleID: vehicleID, Time: now, OdometerKm: 100, BatteryLevel: 80})
+	if err != nil {
+		t.Fatalf("open drive: %v", err)
+	}
+
+	// Simulate rows written by the buggy version: a raw stream reading of
+	// 228 m stored as 228 * 0.3048.
+	for i, raw := range []float64{228, 231, 229, 236} {
+		elevation := raw * 0.3048
+		if err := store.AppendPosition(PositionSample{
+			DriveID: driveID, VehicleID: vehicleID,
+			Time:       now.Add(time.Duration(i) * time.Second),
+			ElevationM: &elevation, ShiftState: "D",
+		}); err != nil {
+			t.Fatalf("append position: %v", err)
+		}
+	}
+	// The marker is already set by the first Open, so clear it to stand
+	// in for a database written before the fix existed.
+	if _, err := store.DB().Exec(`DELETE FROM schema_meta WHERE key = 'fix_elevation_feet_to_metres_v1'`); err != nil {
+		t.Fatalf("clear marker: %v", err)
+	}
+	store.Close()
+
+	reopen := func() *Store {
+		s, err := Open(path)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		return s
+	}
+
+	store = reopen()
+	var first float64
+	if err := store.DB().QueryRow(
+		`SELECT elevation_m FROM positions ORDER BY timestamp LIMIT 1`).Scan(&first); err != nil {
+		t.Fatalf("read elevation: %v", err)
+	}
+	if math.Abs(first-228) > 1e-6 {
+		t.Fatalf("expected the elevation restored to 228 m, got %v", first)
+	}
+
+	// Ascent is recomputed from the corrected positions, not scaled:
+	// 228->231 is +3, 229->236 is +7, so 10 m of climb.
+	var ascent, descent float64
+	if err := store.DB().QueryRow(
+		`SELECT ascent_m, descent_m FROM drives WHERE id = ?`, driveID).Scan(&ascent, &descent); err != nil {
+		t.Fatalf("read ascent: %v", err)
+	}
+	if math.Abs(ascent-10) > 1e-6 || math.Abs(descent-2) > 1e-6 {
+		t.Errorf("expected ascent 10 / descent 2, got %v / %v", ascent, descent)
+	}
+	store.Close()
+
+	// The important property: a second run must not scale it again.
+	store = reopen()
+	defer store.Close()
+	if err := store.DB().QueryRow(
+		`SELECT elevation_m FROM positions ORDER BY timestamp LIMIT 1`).Scan(&first); err != nil {
+		t.Fatalf("read elevation: %v", err)
+	}
+	if math.Abs(first-228) > 1e-6 {
+		t.Fatalf("migration ran twice: elevation is now %v", first)
 	}
 }

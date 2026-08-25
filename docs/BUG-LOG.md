@@ -121,6 +121,25 @@ field can never overwrite a known one — while a genuine rename still
 wins, which a test pins so this cannot quietly become a write-once
 field.
 
+**Every elevation was 3.28x too small.** (P4) The streaming API reports
+`elevation` in **metres**, but it sits between `odometer` and `range` in
+the field list, both of which are miles — so it was read as feet and
+scaled by 0.3048. Found by comparing one drive side by side with the same
+car's TeslaMate: TeslaMate reported 266 ft of cumulative ascent where
+teslalog reported 82. Three checks agreed before anything was changed:
+the ratio 266/82 is 3.24, the foot-to-metre factor exactly; TeslaMate
+stores this field unconverted and its own `pg_dump` holds 147 for a
+Tennessee location, which is only plausible as metres; and the raw
+reading of 228 on that drive is 228 m, matching Chattanooga's real
+205-250 m, where 69 m is not a place. This also skewed
+`drives.ascent_m`/`descent_m` and the slope-adjusted efficiency computed
+from them. Fixed with a one-time data migration guarded by a
+`schema_meta` marker, since rescaling twice would corrupt what it fixed;
+`ascent_m`/`descent_m` are recomputed from the corrected positions rather
+than scaled, being sums of per-step deltas. There was no test file for
+the stream parser at all, which is why a unit error in a single field
+survived — there is one now.
+
 **No minimum-drive filter.** (P1) TeslaMate discards a drive with
 fewer than 2 positions or under 10 m. Without it, every bumped shifter
 and GPS jitter became a permanent row.

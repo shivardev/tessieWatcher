@@ -602,7 +602,7 @@
           "overrides": []
         },
         "queries": [
-          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END / NULLIF(duration_min / 60.0, 0), 1) AS value FROM drives WHERE id = $drive_id"
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (AVG(speed_kmh)) / 1.60934 ELSE (AVG(speed_kmh)) END, 1) AS value\nFROM positions WHERE drive_id = $drive_id AND speed_kmh IS NOT NULL"
         ]
       },
       {

@@ -166,8 +166,21 @@ func parseStreamValue(value string) (StreamSample, error) {
 		SpeedKmh:     milesToKm(f(1)),
 		OdometerKm:   milesToKm(f(2)),
 		BatteryLevel: int(f(3)),
-		ElevationM:   f(4) * 0.3048, // feet -> meters
-		Heading:      f(5),          // est_heading
+		// Elevation arrives in METRES, unlike speed/odometer/range on
+		// either side of it, which are miles. Verified three ways
+		// against the same car's TeslaMate instance rather than assumed:
+		// TeslaMate stores this field unconverted and holds 147 for a
+		// Tennessee location (147 ft would be 45 m, impossible there);
+		// its cumulative-ascent figure for one drive was 266 ft against
+		// our 82, a ratio of 3.24 - the foot-to-metre factor exactly;
+		// and the raw 228 read on that drive is 228 m, matching
+		// Chattanooga's real 205-250 m, where 69 m is not a place.
+		//
+		// Treating it as feet made every elevation 3.28x too small,
+		// which also skewed drives.ascent_m/descent_m and the
+		// slope-adjusted efficiency computed from them.
+		ElevationM:   f(4),
+		Heading:      f(5), // est_heading
 		Lat:          f(6),
 		Lng:          f(7),
 		PowerKw:      f(8),

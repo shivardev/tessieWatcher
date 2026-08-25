@@ -12,6 +12,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -67,7 +68,88 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("apply column migrations: %w", err)
 	}
 
+	if err := applyDataMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply data migrations: %w", err)
+	}
+
 	return &Store{db: db}, nil
+}
+
+// dataMigrations correct values already written by an earlier version.
+// Unlike columnMigrations these are not naturally idempotent - running
+// one twice would corrupt what it fixed - so each is guarded by a marker
+// row in schema_meta and runs at most once per database.
+//
+// A fresh database runs them all against empty tables and records the
+// markers, which is correct and costs nothing.
+var dataMigrations = []struct {
+	key  string
+	stmt []string
+}{
+	{
+		// The streaming API reports elevation in metres; teslalog treated
+		// it as feet and scaled it by 0.3048, storing every elevation
+		// 3.28x too small (see internal/tesla.parseStreamValue for the
+		// evidence). The stored ascent/descent totals were computed from
+		// those values and are recomputed from the corrected positions
+		// rather than scaled, since they are sums of per-step deltas.
+		key: "fix_elevation_feet_to_metres_v1",
+		stmt: []string{
+			`UPDATE positions SET elevation_m = elevation_m / 0.3048 WHERE elevation_m IS NOT NULL`,
+			`UPDATE drives SET
+				ascent_m = (
+					SELECT COALESCE(SUM(CASE WHEN d > 0 THEN d END), 0) FROM (
+						SELECT elevation_m - LAG(elevation_m) OVER (ORDER BY timestamp) AS d
+						FROM positions WHERE drive_id = drives.id AND elevation_m IS NOT NULL
+					)
+				),
+				descent_m = (
+					SELECT COALESCE(SUM(CASE WHEN d < 0 THEN -d END), 0) FROM (
+						SELECT elevation_m - LAG(elevation_m) OVER (ORDER BY timestamp) AS d
+						FROM positions WHERE drive_id = drives.id AND elevation_m IS NOT NULL
+					)
+				)
+			 WHERE EXISTS (SELECT 1 FROM positions WHERE drive_id = drives.id AND elevation_m IS NOT NULL)`,
+		},
+	},
+}
+
+func applyDataMigrations(db *sql.DB) error {
+	for _, m := range dataMigrations {
+		var done int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_meta WHERE key = ?`, m.key).Scan(&done); err != nil {
+			return fmt.Errorf("check migration %s: %w", m.key, err)
+		}
+		if done > 0 {
+			continue
+		}
+
+		// The marker is written inside the same transaction as the fix,
+		// so a crash part-way cannot leave the data half-corrected with
+		// the migration recorded as complete.
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin migration %s: %w", m.key, err)
+		}
+		for _, stmt := range m.stmt {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("migration %s: %w", m.key, err)
+			}
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO schema_meta (key, value) VALUES (?, datetime('now'))`, m.key,
+		); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", m.key, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", m.key, err)
+		}
+		slog.Info("applied data migration", "key", m.key)
+	}
+	return nil
 }
 
 // columnMigrations adds columns introduced after a table's initial

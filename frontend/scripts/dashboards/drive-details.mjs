@@ -67,12 +67,28 @@ await buildDashboard({
       sql: `SELECT ROUND(${toUnit('start_odometer_km')}, 0) || ' → ' || ROUND(${toUnit('end_odometer_km')}, 0) AS value ${drive}`,
     },
     {
+      // The MEAN OF THE SPEED SAMPLES, matching TeslaMate's drive-detail
+      // panel (avg(speed) over positions in the window) - not distance
+      // divided by duration.
+      //
+      // TeslaMate uses both definitions in different places, on purpose:
+      // its Drives *list* computes distance/duration, while its
+      // drive-*detail* view averages the samples. They disagree a lot,
+      // because samples are not evenly spaced in time - the stream
+      // delivers more often when the car is moving - so the sample mean
+      // is pulled toward motion. On a real 17-minute, 4.2-mile drive
+      // this reads 24 mph where distance/duration reads 14.7.
+      //
+      // Matching TeslaMate per-panel is the point: the same drive opened
+      // side by side has to show the same number. The Drives table keeps
+      // distance/duration, which is what TeslaMate's list shows.
       type: 'stat',
       title: 'Ø speed ($length_unit/h)',
       w: 6,
       h: 4,
       decimals: 1,
-      sql: `SELECT ROUND(${toUnit('distance_km')} / NULLIF(duration_min / 60.0, 0), 1) AS value ${drive}`,
+      sql: `SELECT ROUND(${toUnit('AVG(speed_kmh)')}, 1) AS value
+FROM positions WHERE drive_id = $drive_id AND speed_kmh IS NOT NULL`,
     },
     {
       // Net energy: range lost over the drive, priced at the car's Wh/km.
