@@ -376,12 +376,26 @@ export const executeQueries = async (
   const SQL = await initSqlJs({ locateFile: () => wasmUrl })
   const database = new SQL.Database(bytes)
   try {
+    // A query that fails returns an empty result carrying the reason,
+    // rather than throwing. One panel referencing a column an older
+    // teslalog database does not have used to blank the entire
+    // dashboard, because every panel's query runs in one batch - the
+    // Locations page went dark for a database written before the address
+    // columns existed, when eight of its nine panels were fine.
     return queries.map((sql) => {
-      const result = database.exec(interpolate(sql, variables))[0]
-      if (!result) return { columns: [], rows: [] }
-      return {
-        columns: result.columns,
-        rows: result.values.map((row) => row.map((value) => queryValueSchema.parse(value))),
+      try {
+        const result = database.exec(interpolate(sql, variables))[0]
+        if (!result) return { columns: [], rows: [] }
+        return {
+          columns: result.columns,
+          rows: result.values.map((row) => row.map((value) => queryValueSchema.parse(value))),
+        }
+      } catch (reason: unknown) {
+        return {
+          columns: [],
+          rows: [],
+          error: reason instanceof Error ? reason.message : 'Query failed.',
+        }
       }
     })
   } finally {

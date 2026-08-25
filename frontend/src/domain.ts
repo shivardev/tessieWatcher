@@ -90,6 +90,11 @@ export type QueryValue = z.infer<typeof queryValueSchema>
 export type QueryResult = Readonly<{
   columns: readonly string[]
   rows: readonly (readonly QueryValue[])[]
+  // Set when this one query failed. Panels render the reason in place
+  // rather than the whole dashboard going dark - the usual cause is a
+  // database written by an older teslalog that lacks a column, where
+  // every other panel on the page is perfectly fine.
+  error?: string
 }>
 export const groups = [
   { label: 'Overview', items: ['Overview'] },

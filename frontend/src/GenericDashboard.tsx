@@ -84,6 +84,11 @@ const transformResult = (
   settings: ViewSettings,
   panelTitle?: string,
 ): QueryResult => ({
+  // error is carried through: it is the only signal the panel has that
+  // its query failed rather than simply matching nothing, and dropping
+  // it here turned a clear "this database has no address columns yet"
+  // into a silent em-dash.
+  ...(result.error === undefined ? {} : { error: result.error }),
   columns: result.columns.map((column) => convertLabel(column, settings)),
   rows: result.rows
     .filter((row) => {
@@ -337,6 +342,21 @@ function StateTimelinePanel({ panel }: Readonly<{ panel: PanelState }>) {
 }
 
 function Panel({ panel }: Readonly<{ panel: PanelState }>) {
+  // A panel whose own query failed says so where it sits, so the rest of
+  // the dashboard still renders. "no such column" here means the database
+  // predates the column - it fills in once the logger is updated.
+  const failure = panel.results.find((result) => result.error !== undefined)?.error
+  if (failure !== undefined)
+    return (
+      <article className="catalog-panel">
+        <h2>{panel.definition.title}</h2>
+        <p className="no-data">
+          {/^no such column/iu.test(failure)
+            ? `Not available in this database (${failure}). It will appear once teslalog has been updated and has re-resolved a location.`
+            : failure}
+        </p>
+      </article>
+    )
   if (panel.definition.type === 'stat' || panel.definition.type === 'gauge')
     return <StatPanel panel={panel} />
   if (panel.definition.type === 'table') return <TablePanel panel={panel} />
