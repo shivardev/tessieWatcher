@@ -17,11 +17,19 @@ const toUnit = (expression) =>
 // The bucket key for a timestamp column, chosen by $period. Written as a
 // CASE rather than substituting a format string directly so the same SQL
 // is valid in Grafana, where $period is a dashboard variable.
+// Buckets are cut in LOCAL time, matching TeslaMate, which truncates to
+// the period in the browser timezone. teslalog stores UTC, so a drive at
+// 02:00 UTC on Jul 1 is 22:00 on Jun 30 in New York and belongs to June.
+// Bucketing by the raw UTC string put ~150 miles of late-night driving in
+// the wrong month, which showed up as June and July disagreeing with
+// TeslaMate by equal and opposite amounts. sql.js's SQLite honours the
+// 'localtime' modifier against the host/browser timezone.
+const local = (column) => `datetime(${column}, 'localtime')`
 const bucket = (column) => `CASE '$period'
-    WHEN 'day'   THEN strftime('%Y-%m-%d', ${column})
-    WHEN 'week'  THEN strftime('%Y-W%W', ${column})
-    WHEN 'year'  THEN strftime('%Y', ${column})
-    ELSE strftime('%Y-%m', ${column})
+    WHEN 'day'   THEN strftime('%Y-%m-%d', ${local(column)})
+    WHEN 'week'  THEN strftime('%Y-W%W', ${local(column)})
+    WHEN 'year'  THEN strftime('%Y', ${local(column)})
+    ELSE strftime('%Y-%m', ${local(column)})
   END`
 
 await buildDashboard({
@@ -39,7 +47,15 @@ await buildDashboard({
       sql: `WITH drive_stats AS (
   SELECT ${bucket('d.start_time')} AS period,
          SUM(d.duration_min) AS minutes,
+         -- Summed drive distance drives efficiency and consumption below,
+         -- matching TeslaMate. The DISTANCE column shown to the user is a
+         -- different thing: TeslaMate's "Distance" is the odometer span
+         -- (max end - min start) for the period, which includes mileage
+         -- the car accrued but that no logged drive covers. On this data
+         -- June reads 717 mi summed against 1382 mi by odometer, because
+         -- most of the 760-mile unlogged gap fell in June.
          SUM(d.distance_km) AS distance_km,
+         MAX(d.end_odometer_km) - MIN(d.start_odometer_km) AS odometer_km,
          AVG(d.outside_temp_avg_c) AS temp_c,
          COUNT(*) AS drives,
          SUM(d.$start_range - d.$end_range) AS range_diff,
@@ -62,7 +78,7 @@ await buildDashboard({
 )
 SELECT p.period AS "Period",
        ROUND(d.minutes, 0) AS "Minutes driven",
-       ROUND(${toUnit('d.distance_km')}, 1) AS "Driven ($length_unit)",
+       ROUND(${toUnit('d.odometer_km')}, 1) AS "Driven ($length_unit)",
        ROUND(CASE WHEN '$temp_unit' = 'C' THEN d.temp_c ELSE d.temp_c * 9.0 / 5.0 + 32 END, 1) AS "Ø temp (°$temp_unit)",
        d.drives AS "# of drives",
        ROUND(d.distance_km / NULLIF(d.range_diff, 0) * 100, 0) AS "Efficiency %",
