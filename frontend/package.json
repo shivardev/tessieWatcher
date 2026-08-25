@@ -6,7 +6,7 @@
   "scripts": {
     "sync:dashboards": "node scripts/sync-dashboard-catalog.mjs",
     "verify:queries": "npm run sync:dashboards && node scripts/verify-dashboard-queries.mjs",
-    "test": "npm run sync:dashboards && vitest run",
+    "test": "npm run sync:dashboards && npm run sync:schema && vitest run",
     "fixture": "node scripts/create-test-fixture.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"scripts/*.mjs\" \"*.{json,md,html}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"scripts/*.mjs\" \"*.{json,md,html}\"",
@@ -16,7 +16,8 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "sync:schema": "node scripts/sync-schema.mjs"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.22",

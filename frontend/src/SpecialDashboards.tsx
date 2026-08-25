@@ -36,20 +36,30 @@ function useResults(
   bytes: Uint8Array,
   queries: readonly string[],
   variables: QueryVariables = {},
-): Readonly<{ results: readonly QueryResult[]; error: string | null }> {
+): Readonly<{ results: readonly QueryResult[]; error: string | null; loading: boolean }> {
   const [results, setResults] = useState<readonly QueryResult[]>([])
   const [error, setError] = useState<string | null>(null)
-  const { driveId, chargingSessionId, minimumIdleHours, lengthUnit, temperatureUnit, timeRange } = variables
-  const stableVariables = useMemo<QueryVariables>(() => ({
-    ...(driveId === undefined ? {} : { driveId }),
-    ...(chargingSessionId === undefined ? {} : { chargingSessionId }),
-    ...(minimumIdleHours === undefined ? {} : { minimumIdleHours }),
-    ...(lengthUnit === undefined ? {} : { lengthUnit }),
-    ...(temperatureUnit === undefined ? {} : { temperatureUnit }),
-    ...(timeRange === undefined ? {} : { timeRange }),
-  }), [driveId, chargingSessionId, minimumIdleHours, lengthUnit, temperatureUnit, timeRange])
+  // Starts true: the first render happens before any query has run, and
+  // reporting that as "loaded with no data" is what made a working
+  // dashboard look broken - every value an em-dash, every chart claiming
+  // no telemetry, for the several seconds sql.js needs on a large
+  // database.
+  const [loading, setLoading] = useState(true)
+
+  // Memoised on the serialised content rather than a hand-listed set of
+  // fields. The list version had silently fallen behind: preferredRange,
+  // minDistance and statisticsPeriod were passed in by callers and
+  // dropped here, so the Range type and Min drive controls did nothing on
+  // any of these dashboards while appearing to work.
+  const variablesKey = JSON.stringify(variables)
+  const stableVariables = useMemo<QueryVariables>(
+    () => JSON.parse(variablesKey) as QueryVariables,
+    [variablesKey],
+  )
+
   useEffect(() => {
     let active = true
+    setLoading(true)
     executeQueries(bytes, queries, stableVariables)
       .then((value) => {
         if (active) {
@@ -60,11 +70,30 @@ function useResults(
       .catch((reason: unknown) => {
         if (active) setError(reason instanceof Error ? reason.message : 'Query failed.')
       })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
     return () => {
       active = false
     }
   }, [bytes, queries, stableVariables])
-  return { results, error }
+  return { results, error, loading }
+}
+
+// Shown while a dashboard's queries are in flight. Reading a database of
+// a million positions in sql.js takes seconds, and without this the page
+// renders its finished layout full of em-dashes and "no data" notices -
+// which reads as broken rather than busy.
+function DashboardLoading({ title }: Readonly<{ title: string }>) {
+  return (
+    <main>
+      <Heading title={title} note="Loading" />
+      <p className="dashboard-loading" role="status" aria-live="polite">
+        <span className="spinner" aria-hidden="true" />
+        Reading the database…
+      </p>
+    </main>
+  )
 }
 
 function Heading({ title, note }: Readonly<{ title: string; note: string }>) {
@@ -458,7 +487,8 @@ export function TripDashboard({
     ],
     [settings.lengthUnit, settings.timeRange],
   )
-  const { results, error } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const { results, error, loading } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  if (loading && results.length === 0) return <DashboardLoading title="Trip" />
   const points = (results[0]?.rows ?? []).flatMap((row) => {
     const latitude = number(row[0])
     const longitude = number(row[1])
@@ -542,7 +572,8 @@ export function VisitedDashboard({
     ],
     [settings.timeRange, settings.lengthUnit],
   )
-  const { results, error } = useResults(bytes, visitedQueries)
+  const { results, error, loading } = useResults(bytes, visitedQueries)
+  if (loading && results.length === 0) return <DashboardLoading title="Visited" />
   const points = (results[0]?.rows ?? []).flatMap((row) => {
     const latitude = number(row[2])
     const longitude = number(row[3])
@@ -599,7 +630,8 @@ export function DatabaseInformationDashboard({
   bytes,
   settings,
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
-  const { results, error } = useResults(bytes, databaseQueries)
+  const { results, error, loading } = useResults(bytes, databaseQueries)
+  if (loading && results.length === 0) return <DashboardLoading title="Database information" />
   const row = results[2]?.rows[0]
   const count = (index: number): number => number(row?.[index]) ?? 0
   const incomplete = count(4) + count(5)
@@ -652,7 +684,8 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
     `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings.timeRange,'started_at')} ORDER BY started_at`,
   ], [settings])
-  const {results,error}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const {results,error,loading}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  if (loading && results.length === 0) return <DashboardLoading title="Overview" />
   const row=results[0]?.rows[0]
   const value=(index:number,digits=0):string=>{const current=number(row?.[index]); return current===null?'—':current.toFixed(digits)}
   const net=number(results[1]?.rows[0]?.[0])??0
@@ -737,7 +770,8 @@ export function BatteryHealthDashboard({
      FROM last_samples l JOIN charging_samples cs ON cs.charging_session_id=l.id AND cs.timestamp=l.timestamp CROSS JOIN eff
      WHERE cs.usable_battery_level>0 AND cs.range_km>0 ORDER BY l.end_time`,
   ], [])
-  const { results, error } = useResults(bytes, healthQueries)
+  const { results, error, loading } = useResults(bytes, healthQueries)
+  if (loading && results.length === 0) return <DashboardLoading title="Battery health" />
   const aux = results[0]?.rows[0]
   const drive = results[1]?.rows[0]
   const charge = results[2]?.rows[0]
@@ -796,7 +830,8 @@ export function ProjectedRangeDashboard({
     ],
     [settings.timeRange],
   )
-  const { results, error } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const { results, error, loading } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  if (loading && results.length === 0) return <DashboardLoading title="Projected range" />
   return (
     <main>
       <Heading title="Projected range" note={settings.timeRange.toUpperCase()} />
@@ -839,7 +874,8 @@ export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Ui
       `SELECT location "Location",SUM(cost) "Cost" FROM charging_sessions WHERE status='closed' AND cost IS NOT NULL AND ${filtered} GROUP BY location ORDER BY 2 DESC LIMIT 17`,
     ]
   },[settings.timeRange])
-  const {results,error}=useResults(bytes,queries)
+  const {results,error,loading}=useResults(bytes,queries)
+  if (loading && results.length === 0) return <DashboardLoading title="Charging stats" />
   const metric=results[0]?.rows[0]
   const money=(value:QueryValue|undefined):string=>typeof value==='number'?value.toFixed(2):'—'
   const cards=[['# of Charges',number(metric?.[0])?.toFixed(0)??'—'],['Total Energy added',`${money(metric?.[1])} kWh`],['SuC Charging Cost',money(metric?.[2])],['Total Charging Cost',money(metric?.[3])],[`Ø Cost per 100 ${settings.lengthUnit}`,money(metric?.[4])],['Ø Cost per kWh',money(metric?.[5])],['Ø Cost per kWh DC',money(metric?.[6])],['Ø Cost per kWh AC',money(metric?.[7])]]
@@ -930,10 +966,17 @@ export function DriveDetailsDashboard({
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let active = true
+    // The full settings, not a subset: the drive-detail stat panels come
+    // from the shared catalog and use  / , so
+    // omitting preferredRange silently pinned this view to rated range
+    // however the Range type control was set.
     executeQueries(bytes, queries, {
       driveId,
       lengthUnit: settings.lengthUnit,
       temperatureUnit: settings.temperatureUnit,
+      preferredRange: settings.preferredRange,
+      minDistance: settings.minDistance,
+      statisticsPeriod: settings.statisticsPeriod,
     })
       .then((value) => {
         if (active) setResults(value)
@@ -1086,7 +1129,7 @@ export function ChargeDetailsDashboard({
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let active = true
-    executeQueries(bytes, queries, { chargingSessionId, lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit })
+    executeQueries(bytes, queries, { chargingSessionId, lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
       .then((value) => { if (active) setResults(value) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'Charge details query failed.') })
     return () => { active = false }

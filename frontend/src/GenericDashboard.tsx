@@ -378,9 +378,14 @@ export function GenericDashboard({
 }>) {
   const definition = dashboardCatalog.find((dashboard) => dashboard.key === catalogKey)
   const [panels, setPanels] = useState<readonly PanelState[]>([])
+  // Starts true, for the same reason as the custom dashboards: the first
+  // render precedes any query, and showing that as an empty grid reads as
+  // no data rather than as loading.
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     let active = true
+    setLoading(true)
     if (!definition)
       return () => {
         active = false
@@ -414,6 +419,8 @@ export function GenericDashboard({
         if (active) setPanels(next)
       } catch (reason: unknown) {
         if (active) setError(reason instanceof Error ? reason.message : 'Dashboard query failed.')
+      } finally {
+        if (active) setLoading(false)
       }
     }
     void load()
@@ -439,6 +446,12 @@ export function GenericDashboard({
         <div className="error" role="alert">
           {error}
         </div>
+      )}
+      {loading && panels.length === 0 && (
+        <p className="dashboard-loading" role="status" aria-live="polite">
+          <span className="spinner" aria-hidden="true" />
+          Reading the database…
+        </p>
       )}
       <section className="catalog-grid grafana-grid">
         {panels.map((panel) => (

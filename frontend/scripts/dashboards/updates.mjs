@@ -8,10 +8,15 @@
 // is what percentile_disc(0.5) does too).
 import { buildDashboard } from '../build-dashboard.mjs'
 
+// 'installed' is the terminal status the daemon writes - it writes
+// 'installing' first - and the TeslaMate importer maps its updates table
+// to the same value. An earlier 'completed' here was a value nothing ever
+// writes, so every Updates panel read zero. Invisible on a database with
+// no updates logged, and plainly wrong on the real dump, which has seven.
 const gaps = `gaps AS (
   SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days
   FROM software_updates
-  WHERE status = 'completed'
+  WHERE status = 'installed'
 )`
 
 await buildDashboard({
@@ -27,7 +32,7 @@ await buildDashboard({
       w: 8,
       h: 4,
       decimals: 0,
-      sql: `SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'`,
+      sql: `SELECT COUNT(*) AS value FROM software_updates WHERE status = 'installed'`,
     },
     {
       type: 'stat',
@@ -47,7 +52,7 @@ SELECT days AS value FROM ordered WHERE rn = (n + 1) / 2`,
       w: 8,
       h: 4,
       sql: `SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),
-              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value`,
+              (SELECT version FROM software_updates WHERE status = 'installed' ORDER BY start_time DESC LIMIT 1)) AS value`,
     },
     {
       type: 'table',

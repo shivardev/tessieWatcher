@@ -1097,3 +1097,32 @@ main:not(.empty) {
 .state-timeline-legend span { text-transform: capitalize; }
 .state-timeline-legend b { font-variant-numeric: tabular-nums; }
 .state-timeline-legend em { font-style: normal; color: var(--muted); }
+
+/* Dashboard loading state. Without this, a dashboard whose queries are
+   still running rendered its finished layout full of em-dashes and "no
+   data" notices - which reads as broken rather than busy. On a database
+   of a million positions sql.js needs several seconds. */
+.dashboard-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 28px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.dashboard-loading .spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: dashboard-spin 700ms linear infinite;
+}
+@keyframes dashboard-spin {
+  to { transform: rotate(360deg); }
+}
+/* Respect a reduced-motion preference: the spinner is decoration, the
+   text carries the message. */
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-loading .spinner { animation: none; border-top-color: var(--accent); }
+}

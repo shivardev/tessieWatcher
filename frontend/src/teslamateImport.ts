@@ -1,5 +1,6 @@
 import initSqlJs, { type Database, type SqlValue, type Statement } from 'sql.js'
 import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
+import { columnMigrations, schemaStatements } from './generated/schema'
 
 export type ImportProgress = Readonly<{
   bytesRead: number
@@ -10,75 +11,22 @@ export type ImportProgress = Readonly<{
 
 export type ImportProgressHandler = (progress: ImportProgress) => void
 
-type Address = Readonly<{ latitude: number | null; longitude: number | null; name: string | null }>
+type Address = Readonly<{
+  latitude: number | null
+  longitude: number | null
+  name: string | null
+  road: string | null
+  city: string | null
+  county: string | null
+  state: string | null
+  postcode: string | null
+  country: string | null
+}>
 type PositionTarget = Readonly<
   | { kind: 'drive-start'; recordId: number }
   | { kind: 'drive-end'; recordId: number }
   | { kind: 'charging'; recordId: number }
 >
-
-const normalizedSchema = `
-PRAGMA foreign_keys=OFF;
-CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-CREATE TABLE vehicles(
- id INTEGER PRIMARY KEY,vin TEXT,tesla_id TEXT,display_name TEXT,model TEXT,trim_badging TEXT,
- marketing_name TEXT,exterior_color TEXT,wheel_type TEXT,spoiler_type TEXT,efficiency_wh_km REAL,
- firmware_version TEXT,created_at TEXT
-);
-CREATE TABLE states(id INTEGER PRIMARY KEY,vehicle_id INTEGER,state TEXT,started_at TEXT,ended_at TEXT);
-CREATE TABLE drives(
- id INTEGER PRIMARY KEY,vehicle_id INTEGER,start_time TEXT,end_time TEXT,start_odometer_km REAL,
- end_odometer_km REAL,distance_km REAL,duration_min REAL,start_battery_level INTEGER,
- end_battery_level INTEGER,start_range_km REAL,end_range_km REAL,start_ideal_range_km REAL,
- end_ideal_range_km REAL,start_lat REAL,start_lng REAL,end_lat REAL,end_lng REAL,start_location TEXT,
- end_location TEXT,max_speed_kmh REAL,max_power_kw REAL,min_power_kw REAL,outside_temp_avg_c REAL,
- inside_temp_avg_c REAL,ascent_m REAL,descent_m REAL,status TEXT
-);
-CREATE TABLE positions(
- id INTEGER PRIMARY KEY,drive_id INTEGER,vehicle_id INTEGER,timestamp TEXT,latitude REAL,longitude REAL,
- speed_kmh REAL,heading REAL,elevation_m REAL,power_kw REAL,odometer_km REAL,battery_level INTEGER,
- usable_battery_level INTEGER,range_km REAL,ideal_range_km REAL,est_range_km REAL,battery_heater_on INTEGER,
- outside_temp_c REAL,inside_temp_c REAL,fan_status INTEGER,driver_temp_setting_c REAL,
- passenger_temp_setting_c REAL,is_climate_on INTEGER,is_rear_defroster_on INTEGER,
- is_front_defroster_on INTEGER,tpms_pressure_fl REAL,tpms_pressure_fr REAL,tpms_pressure_rl REAL,
- tpms_pressure_rr REAL,shift_state TEXT,sentry_mode INTEGER,is_user_present INTEGER,valet_mode INTEGER,
- climate_keeper_mode TEXT
-);
-CREATE TABLE charging_sessions(
- id INTEGER PRIMARY KEY,vehicle_id INTEGER,start_time TEXT,end_time TEXT,start_battery_level INTEGER,
- end_battery_level INTEGER,start_range_km REAL,end_range_km REAL,start_ideal_range_km REAL,
- end_ideal_range_km REAL,charge_energy_added_kwh REAL,charge_energy_used_kwh REAL,
- max_charger_power_kw REAL,outside_temp_avg_c REAL,cost REAL,latitude REAL,longitude REAL,
- location TEXT,is_dc_fast_charge INTEGER,status TEXT
-);
-CREATE TABLE charging_samples(
- id INTEGER PRIMARY KEY,charging_session_id INTEGER,vehicle_id INTEGER,timestamp TEXT,battery_level INTEGER,
- usable_battery_level INTEGER,charger_power_kw REAL,charger_voltage REAL,charger_actual_current REAL,
- charger_pilot_current INTEGER,charger_phases INTEGER,conn_charge_cable TEXT,
- fast_charger_present INTEGER,fast_charger_brand TEXT,fast_charger_type TEXT,
- charge_energy_added_kwh REAL,range_km REAL,ideal_range_km REAL,battery_heater_on INTEGER,
- not_enough_power_to_heat INTEGER,outside_temp_c REAL,charge_limit_soc INTEGER
-);
-CREATE TABLE battery_samples(
- id INTEGER PRIMARY KEY AUTOINCREMENT,vehicle_id INTEGER,timestamp TEXT,battery_level INTEGER,
- battery_range_km REAL,ideal_battery_range_km REAL,source TEXT
-);
-CREATE TABLE software_updates(
- id INTEGER PRIMARY KEY,vehicle_id INTEGER,version TEXT,status TEXT,start_time TEXT,end_time TEXT
-);
-INSERT INTO schema_meta(key,value) VALUES('source','TeslaMate PostgreSQL plain dump');
-`
-
-const indexes = `
-CREATE INDEX idx_states_vehicle_started ON states(vehicle_id,started_at);
-CREATE INDEX idx_drives_vehicle_start ON drives(vehicle_id,start_time);
-CREATE INDEX idx_drives_status ON drives(vehicle_id,status);
-CREATE INDEX idx_positions_drive ON positions(drive_id,timestamp);
-CREATE INDEX idx_charging_sessions_vehicle_start ON charging_sessions(vehicle_id,start_time);
-CREATE INDEX idx_charging_samples_session ON charging_samples(charging_session_id,timestamp);
-CREATE INDEX idx_battery_samples_vehicle_ts ON battery_samples(vehicle_id,timestamp);
-CREATE INDEX idx_software_updates_vehicle ON software_updates(vehicle_id,start_time);
-`
 
 const selectedTables = new Set([
   'addresses',
@@ -169,7 +117,24 @@ export const importTeslaMateDump = async (
 
   const SQL = await initSqlJs({ locateFile: () => wasmUrl })
   const database = new SQL.Database()
-  database.exec(normalizedSchema)
+  // The canonical schema, generated from internal/storage/schema.go by
+  // scripts/sync-schema.mjs. Hand-copying it here is what let
+  // geocode_cache and two positions columns go missing.
+  for (const statement of schemaStatements) database.exec(statement)
+  // Columns added after a table's first release live only in the
+  // migration list. Applied here so an imported database has exactly the
+  // columns the daemon would have written; each may already be present
+  // in the CREATE TABLE above, which is not an error.
+  for (const migration of columnMigrations) {
+    try {
+      database.exec(migration)
+    } catch {
+      // Duplicate column - already created above.
+    }
+  }
+  database.exec(
+    "INSERT INTO schema_meta(key,value) VALUES('source','TeslaMate PostgreSQL plain dump')",
+  )
   const statements = {
     battery: prepare(
       database,
@@ -185,7 +150,7 @@ export const importTeslaMateDump = async (
     ),
     position: prepare(
       database,
-      `INSERT INTO positions(id,drive_id,vehicle_id,timestamp,latitude,longitude,speed_kmh,elevation_m,power_kw,odometer_km,battery_level,usable_battery_level,range_km,ideal_range_km,est_range_km,battery_heater_on,outside_temp_c,inside_temp_c,fan_status,driver_temp_setting_c,passenger_temp_setting_c,is_climate_on,is_rear_defroster_on,is_front_defroster_on,tpms_pressure_fl,tpms_pressure_fr,tpms_pressure_rl,tpms_pressure_rr) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO positions(id,drive_id,vehicle_id,timestamp,latitude,longitude,speed_kmh,elevation_m,power_kw,odometer_km,battery_level,usable_battery_level,range_km,ideal_range_km,est_range_km,battery_heater_on,battery_heater,battery_heater_no_power,outside_temp_c,inside_temp_c,fan_status,driver_temp_setting_c,passenger_temp_setting_c,is_climate_on,is_rear_defroster_on,is_front_defroster_on,tpms_pressure_fl,tpms_pressure_fr,tpms_pressure_rl,tpms_pressure_rr) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ),
     session: prepare(
       database,
@@ -241,6 +206,15 @@ export const importTeslaMateDump = async (
             latitude: numeric(get('latitude')),
             longitude: numeric(get('longitude')),
             name: get('display_name') ?? get('name'),
+            road: get('road'),
+            // TeslaMate files a settlement under city, town, village or
+            // municipality depending on its administrative type, the
+            // same way Nominatim hands it over.
+            city: get('city') ?? get('town') ?? get('village') ?? get('municipality'),
+            county: get('county'),
+            state: get('state'),
+            postcode: get('postcode'),
+            country: get('country'),
           })
         return
       }
@@ -257,7 +231,15 @@ export const importTeslaMateDump = async (
             get('exterior_color'),
             get('wheel_type'),
             get('spoiler_type'),
-            numeric(get('efficiency')),
+            // TeslaMate's cars.efficiency is kWh per km (0.1314); this
+            // column is Wh per km (131.4). Stored verbatim it was 1000x
+            // too small, which silently zeroed every consumption and
+            // energy figure derived from it - the Overview read
+            // "Ø Consumption 0 Wh/mi" over 3,109 logged miles.
+            (() => {
+              const kwhPerKm = numeric(get('efficiency'))
+              return kwhPerKm === null ? null : kwhPerKm * 1000
+            })(),
             get('inserted_at'),
           ),
         )
@@ -420,6 +402,11 @@ export const importTeslaMateDump = async (
               numeric(get('ideal_battery_range_km')),
               numeric(get('est_battery_range_km')),
               boolean(get('battery_heater_on')),
+              // battery_heater and battery_heater_on genuinely disagree -
+              // they come from different API objects - and the importer
+              // had been dropping both of the extra ones.
+              boolean(get('battery_heater')),
+              boolean(get('battery_heater_no_power')),
               numeric(get('outside_temp')),
               numeric(get('inside_temp')),
               integer(get('fan_status')),
@@ -571,7 +558,43 @@ export const importTeslaMateDump = async (
         SELECT version FROM software_updates u WHERE u.vehicle_id=vehicles.id ORDER BY COALESCE(u.end_time,u.start_time) DESC LIMIT 1
       );
     `)
-    database.exec(indexes)
+
+    // geocode_cache is what the Locations dashboard reads to answer "how
+    // many cities / states / countries", and TeslaMate's addresses table
+    // holds exactly those components - they were simply being thrown
+    // away, so an imported database failed that dashboard entirely.
+    //
+    // Keyed on the coordinate rounded to four decimals, matching
+    // geocode.roundCoord in the Go daemon, so an imported database and a
+    // logged one are shaped identically.
+    const cache = prepare(
+      database,
+      `INSERT OR REPLACE INTO geocode_cache(lat_key,lng_key,name,road,city,county,state,postcode,country)
+       VALUES(?,?,?,?,?,?,?,?,?)`,
+    )
+    const roundCoord = (value: number): number => Math.round(value * 10000) / 10000
+    try {
+      for (const address of addresses.values()) {
+        // Without a coordinate there is no primary key, and without a
+        // name nothing in drives or charges could join to it.
+        if (address.latitude === null || address.longitude === null || address.name === null) continue
+        cache.run(
+          sqlValues(
+            roundCoord(address.latitude),
+            roundCoord(address.longitude),
+            address.name,
+            address.road,
+            address.city,
+            address.county,
+            address.state,
+            address.postcode,
+            address.country,
+          ),
+        )
+      }
+    } finally {
+      cache.free()
+    }
     database.exec('COMMIT')
     onProgress({ bytesRead: file.size, fileSize: file.size, rowsImported, table: null })
     return database.export()

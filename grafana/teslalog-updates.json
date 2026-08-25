@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'",
-          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'",
+          "queryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'installed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'installed'",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -105,8 +105,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
-          "rawQueryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
+          "queryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'installed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
+          "rawQueryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'installed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -151,8 +151,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value",
-          "rawQueryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value",
+          "queryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'installed' ORDER BY start_time DESC LIMIT 1)) AS value",
+          "rawQueryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'installed' ORDER BY start_time DESC LIMIT 1)) AS value",
           "queryType": "table",
           "timeColumns": [
             "time",

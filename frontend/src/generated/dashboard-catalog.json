@@ -2220,7 +2220,7 @@
           "overrides": []
         },
         "queries": [
-          "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'"
+          "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'installed'"
         ]
       },
       {
@@ -2249,7 +2249,7 @@
           "overrides": []
         },
         "queries": [
-          "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2"
+          "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'installed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2"
         ]
       },
       {
@@ -2277,7 +2277,7 @@
           "overrides": []
         },
         "queries": [
-          "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value"
+          "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'installed' ORDER BY start_time DESC LIMIT 1)) AS value"
         ]
       },
       {

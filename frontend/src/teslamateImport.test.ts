@@ -5,11 +5,11 @@ import { importTeslaMateDump, isPostgresDump } from './teslamateImport'
 const tinyDump = `--
 -- PostgreSQL database dump
 --
-COPY public.addresses (id, display_name, latitude, longitude) FROM stdin;
-1	Home	35.1	-85.1
+COPY public.addresses (id, display_name, latitude, longitude, road, city, county, state, postcode, country) FROM stdin;
+1	Home	35.1	-85.1	Lee Highway	Chattanooga	Hamilton County	Tennessee	37421	United States
 \\.
 COPY public.cars (id, vin, name, model, efficiency, inserted_at) FROM stdin;
-1	VIN123	Roadrunner	Y	150	2026-01-01 00:00:00
+1	VIN123	Roadrunner	Y	0.1314	2026-01-01 00:00:00
 \\.
 COPY public.charges (id, date, battery_level, charger_power, charging_process_id, rated_battery_range_km) FROM stdin;
 1	2026-01-02 01:05:00	70	11	1	400
@@ -51,6 +51,91 @@ describe('TeslaMate PostgreSQL dump import', () => {
         'Home charger',
       ])
       expect(database.exec(`SELECT name FROM sqlite_schema WHERE name='tokens'`)).toEqual([])
+    } finally {
+      database.close()
+    }
+  })
+})
+
+describe('TeslaMate import units and address components', () => {
+  const load = async () => {
+    const file = new File([tinyDump], 'teslamate.sql', { type: 'application/sql' })
+    const bytes = await importTeslaMateDump(file, () => undefined)
+    const SQL = await initSqlJs()
+    return new SQL.Database(bytes)
+  }
+
+  // TeslaMate's cars.efficiency is kWh per km (0.1314); this column is Wh
+  // per km (131.4). Imported verbatim it was 1000x too small, which
+  // silently zeroed every consumption and energy figure derived from it:
+  // the Overview read "Ø Consumption 0 Wh/mi" over 3,109 logged miles.
+  it('converts efficiency from kWh/km to Wh/km', async () => {
+    const database = await load()
+    try {
+      const [result] = database.exec('SELECT efficiency_wh_km FROM vehicles')
+      expect(result?.values[0]?.[0]).toBeCloseTo(131.4, 4)
+    } finally {
+      database.close()
+    }
+  })
+
+  // geocode_cache is what the Locations dashboard reads for "how many
+  // cities / states / countries". TeslaMate's addresses table holds those
+  // components and they were being discarded, so that dashboard failed
+  // outright on any imported database.
+  it('populates geocode_cache from TeslaMate addresses', async () => {
+    const database = await load()
+    try {
+      const [result] = database.exec(
+        `SELECT name, road, city, county, state, postcode, country,
+                ROUND(lat_key, 4), ROUND(lng_key, 4)
+         FROM geocode_cache`,
+      )
+      expect(result?.values).toHaveLength(1)
+      expect(result?.values[0]).toEqual([
+        'Home',
+        'Lee Highway',
+        'Chattanooga',
+        'Hamilton County',
+        'Tennessee',
+        '37421',
+        'United States',
+        // Rounded to four decimals, matching geocode.roundCoord in the Go
+        // daemon, so an imported database joins the same way a logged one
+        // does.
+        35.1,
+        -85.1,
+      ])
+    } finally {
+      database.close()
+    }
+  })
+
+  // The importer's schema is generated from the Go source now; this is the
+  // end-to-end proof that the tables it forgot actually exist.
+  it('creates every table the viewer validates', async () => {
+    const database = await load()
+    try {
+      const [result] = database.exec("SELECT name FROM sqlite_schema WHERE type='table'")
+      const tables = new Set((result?.values ?? []).map((row) => String(row[0])))
+      for (const table of [
+        'vehicles', 'states', 'drives', 'positions', 'charging_sessions',
+        'charging_samples', 'battery_samples', 'software_updates', 'geocode_cache',
+      ]) {
+        expect(tables, `missing ${table}`).toContain(table)
+      }
+    } finally {
+      database.close()
+    }
+  })
+
+  it('carries the battery_heater columns the old schema copy had dropped', async () => {
+    const database = await load()
+    try {
+      const [result] = database.exec('PRAGMA table_info(positions)')
+      const columns = new Set((result?.values ?? []).map((row) => String(row[1])))
+      expect(columns).toContain('battery_heater')
+      expect(columns).toContain('battery_heater_no_power')
     } finally {
       database.close()
     }
