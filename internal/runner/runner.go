@@ -809,6 +809,19 @@ func (l *loopState) drainStream() {
 // distinguish "genuinely unknown" (nil, stored as SQL NULL) from a real
 // zero reading.
 func ptr(v float64) *float64 { return &v }
+
+// pressurePtr is ptr for a tyre pressure, where the Owner API reports a
+// literal 0.0 for a car that does not publish TPMS rather than omitting
+// the field. Zero bar is not a pressure any tyre has, so storing it
+// would be a made-up reading: NULL is the honest answer, and it matches
+// what TeslaMate records for the same vehicle (verified against a
+// 400,000-row dump from the same car - not one real TPMS value in it).
+func pressurePtr(v float64) *float64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
 func intPtr(v int) *int      { return &v }
 func boolPtr(v bool) *bool   { return &v }
 
@@ -836,8 +849,8 @@ func positionFromSnapshot(driveID, vehicleDBID int64, at time.Time, s vehicle.Sn
 		DriverTempSettingC: ptr(s.DriverTempSettingC), PassengerTempSettingC: ptr(s.PassengerTempSettingC),
 		IsClimateOn: boolPtr(s.IsClimateOn), IsRearDefrosterOn: boolPtr(s.IsRearDefrosterOn), IsFrontDefrosterOn: boolPtr(s.IsFrontDefrosterOn),
 
-		TpmsPressureFL: ptr(s.TpmsPressureFL), TpmsPressureFR: ptr(s.TpmsPressureFR),
-		TpmsPressureRL: ptr(s.TpmsPressureRL), TpmsPressureRR: ptr(s.TpmsPressureRR),
+		TpmsPressureFL: pressurePtr(s.TpmsPressureFL), TpmsPressureFR: pressurePtr(s.TpmsPressureFR),
+		TpmsPressureRL: pressurePtr(s.TpmsPressureRL), TpmsPressureRR: pressurePtr(s.TpmsPressureRR),
 
 		ShiftState: s.ShiftState,
 

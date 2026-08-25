@@ -1110,3 +1110,25 @@ func TestBackfillRunsWhileIdleNotOnlyWhenAsleep(t *testing.T) {
 		t.Fatalf("expected no backfill while a drive is actively being logged")
 	}
 }
+
+// TestPressurePtrRejectsZero pins that a tyre pressure of exactly zero
+// is stored as NULL, not as a reading. The Owner API returns 0.0 for a
+// car that does not publish TPMS rather than omitting the field, and
+// 0 bar is not a pressure any tyre has. Verified against a 400,000-row
+// dump from the same vehicle's TeslaMate instance: not one real TPMS
+// value in it, and TeslaMate stores NULL throughout.
+//
+// This is the same class of bug as several already in docs/BUG-LOG.md:
+// a zero standing in for "unknown", which reads as data and silently
+// drags every average that touches it toward nothing.
+func TestPressurePtrRejectsZero(t *testing.T) {
+	if got := pressurePtr(0); got != nil {
+		t.Errorf("expected zero pressure to be stored as NULL, got %v", *got)
+	}
+	for _, bar := range []float64{2.1, 2.9, 0.1} {
+		got := pressurePtr(bar)
+		if got == nil || *got != bar {
+			t.Errorf("expected %v to be stored as-is, got %v", bar, got)
+		}
+	}
+}

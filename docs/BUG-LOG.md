@@ -96,6 +96,18 @@ Tesla had no such field separate from `battery_heater_on`. It does — in
 diffing a full TeslaMate `pg_dump`'s schema, then checking whether the
 missing columns actually carried distinct data.
 
+**TPMS stored 0.0 bar for a car that reports no TPMS.** (P2) The Owner
+API returns a literal `0.0` for each tyre rather than omitting the
+field, so 12,346 poll-derived positions recorded zero pressure as if it
+were a measurement. Zero bar is not a pressure any tyre has. Found while
+asking why the tyre-pressure panel was flat; confirmed against a
+400,000-row `pg_dump` from the same vehicle's TeslaMate instance, which
+holds not one real TPMS value and stores NULL throughout. The API is not
+lying and the car is not broken — it simply does not publish TPMS — but
+storing the zero turned "not reported" into a reading. Same class as the
+streaming-zeros bug above, in a field that fix had already covered on
+the streaming path but not the polling one.
+
 **No minimum-drive filter.** (P1) TeslaMate discards a drive with
 fewer than 2 positions or under 10 m. Without it, every bumped shifter
 and GPS jitter became a permanent row.
