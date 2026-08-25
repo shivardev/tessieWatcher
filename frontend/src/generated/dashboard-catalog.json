@@ -431,7 +431,7 @@
   },
   {
     "key": "drive-details",
-    "title": "teslalog: Drive Details",
+    "title": "teslalog: Drive details",
     "panels": [
       {
         "id": 1,
@@ -459,12 +459,12 @@
           "overrides": []
         },
         "queries": [
-          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id"
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END, 1) AS value FROM drives WHERE id = $drive_id"
         ]
       },
       {
         "id": 2,
-        "title": "Duration",
+        "title": "Drive duration (min)",
         "type": "stat",
         "gridPos": {
           "x": 6,
@@ -482,7 +482,7 @@
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "m",
+            "unit": "none",
             "decimals": 0
           },
           "overrides": []
@@ -507,13 +507,11 @@
               "lastNotNull"
             ]
           },
-          "textMode": "auto",
-          "orientation": "horizontal"
+          "textMode": "auto"
         },
         "fieldConfig": {
           "defaults": {
-            "unit": "percent",
-            "decimals": 0
+            "unit": "none"
           },
           "overrides": []
         },
@@ -547,281 +545,336 @@
           "overrides": []
         },
         "queries": [
-          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id"
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (max_speed_kmh) / 1.60934 ELSE (max_speed_kmh) END, 0) AS value FROM drives WHERE id = $drive_id"
         ]
       },
       {
         "id": 5,
-        "title": "Route",
-        "type": "geomap",
+        "title": "Odometer from → to ($length_unit)",
+        "type": "stat",
         "gridPos": {
           "x": 0,
           "y": 4,
-          "w": 12,
-          "h": 12
+          "w": 6,
+          "h": 4
         },
         "options": {
-          "view": {
-            "id": "fit",
-            "lat": 0,
-            "lon": 0,
-            "zoom": 12,
-            "padding": 32
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
           },
-          "controls": {
-            "showZoom": true,
-            "mouseWheelZoom": true,
-            "showAttribution": true,
-            "showScale": false,
-            "showMeasure": false,
-            "showDebug": false
-          },
-          "basemap": {
-            "type": "default",
-            "name": "Basemap",
-            "config": {}
-          },
-          "layers": [
-            {
-              "type": "route",
-              "name": "Route",
-              "config": {
-                "style": {
-                  "color": {
-                    "fixed": "#3ea6ff"
-                  },
-                  "size": {
-                    "fixed": 3
-                  }
-                }
-              },
-              "location": {
-                "mode": "coords",
-                "latitude": "latitude",
-                "longitude": "longitude"
-              }
-            },
-            {
-              "type": "markers",
-              "name": "Points",
-              "config": {
-                "style": {
-                  "size": {
-                    "fixed": 4
-                  },
-                  "color": {
-                    "field": "speed_kmh",
-                    "fixed": "#3ea6ff"
-                  },
-                  "symbol": {
-                    "fixed": "img/icons/marker/circle.svg"
-                  }
-                }
-              },
-              "location": {
-                "mode": "coords",
-                "latitude": "latitude",
-                "longitude": "longitude"
-              }
-            }
-          ]
+          "textMode": "auto"
         },
         "fieldConfig": {
-          "defaults": {},
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "speed_kmh"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "continuous-GrYlRd"
-                  }
-                },
-                {
-                  "id": "min",
-                  "value": 0
-                }
-              ]
-            }
-          ]
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
         },
         "queries": [
-          "SELECT latitude, longitude, speed_kmh, timestamp AS time FROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp"
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (start_odometer_km) / 1.60934 ELSE (start_odometer_km) END, 0) || ' → ' || ROUND(CASE WHEN '$length_unit' = 'mi' THEN (end_odometer_km) / 1.60934 ELSE (end_odometer_km) END, 0) AS value FROM drives WHERE id = $drive_id"
         ]
       },
       {
         "id": 6,
-        "title": "Speed & power",
-        "type": "timeseries",
+        "title": "Ø speed ($length_unit/h)",
+        "type": "stat",
         "gridPos": {
-          "x": 12,
+          "x": 6,
           "y": 4,
-          "w": 12,
-          "h": 6
+          "w": 6,
+          "h": 4
         },
         "options": {
-          "tooltip": {
-            "mode": "multi"
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
           },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
+          "textMode": "auto"
         },
         "fieldConfig": {
           "defaults": {
-            "custom": {
-              "drawStyle": "line",
-              "lineWidth": 1,
-              "fillOpacity": 10,
-              "pointSize": 3
-            }
+            "unit": "none",
+            "decimals": 1
           },
           "overrides": []
         },
         "queries": [
-          "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
+          "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END / NULLIF(duration_min / 60.0, 0), 1) AS value FROM drives WHERE id = $drive_id"
         ]
       },
       {
         "id": 7,
-        "title": "Elevation (m if km, ft if mi)",
-        "type": "timeseries",
+        "title": "Energy consumed (net) (kWh)",
+        "type": "stat",
         "gridPos": {
           "x": 12,
-          "y": 10,
-          "w": 12,
-          "h": 6
+          "y": 4,
+          "w": 6,
+          "h": 4
         },
         "options": {
-          "tooltip": {
-            "mode": "single"
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
           },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
+          "textMode": "auto"
         },
         "fieldConfig": {
           "defaults": {
             "unit": "none",
-            "custom": {
-              "drawStyle": "line",
-              "lineWidth": 1,
-              "fillOpacity": 20,
-              "pointSize": 3
-            }
+            "decimals": 2
           },
           "overrides": []
         },
         "queries": [
-          "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp"
+          "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km / 1000.0, 2) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id"
         ]
       },
       {
         "id": 8,
-        "title": "Temperatures (°$temp_unit)",
-        "type": "timeseries",
+        "title": "Consumption (net) (Wh/$length_unit)",
+        "type": "stat",
         "gridPos": {
-          "x": 0,
-          "y": 16,
-          "w": 12,
-          "h": 6
+          "x": 18,
+          "y": 4,
+          "w": 6,
+          "h": 4
         },
         "options": {
-          "tooltip": {
-            "mode": "multi"
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
           },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
+          "textMode": "auto"
         },
         "fieldConfig": {
           "defaults": {
             "unit": "none",
-            "custom": {
-              "drawStyle": "line",
-              "lineWidth": 2,
-              "fillOpacity": 10,
-              "pointSize": 0,
-              "spanNulls": true,
-              "lineInterpolation": "smooth"
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Outside"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "#4ade80"
-                  }
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Inside"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "#fbbf24"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "queries": [
-          "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp"
-        ]
-      },
-      {
-        "id": 9,
-        "title": "Tire pressure",
-        "type": "timeseries",
-        "gridPos": {
-          "x": 12,
-          "y": 16,
-          "w": 12,
-          "h": 6
-        },
-        "options": {
-          "tooltip": {
-            "mode": "multi"
-          },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "drawStyle": "line",
-              "lineWidth": 1,
-              "fillOpacity": 0,
-              "pointSize": 3
-            }
+            "decimals": 0
           },
           "overrides": []
         },
         "queries": [
-          "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\", tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
+          "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km\n             / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id"
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Energy recovered (kWh)",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 8,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0) * -1, 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw < 0"
+        ]
+      },
+      {
+        "id": 10,
+        "title": "Energy drawn (kWh)",
+        "type": "stat",
+        "gridPos": {
+          "x": 6,
+          "y": 8,
+          "w": 6,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none",
+            "decimals": 2
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0), 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw > 0"
+        ]
+      },
+      {
+        "id": 11,
+        "title": "Elevation up / down",
+        "type": "stat",
+        "gridPos": {
+          "x": 12,
+          "y": 8,
+          "w": 12,
+          "h": 4
+        },
+        "options": {
+          "reduceOptions": {
+            "calcs": [
+              "lastNotNull"
+            ]
+          },
+          "textMode": "auto"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH steps AS (\n  SELECT elevation_m - LAG(elevation_m) OVER (ORDER BY timestamp) AS diff\n  FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(CASE WHEN diff > 0 THEN diff END), 0)\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↑  ' ||\n       ROUND(ABS(COALESCE(SUM(CASE WHEN diff < 0 THEN diff END), 0))\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↓ ' || CASE WHEN '$length_unit' = 'mi' THEN 'ft' ELSE 'm' END AS value\nFROM steps"
+        ]
+      },
+      {
+        "id": 12,
+        "title": "Route",
+        "type": "geomap",
+        "gridPos": {
+          "x": 0,
+          "y": 12,
+          "w": 12,
+          "h": 12
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT latitude, longitude, speed_kmh, timestamp AS time\nFROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 13,
+        "title": "Speed & power",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 12,
+          "w": 12,
+          "h": 12
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 14,
+        "title": "Speed histogram ($length_unit/h)",
+        "type": "barchart",
+        "gridPos": {
+          "x": 0,
+          "y": 24,
+          "w": 12,
+          "h": 8
+        },
+        "options": {
+          "orientation": "horizontal"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "WITH d AS (\n  SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END / 10.0) * 10 AS band,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND speed_kmh IS NOT NULL\n)\nSELECT band AS \"Speed\", ROUND(SUM(seconds), 0) AS \"Seconds\"\nFROM d WHERE band > 0 AND seconds > 0 AND seconds < 15\nGROUP BY band ORDER BY band"
+        ]
+      },
+      {
+        "id": 15,
+        "title": "Elevation",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 24,
+          "w": 12,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time,\n       (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\"\nFROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 16,
+        "title": "Temperatures (°$temp_unit)",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 0,
+          "y": 32,
+          "w": 12,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time,\n       (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\",\n       (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\"\nFROM positions WHERE drive_id = $drive_id\n  AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp"
+        ]
+      },
+      {
+        "id": 17,
+        "title": "Tire pressure",
+        "type": "timeseries",
+        "gridPos": {
+          "x": 12,
+          "y": 32,
+          "w": 12,
+          "h": 8
+        },
+        "options": {},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "none"
+          },
+          "overrides": []
+        },
+        "queries": [
+          "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\",\n       tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp"
         ]
       }
     ]

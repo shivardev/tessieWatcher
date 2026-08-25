@@ -473,7 +473,7 @@ function DashboardContent({
   if (active === 'Visited')
     return <VisitedDashboard bytes={data.databaseBytes} settings={settings} />
   if (active === 'Database information')
-    return <DatabaseInformationDashboard bytes={data.databaseBytes} />
+    return <DatabaseInformationDashboard bytes={data.databaseBytes} settings={settings} />
   const catalogKey = catalogDashboardKeys[active]
   if (catalogKey)
     return (

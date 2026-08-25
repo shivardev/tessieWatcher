@@ -528,8 +528,19 @@ export function VisitedDashboard({
   const visitedQueries = useMemo(
     () => [
       `SELECT COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) "Location", COUNT(*) "Visits", ROUND(MAX(end_lat),5) latitude, ROUND(MAX(end_lng),5) longitude, MAX(end_time) "Last visited" FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'end_time')} GROUP BY COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) ORDER BY COUNT(*) DESC`,
+      // Mileage from the odometer delta rather than summed drive
+      // distance, matching TeslaMate: the odometer is the car's own
+      // record and includes anything teslalog missed.
+      `SELECT COALESCE(CASE WHEN '${settings.lengthUnit}'='mi' THEN (MAX(end_odometer_km)-MIN(start_odometer_km))/1.60934 ELSE MAX(end_odometer_km)-MIN(start_odometer_km) END,0)
+       FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
+      `SELECT COALESCE(SUM(charge_energy_added_kwh),0),
+              COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0),
+              SUM(charge_energy_added_kwh)*100.0/NULLIF(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0),
+              COALESCE(SUM(cost),0)
+       FROM charging_sessions WHERE status='closed' AND charge_energy_added_kwh > 0.01
+         AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
     ],
-    [settings.timeRange],
+    [settings.timeRange, settings.lengthUnit],
   )
   const { results, error } = useResults(bytes, visitedQueries)
   const points = (results[0]?.rows ?? []).flatMap((row) => {
@@ -544,6 +555,20 @@ export function VisitedDashboard({
         note={settings.timeRange === 'all' ? 'All time' : settings.timeRange}
       />
       {error && <p className="no-data">{error}</p>}
+      <section className="charging-stat-grid">
+        {[
+          ['Mileage', `${(number(results[1]?.rows[0]?.[0]) ?? 0).toFixed(0)} ${settings.lengthUnit}`],
+          ['Energy added', `${(number(results[2]?.rows[0]?.[0]) ?? 0).toFixed(1)} kWh`],
+          ['Energy used', `${(number(results[2]?.rows[0]?.[1]) ?? 0).toFixed(1)} kWh`],
+          ['Charging efficiency', `${(number(results[2]?.rows[0]?.[2]) ?? 0).toFixed(1)}%`],
+          ['Total charging cost', (number(results[2]?.rows[0]?.[3]) ?? 0).toFixed(2)],
+        ].map(([label, value]) => (
+          <article key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </article>
+        ))}
+      </section>
       <section className="catalog-panel route-panel">
         <h2>Visited places</h2>
         <LocalPlot points={points} />
@@ -556,13 +581,53 @@ export function VisitedDashboard({
 const databaseQueries = [
   `SELECT 'vehicles' "Table", COUNT(*) "Rows" FROM vehicles UNION ALL SELECT 'states',COUNT(*) FROM states UNION ALL SELECT 'drives',COUNT(*) FROM drives UNION ALL SELECT 'positions',COUNT(*) FROM positions UNION ALL SELECT 'charging_sessions',COUNT(*) FROM charging_sessions UNION ALL SELECT 'charging_samples',COUNT(*) FROM charging_samples UNION ALL SELECT 'battery_samples',COUNT(*) FROM battery_samples UNION ALL SELECT 'software_updates',COUNT(*) FROM software_updates`,
   `SELECT tbl_name "Table", name "Index", COALESCE(sql, 'automatic') "Definition" FROM sqlite_schema WHERE type='index' ORDER BY tbl_name, name`,
+  // TeslaMate's Mileage / Stats / Software / Incomplete Data cards. The
+  // Postgres-specific half of its Database information dashboard
+  // (pg_stat_statements, shared_buffers, server version) has no
+  // equivalent here and is not ported: teslalog embeds SQLite, so there
+  // is no server to report on.
+  `SELECT (SELECT COALESCE(MAX(end_odometer_km),0) FROM drives WHERE status='closed'),
+          (SELECT COUNT(*) FROM drives WHERE status='closed'),
+          (SELECT COUNT(*) FROM charging_sessions WHERE status='closed'),
+          (SELECT COALESCE(firmware_version,'unknown') FROM vehicles ORDER BY id LIMIT 1),
+          (SELECT COUNT(*) FROM drives WHERE status != 'closed'),
+          (SELECT COUNT(*) FROM charging_sessions WHERE status != 'closed'),
+          (SELECT MIN(start_time) FROM drives),
+          (SELECT MAX(COALESCE(end_time, start_time)) FROM drives)`,
 ]
-export function DatabaseInformationDashboard({ bytes }: Readonly<{ bytes: Uint8Array }>) {
+export function DatabaseInformationDashboard({
+  bytes,
+  settings,
+}: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const { results, error } = useResults(bytes, databaseQueries)
+  const row = results[2]?.rows[0]
+  const count = (index: number): number => number(row?.[index]) ?? 0
+  const incomplete = count(4) + count(5)
+  const odometer = distance(count(0), settings.lengthUnit)
+  const cards: readonly (readonly [string, string])[] = [
+    ['Odometer', `${odometer.toFixed(0)} ${settings.lengthUnit}`],
+    ['Drives logged', String(count(1))],
+    ['Charges logged', String(count(2))],
+    ['Firmware', text(row?.[3])],
+    // Named the way TeslaMate names it. Zero is the state to expect; a
+    // non-zero count means some totals in this viewer are quietly short,
+    // because everything sums over closed records only.
+    ['Incomplete data', incomplete === 0 ? 'none' : `${incomplete} unclosed`],
+    ['Logging since', row?.[6] === null || row?.[6] === undefined ? '—' : timestampDate(String(row[6])).toLocaleDateString()],
+  ]
   return (
     <main>
       <Heading title="Database information" note="Uploaded SQLite snapshot" />
       {error && <p className="no-data">{error}</p>}
+      <section className="charging-stat-grid">
+        {cards.map(([label, value]) => (
+          <article key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </article>
+        ))}
+      </section>
+      <h2 className="telemetry-heading">Row counts</h2>
       <DataTable result={results[0]} />
       <h2 className="telemetry-heading">Indexes</h2>
       <DataTable result={results[1]} />
@@ -783,6 +848,23 @@ export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Ui
   return <main><Heading title="Charging stats" note={settings.timeRange.toUpperCase()}/>{error&&<p className="no-data">{error}</p>}<section className="charging-stat-grid">{cards.map(([label,value])=><article key={label}><span>{label}</span><strong>{value}</strong></article>)}</section><section className="charging-analytics-grid"><TelemetryChart result={results[1]} title="Charge Heatmap"/><TelemetryChart result={results[1]} title="Charge Delta"/><article className="catalog-panel"><h2>AC/DC - Energy Used</h2><DistributionPie result={results[2]} unit="kWh"/></article><article className="catalog-panel"><h2>Charging heat map by kWh</h2><ChargingSitesMap result={results[4]}/></article><article className="catalog-panel"><h2>AC/DC - Duration</h2><DistributionPie result={results[3]} unit="hours"/></article><TelemetryChart result={results[5]} title="DC Charging Curve"/><article className="catalog-panel"><h2>Charge Stats</h2><DataTable result={results[6]}/></article><article className="catalog-panel"><h2>Discharge Stats</h2><DataTable result={results[7]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Charged)</h2><DataTable result={results[8]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Cost)</h2><DataTable result={results[9]}/></article></section></main>
 }
 
+// The per-drive figures shown as cards, in display order. Titles must
+// match grafana/teslalog-drive-details.json exactly - that file is the
+// single definition of each query, shared with Grafana.
+const driveStatTitles = [
+  'Distance ($length_unit)',
+  'Drive duration (min)',
+  'Battery start → end',
+  'Max speed ($length_unit/h)',
+  'Ø speed ($length_unit/h)',
+  'Odometer from → to ($length_unit)',
+  'Energy consumed (net) (kWh)',
+  'Consumption (net) (Wh/$length_unit)',
+  'Energy recovered (kWh)',
+  'Energy drawn (kWh)',
+  'Elevation up / down',
+] as const
+
 export function DriveDetailsDashboard({
   bytes,
   driveId,
@@ -796,9 +878,15 @@ export function DriveDetailsDashboard({
 }>) {
   const [hoverTime, setHoverTime] = useState<string | null>(null)
   const definition = dashboardCatalog.find((dashboard) => dashboard.key === 'drive-details')
+  // Catalog panels are picked by title, not by position. They used to be
+  // sliced by index, so adding a panel to the catalog silently handed the
+  // route map the odometer query.
+  const catalogQuery = (title: string): string =>
+    definition?.panels.find((panel) => panel.title === title)?.queries[0] ?? 'SELECT NULL AS value'
   const queries = useMemo(
     () => [
-      ...(definition?.panels.slice(0, 5).flatMap((panel) => panel.queries) ?? []),
+      ...driveStatTitles.map(catalogQuery),
+      catalogQuery('Route'),
       `SELECT timestamp AS time,
         (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS "Speed ($length_unit/h)",
         power_kw AS "Power (kW)",
@@ -846,7 +934,14 @@ export function DriveDetailsDashboard({
       active = false
     }
   }, [bytes, driveId, queries, settings])
-  const route: readonly Point[] = (results[4]?.rows ?? []).flatMap<Point>((row) => {
+  // Result indices are derived from the query list above rather than
+  // written out, so adding a stat card cannot silently shift the charts.
+  const routeIndex = driveStatTitles.length
+  const telemetryIndex = routeIndex + 1
+  const elevationIndex = routeIndex + 2
+  const temperatureIndex = routeIndex + 3
+  const tyreIndex = routeIndex + 4
+  const route: readonly Point[] = (results[routeIndex]?.rows ?? []).flatMap<Point>((row) => {
     const latitude = number(row[0])
     const longitude = number(row[1])
     const timestamp = typeof row[3] === 'string' ? row[3] : undefined
@@ -872,11 +967,12 @@ export function DriveDetailsDashboard({
     title
       .replaceAll('$length_unit', settings.lengthUnit)
       .replaceAll('$temp_unit', settings.temperatureUnit)
-  const statValue = (index: number): string => {
+  const statValue = (index: number, title: string): string => {
     const row = results[index]?.rows[0]
-    if (!row) return '—'
-    if (index === 1) return `${text(row[0])} min`
-    if (index === 2) return `${text(row[0])}% → ${text(row[1])}%`
+    if (!row || row[0] === null) return '—'
+    // Battery is the one two-column stat: the catalog query returns start
+    // and end so Grafana can render them side by side.
+    if (title === 'Battery start → end') return `${text(row[0])}% → ${text(row[1])}%`
     return text(row[0])
   }
   return (
@@ -888,32 +984,32 @@ export function DriveDetailsDashboard({
       <Heading title={`Drive ${driveId}`} note="Drive details" />
       {error && <p className="no-data">{error}</p>}
       <section className="cards">
-        {(definition?.panels.slice(0, 4) ?? []).map((panel, index) => (
-          <article key={panel.id}>
-            <span>{panelTitle(panel.title)}</span>
-            <strong>{statValue(index)}</strong>
+        {driveStatTitles.map((title, index) => (
+          <article key={title}>
+            <span>{panelTitle(title)}</span>
+            <strong>{statValue(index, title)}</strong>
           </article>
         ))}
       </section>
       <section className="drive-detail-grid">
-        <TelemetryChart result={results[5]} title="Drive" onHoverTime={setHoverTime} />
+        <TelemetryChart result={results[telemetryIndex]} title="Drive" onHoverTime={setHoverTime} />
         <article className="catalog-panel drive-route-panel">
           <h2>Route</h2>
           <RouteMap points={route} activePoint={activePoint} />
         </article>
         <TelemetryChart
-          result={results[6]}
+          result={results[elevationIndex]}
           title={`Elevation (${settings.lengthUnit === 'mi' ? 'ft' : 'm'})`}
           onHoverTime={setHoverTime}
         />
         <TelemetryChart
-          result={results[7]}
-          title={panelTitle(definition?.panels[7]?.title ?? 'Temperatures')}
+          result={results[temperatureIndex]}
+          title="Temperatures"
           onHoverTime={setHoverTime}
         />
         <TelemetryChart
-          result={results[8]}
-          title={panelTitle(definition?.panels[8]?.title ?? 'Tire pressure')}
+          result={results[tyreIndex]}
+          title="Tire pressure"
           onHoverTime={setHoverTime}
         />
       </section>
