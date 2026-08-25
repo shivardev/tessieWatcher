@@ -2,7 +2,7 @@
   "id": null,
   "uid": "teslalog-locations",
   "title": "teslalog: Locations",
-  "description": "Places visited, ranked by frequency - approximates TeslaMate's own Locations dashboard, which additionally breaks this down by city/state/country from structured reverse-geocoding data teslalog doesn't currently capture (see README's Geofencing & locations section - only a single resolved place name is stored, not separate address components). Falls back to rounded lat/lng when a drive's end never resolved to a named location.",
+  "description": "Port of TeslaMate's Locations dashboard. City/state/country come from the address components cached alongside each resolved place name; places with no cached address are configured geofences.",
   "tags": [
     "teslalog"
   ],
@@ -12,7 +12,7 @@
   "editable": true,
   "graphTooltip": 1,
   "time": {
-    "from": "now-1y",
+    "from": "now-90d",
     "to": "now"
   },
   "templating": {
@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "# of distinct places visited",
+      "title": "# of Addresses",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'",
-          "rawQueryText": "SELECT COUNT(DISTINCT COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng))) AS value FROM drives WHERE status = 'closed'",
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n) SELECT COUNT(DISTINCT name) AS value FROM visited",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n) SELECT COUNT(DISTINCT name) AS value FROM visited",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -87,8 +87,8 @@
     },
     {
       "id": 2,
-      "type": "table",
-      "title": "Most-visited places",
+      "type": "stat",
+      "title": "# of Cities",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -96,8 +96,8 @@
       "gridPos": {
         "x": 6,
         "y": 0,
-        "w": 18,
-        "h": 8
+        "w": 6,
+        "h": 4
       },
       "targets": [
         {
@@ -105,8 +105,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15",
-          "rawQueryText": "SELECT\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\",\n  COUNT(*) AS \"Visits\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Place\"\nORDER BY \"Visits\" DESC\nLIMIT 15",
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.city) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.city) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -117,55 +117,33 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "cellOptions": {
-              "type": "gauge",
-              "mode": "lcd"
-            }
-          }
+          "unit": "none",
+          "decimals": 0
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Visits"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "gauge",
-                  "mode": "lcd"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#3ea6ff"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "options": {
-        "showHeader": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
       }
     },
     {
       "id": 3,
-      "type": "table",
-      "title": "Last visited",
+      "type": "stat",
+      "title": "# of States",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
       },
       "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 24,
-        "h": 10
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
       },
       "targets": [
         {
@@ -173,8 +151,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200",
-          "rawQueryText": "SELECT\n  end_time AS time,\n  COALESCE(end_location, printf('%.4f,%.4f', end_lat, end_lng)) AS \"Place\"\nFROM drives\nWHERE status = 'closed'\nORDER BY end_time DESC\nLIMIT 200",
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.state) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.state) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -184,12 +162,260 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
-        "showHeader": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
       }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "# of Countries",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.country) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.country IS NOT NULL",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT COUNT(DISTINCT a.country) AS value\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.country IS NOT NULL",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Cities",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.city AS \"City\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.city AS \"City\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.city IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 6,
+      "type": "bargauge",
+      "title": "States",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.state AS \"State\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT a.state AS \"State\", COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nWHERE a.state IS NOT NULL\nGROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Last visited",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT MAX(v.at) AS \"Date\", v.name AS \"Place\", a.city AS \"City\"\nFROM visited v LEFT JOIN addresses a ON a.name = v.name\nGROUP BY 2, 3\nORDER BY 1 DESC\nLIMIT 100",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT MAX(v.at) AS \"Date\", v.name AS \"Place\", a.city AS \"City\"\nFROM visited v LEFT JOIN addresses a ON a.name = v.name\nGROUP BY 2, 3\nORDER BY 1 DESC\nLIMIT 100",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Addresses",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT v.name AS \"Name\", a.road AS \"Road\", a.city AS \"City\", a.county AS \"County\",\n       a.state AS \"State\", a.postcode AS \"Postcode\", a.country AS \"Country\",\n       COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nGROUP BY 1, 2, 3, 4, 5, 6, 7\nORDER BY 8 DESC\nLIMIT 100",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n), addresses AS (\n  SELECT name, MAX(road) AS road, MAX(city) AS city, MAX(county) AS county,\n         MAX(state) AS state, MAX(postcode) AS postcode, MAX(country) AS country\n  FROM geocode_cache GROUP BY name\n)\nSELECT v.name AS \"Name\", a.road AS \"Road\", a.city AS \"City\", a.county AS \"County\",\n       a.state AS \"State\", a.postcode AS \"Postcode\", a.country AS \"Country\",\n       COUNT(*) AS \"Visits\"\nFROM visited v JOIN addresses a ON a.name = v.name\nGROUP BY 1, 2, 3, 4, 5, 6, 7\nORDER BY 8 DESC\nLIMIT 100",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Geo-fences",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n)\nSELECT v.name AS \"Geo-fence\", COUNT(*) AS \"Visits\", MAX(v.at) AS \"Last visit\"\nFROM visited v\nWHERE v.name NOT IN (SELECT name FROM geocode_cache)\nGROUP BY 1\nORDER BY 2 DESC\nLIMIT 100",
+          "rawQueryText": "WITH visited AS (\n  SELECT start_location AS name, start_time AS at FROM drives\n    WHERE status = 'closed' AND start_location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT end_location, end_time FROM drives\n    WHERE status = 'closed' AND end_location IS NOT NULL AND end_time >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT location, start_time FROM charging_sessions\n    WHERE status = 'closed' AND location IS NOT NULL AND start_time >= datetime('now', '-90 days')\n)\nSELECT v.name AS \"Geo-fence\", COUNT(*) AS \"Visits\", MAX(v.at) AS \"Last visit\"\nFROM visited v\nWHERE v.name NOT IN (SELECT name FROM geocode_cache)\nGROUP BY 1\nORDER BY 2 DESC\nLIMIT 100",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
     }
   ]
 }

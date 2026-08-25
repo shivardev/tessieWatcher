@@ -2,7 +2,7 @@
   "id": null,
   "uid": "teslalog-updates",
   "title": "teslalog: Updates",
-  "description": "Software update history - matching TeslaMate's own Updates dashboard.",
+  "description": "Port of TeslaMate's Updates dashboard: every firmware version installed, and how long Tesla typically leaves between them.",
   "tags": [
     "teslalog"
   ],
@@ -50,7 +50,7 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
+        "w": 8,
         "h": 4
       },
       "targets": [
@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COUNT(*) AS value FROM software_updates",
-          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates",
+          "queryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'",
+          "rawQueryText": "SELECT COUNT(*) AS value FROM software_updates WHERE status = 'completed'",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -86,17 +86,17 @@
       }
     },
     {
-      "id": 3,
+      "id": 2,
       "type": "stat",
-      "title": "Ø days between updates",
+      "title": "Median days between updates",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
       },
       "gridPos": {
-        "x": 12,
+        "x": 8,
         "y": 0,
-        "w": 12,
+        "w": 8,
         "h": 4
       },
       "targets": [
@@ -105,8 +105,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL",
-          "rawQueryText": "SELECT ROUND(AVG(gap), 1) AS value FROM (SELECT julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)) AS gap FROM software_updates) WHERE gap IS NOT NULL",
+          "queryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
+          "rawQueryText": "WITH gaps AS (\n  SELECT (julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time))) AS days\n  FROM software_updates\n  WHERE status = 'completed'\n), ordered AS (\n  SELECT days, ROW_NUMBER() OVER (ORDER BY days) AS rn, COUNT(*) OVER () AS n\n  FROM gaps WHERE days IS NOT NULL\n)\nSELECT days AS value FROM ordered WHERE rn = (n + 1) / 2",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -117,8 +117,53 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "d",
+          "unit": "none",
           "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Current version",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value",
+          "rawQueryText": "SELECT COALESCE((SELECT firmware_version FROM vehicles ORDER BY id LIMIT 1),\n              (SELECT version FROM software_updates WHERE status = 'completed' ORDER BY start_time DESC LIMIT 1)) AS value",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
         },
         "overrides": []
       },
@@ -143,7 +188,7 @@
         "x": 0,
         "y": 4,
         "w": 24,
-        "h": 10
+        "h": 12
       },
       "targets": [
         {
@@ -151,8 +196,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC",
-          "rawQueryText": "SELECT\n  start_time AS time,\n  version AS \"Version\",\n  status AS \"Status\",\n  CASE WHEN end_time IS NOT NULL THEN ROUND((julianday(end_time) - julianday(start_time)) * 1440, 0) ELSE NULL END AS \"Duration (min)\",\n  ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC",
+          "queryText": "SELECT start_time AS \"Started\", version AS \"Version\", status AS \"Status\", end_time AS \"Finished\",\n       ROUND((julianday(end_time) - julianday(start_time)) * 1440, 1) AS \"Install (min)\",\n       ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC\nLIMIT 200",
+          "rawQueryText": "SELECT start_time AS \"Started\", version AS \"Version\", status AS \"Status\", end_time AS \"Finished\",\n       ROUND((julianday(end_time) - julianday(start_time)) * 1440, 1) AS \"Install (min)\",\n       ROUND(julianday(start_time) - julianday(LAG(start_time) OVER (ORDER BY start_time)), 1) AS \"Days since previous\"\nFROM software_updates\nORDER BY start_time DESC\nLIMIT 200",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -162,12 +207,12 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "none"
+        },
         "overrides": []
       },
-      "options": {
-        "showHeader": true
-      }
+      "options": {}
     }
   ]
 }

@@ -1,8 +1,8 @@
 {
   "id": null,
   "uid": "teslalog-drive-details",
-  "title": "teslalog: Drive Details",
-  "description": "Per-drive drill-down (map, speed/power, elevation, temperatures, tire pressure) - reached by clicking a date in the Drives dashboard's table, matching TeslaMate's own drill-down.",
+  "title": "teslalog: Drive details",
+  "description": "Port of TeslaMate's per-drive detail view: the route, the telemetry recorded along it, and the drive's totals.",
   "tags": [
     "teslalog"
   ],
@@ -35,76 +35,6 @@
         "regex": "",
         "skipUrlSync": false,
         "type": "datasource"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": "mi",
-          "value": "mi"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "length unit",
-        "multi": false,
-        "name": "length_unit",
-        "options": [
-          {
-            "selected": false,
-            "text": "km",
-            "value": "km"
-          },
-          {
-            "selected": true,
-            "text": "mi",
-            "value": "mi"
-          }
-        ],
-        "query": "km,mi",
-        "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
-      {
-        "current": {
-          "selected": true,
-          "text": "F",
-          "value": "F"
-        },
-        "hide": 0,
-        "includeAll": false,
-        "label": "temp unit",
-        "multi": false,
-        "name": "temp_unit",
-        "options": [
-          {
-            "selected": false,
-            "text": "C",
-            "value": "C"
-          },
-          {
-            "selected": true,
-            "text": "F",
-            "value": "F"
-          }
-        ],
-        "query": "C,F",
-        "queryValue": "",
-        "skipUrlSync": false,
-        "type": "custom"
-      },
-      {
-        "current": {
-          "selected": false,
-          "text": "",
-          "value": ""
-        },
-        "hide": 2,
-        "label": "drive_id",
-        "name": "drive_id",
-        "options": [],
-        "query": "",
-        "skipUrlSync": false,
-        "type": "textbox"
       }
     ]
   },
@@ -129,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id",
-          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN distance_km / 1.60934 ELSE distance_km END, 1) AS value FROM drives WHERE id = $drive_id",
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END, 1) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END, 1) AS value FROM drives WHERE id = $drive_id",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -158,7 +88,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Duration",
+      "title": "Drive duration (min)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -187,7 +117,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "m",
+          "unit": "none",
           "decimals": 0
         },
         "overrides": []
@@ -233,8 +163,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "decimals": 0
+          "unit": "none"
         },
         "overrides": []
       },
@@ -244,8 +173,7 @@
             "lastNotNull"
           ]
         },
-        "textMode": "auto",
-        "orientation": "horizontal"
+        "textMode": "auto"
       }
     },
     {
@@ -268,8 +196,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id",
-          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN max_speed_kmh / 1.60934 ELSE max_speed_kmh END, 0) AS value FROM drives WHERE id = $drive_id",
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (max_speed_kmh) / 1.60934 ELSE (max_speed_kmh) END, 0) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (max_speed_kmh) / 1.60934 ELSE (max_speed_kmh) END, 0) AS value FROM drives WHERE id = $drive_id",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -296,6 +224,326 @@
     },
     {
       "id": 5,
+      "type": "stat",
+      "title": "Odometer from → to ($length_unit)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (start_odometer_km) / 1.60934 ELSE (start_odometer_km) END, 0) || ' → ' || ROUND(CASE WHEN '$length_unit' = 'mi' THEN (end_odometer_km) / 1.60934 ELSE (end_odometer_km) END, 0) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (start_odometer_km) / 1.60934 ELSE (start_odometer_km) END, 0) || ' → ' || ROUND(CASE WHEN '$length_unit' = 'mi' THEN (end_odometer_km) / 1.60934 ELSE (end_odometer_km) END, 0) AS value FROM drives WHERE id = $drive_id",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Ø speed ($length_unit/h)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END / NULLIF(duration_min / 60.0, 0), 1) AS value FROM drives WHERE id = $drive_id",
+          "rawQueryText": "SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (distance_km) / 1.60934 ELSE (distance_km) END / NULLIF(duration_min / 60.0, 0), 1) AS value FROM drives WHERE id = $drive_id",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Energy consumed (net) (kWh)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km / 1000.0, 2) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id",
+          "rawQueryText": "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km / 1000.0, 2) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Consumption (net) (Wh/$length_unit)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 4,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km\n             / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id",
+          "rawQueryText": "SELECT ROUND((d.$start_range - d.$end_range) * v.efficiency_wh_km\n             / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id WHERE d.id = $drive_id",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Energy recovered (kWh)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0) * -1, 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw < 0",
+          "rawQueryText": "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0) * -1, 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw < 0",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Energy drawn (kWh)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 8,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0), 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw > 0",
+          "rawQueryText": "WITH d AS (\n  SELECT power_kw,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND power_kw IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(power_kw * seconds / 3600.0), 0), 2) AS value\nFROM d WHERE seconds > 0 AND seconds < 15 AND power_kw > 0",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Elevation up / down",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH steps AS (\n  SELECT elevation_m - LAG(elevation_m) OVER (ORDER BY timestamp) AS diff\n  FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(CASE WHEN diff > 0 THEN diff END), 0)\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↑  ' ||\n       ROUND(ABS(COALESCE(SUM(CASE WHEN diff < 0 THEN diff END), 0))\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↓ ' || CASE WHEN '$length_unit' = 'mi' THEN 'ft' ELSE 'm' END AS value\nFROM steps",
+          "rawQueryText": "WITH steps AS (\n  SELECT elevation_m - LAG(elevation_m) OVER (ORDER BY timestamp) AS diff\n  FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL\n)\nSELECT ROUND(COALESCE(SUM(CASE WHEN diff > 0 THEN diff END), 0)\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↑  ' ||\n       ROUND(ABS(COALESCE(SUM(CASE WHEN diff < 0 THEN diff END), 0))\n             * CASE WHEN '$length_unit' = 'mi' THEN 3.28084 ELSE 1 END, 0)\n       || ' ↓ ' || CASE WHEN '$length_unit' = 'mi' THEN 'ft' ELSE 'm' END AS value\nFROM steps",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 12,
       "type": "geomap",
       "title": "Route",
       "datasource": {
@@ -304,7 +552,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 12,
         "w": 12,
         "h": 12
       },
@@ -314,8 +562,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT latitude, longitude, speed_kmh, timestamp AS time FROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp",
-          "rawQueryText": "SELECT latitude, longitude, speed_kmh, timestamp AS time FROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp",
+          "queryText": "SELECT latitude, longitude, speed_kmh, timestamp AS time\nFROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp",
+          "rawQueryText": "SELECT latitude, longitude, speed_kmh, timestamp AS time\nFROM positions WHERE drive_id = $drive_id AND latitude IS NOT NULL ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -325,97 +573,15 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "speed_kmh"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-GrYlRd"
-                }
-              },
-              {
-                "id": "min",
-                "value": 0
-              }
-            ]
-          }
-        ]
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
       },
-      "options": {
-        "view": {
-          "id": "fit",
-          "lat": 0,
-          "lon": 0,
-          "zoom": 12,
-          "padding": 32
-        },
-        "controls": {
-          "showZoom": true,
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showScale": false,
-          "showMeasure": false,
-          "showDebug": false
-        },
-        "basemap": {
-          "type": "default",
-          "name": "Basemap",
-          "config": {}
-        },
-        "layers": [
-          {
-            "type": "route",
-            "name": "Route",
-            "config": {
-              "style": {
-                "color": {
-                  "fixed": "#3ea6ff"
-                },
-                "size": {
-                  "fixed": 3
-                }
-              }
-            },
-            "location": {
-              "mode": "coords",
-              "latitude": "latitude",
-              "longitude": "longitude"
-            }
-          },
-          {
-            "type": "markers",
-            "name": "Points",
-            "config": {
-              "style": {
-                "size": {
-                  "fixed": 4
-                },
-                "color": {
-                  "field": "speed_kmh",
-                  "fixed": "#3ea6ff"
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg"
-                }
-              }
-            },
-            "location": {
-              "mode": "coords",
-              "latitude": "latitude",
-              "longitude": "longitude"
-            }
-          }
-        ]
-      }
+      "options": {}
     },
     {
-      "id": 6,
+      "id": 13,
       "type": "timeseries",
       "title": "Speed & power",
       "datasource": {
@@ -424,9 +590,9 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 4,
+        "y": 12,
         "w": 12,
-        "h": 6
+        "h": 12
       },
       "targets": [
         {
@@ -434,8 +600,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN speed_kmh / 1.60934 ELSE speed_kmh END) AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END AS \"Speed ($length_unit/h)\", power_kw AS \"Power (kW)\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -446,38 +612,65 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "pointSize": 3
-          }
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 14,
+      "type": "barchart",
+      "title": "Speed histogram ($length_unit/h)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH d AS (\n  SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END / 10.0) * 10 AS band,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND speed_kmh IS NOT NULL\n)\nSELECT band AS \"Speed\", ROUND(SUM(seconds), 0) AS \"Seconds\"\nFROM d WHERE band > 0 AND seconds > 0 AND seconds < 15\nGROUP BY band ORDER BY band",
+          "rawQueryText": "WITH d AS (\n  SELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (speed_kmh) / 1.60934 ELSE (speed_kmh) END / 10.0) * 10 AS band,\n         (julianday(LEAD(timestamp) OVER (ORDER BY timestamp)) - julianday(timestamp)) * 86400 AS seconds\n  FROM positions WHERE drive_id = $drive_id AND speed_kmh IS NOT NULL\n)\nSELECT band AS \"Speed\", ROUND(SUM(seconds), 0) AS \"Seconds\"\nFROM d WHERE band > 0 AND seconds > 0 AND seconds < 15\nGROUP BY band ORDER BY band",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
         },
         "overrides": []
       },
       "options": {
-        "tooltip": {
-          "mode": "multi"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        }
+        "orientation": "horizontal"
       }
     },
     {
-      "id": 7,
+      "id": 15,
       "type": "timeseries",
-      "title": "Elevation (m if km, ft if mi)",
+      "title": "Elevation",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
       },
       "gridPos": {
         "x": 12,
-        "y": 10,
+        "y": 24,
         "w": 12,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -485,8 +678,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\" FROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time,\n       (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\"\nFROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time,\n       (CASE WHEN '$length_unit' = 'mi' THEN elevation_m * 3.28084 ELSE elevation_m END) AS \"Elevation\"\nFROM positions WHERE drive_id = $drive_id AND elevation_m IS NOT NULL ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -497,28 +690,14 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 20,
-            "pointSize": 3
-          }
+          "unit": "none"
         },
         "overrides": []
       },
-      "options": {
-        "tooltip": {
-          "mode": "single"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        }
-      }
+      "options": {}
     },
     {
-      "id": 8,
+      "id": 16,
       "type": "timeseries",
       "title": "Temperatures (°$temp_unit)",
       "datasource": {
@@ -527,9 +706,9 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 32,
         "w": 12,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -537,8 +716,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\", (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\" FROM positions WHERE drive_id = $drive_id AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time,\n       (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\",\n       (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\"\nFROM positions WHERE drive_id = $drive_id\n  AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time,\n       (CASE WHEN '$temp_unit' = 'F' THEN outside_temp_c * 9.0 / 5 + 32 ELSE outside_temp_c END) AS \"Outside\",\n       (CASE WHEN '$temp_unit' = 'F' THEN inside_temp_c * 9.0 / 5 + 32 ELSE inside_temp_c END) AS \"Inside\"\nFROM positions WHERE drive_id = $drive_id\n  AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL) ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -549,61 +728,14 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "pointSize": 0,
-            "spanNulls": true,
-            "lineInterpolation": "smooth"
-          }
+          "unit": "none"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Outside"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#4ade80"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Inside"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#fbbf24"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        }
-      }
+      "options": {}
     },
     {
-      "id": 9,
+      "id": 17,
       "type": "timeseries",
       "title": "Tire pressure",
       "datasource": {
@@ -612,9 +744,9 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 32,
         "w": 12,
-        "h": 6
+        "h": 8
       },
       "targets": [
         {
@@ -622,8 +754,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\", tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\", tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\" FROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "queryText": "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\",\n       tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
+          "rawQueryText": "SELECT timestamp AS time, tpms_pressure_fl AS \"FL\", tpms_pressure_fr AS \"FR\",\n       tpms_pressure_rl AS \"RL\", tpms_pressure_rr AS \"RR\"\nFROM positions WHERE drive_id = $drive_id ORDER BY timestamp",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -634,24 +766,11 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "pointSize": 3
-          }
+          "unit": "none"
         },
         "overrides": []
       },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        }
-      }
+      "options": {}
     }
   ]
 }

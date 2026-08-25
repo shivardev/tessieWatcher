@@ -923,3 +923,100 @@ main:not(.empty) {
     grid-column: 1/-1;
   }
 }
+
+/* Live connection: a status pill in the header while connected, and the
+   address field on the empty state. The pill is deliberately quiet -
+   green dot, name, state - because it is a background fact, not an
+   action. */
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #111819;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.live-badge svg {
+  width: 14px;
+  height: 14px;
+  color: var(--accent);
+  flex: none;
+}
+.live-badge small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.live-badge button {
+  display: flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.live-badge button:hover {
+  color: #fff;
+}
+.live-connect {
+  margin-top: 22px;
+  max-width: 460px;
+}
+.live-connect > label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.live-connect div {
+  display: flex;
+  gap: 8px;
+}
+.live-connect input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+.live-connect input:focus {
+  outline: 1px solid var(--accent);
+}
+.live-connect button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.live-connect button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.live-connect button svg {
+  width: 15px;
+  height: 15px;
+}
+.live-connect small {
+  display: block;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}

@@ -2,7 +2,7 @@
   "id": null,
   "uid": "teslalog-statistics",
   "title": "teslalog: Statistics",
-  "description": "Monthly driving trends - time driven, distance, avg outside temp, drive count, and efficiency - matching TeslaMate's own Statistics dashboard's per-month view. Skips its energy-used/charging columns (those live in teslalog-charging-stats.json instead, to avoid duplicating the same figures two different ways).",
+  "description": "Port of TeslaMate's Statistics dashboard: driving, charging and consumption totals per day, week, month or year, selected with the Period control.",
   "tags": [
     "teslalog"
   ],
@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "table",
-      "title": "Per month",
+      "title": "Per $period",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -51,7 +51,7 @@
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 12
+        "h": 18
       },
       "targets": [
         {
@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC",
-          "rawQueryText": "SELECT\n  strftime('%Y-%m', start_time) AS \"Month\",\n  ROUND(SUM(duration_min), 0) AS \"Minutes driven\",\n  ROUND(SUM(distance_km), 1) AS \"Distance (km)\",\n  ROUND(AVG(outside_temp_avg_c), 1) AS \"Ø Temp (C)\",\n  COUNT(*) AS \"# of drives\",\n  ROUND(100.0 * SUM(distance_km) / NULLIF(SUM(MAX(start_range_km - end_range_km, 0)), 0), 0) AS \"Efficiency %\"\nFROM drives\nWHERE status = 'closed'\nGROUP BY \"Month\"\nORDER BY \"Month\" DESC",
+          "queryText": "WITH drive_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', d.start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', d.start_time)\n    WHEN 'year'  THEN strftime('%Y', d.start_time)\n    ELSE strftime('%Y-%m', d.start_time)\n  END AS period,\n         SUM(d.duration_min) AS minutes,\n         SUM(d.distance_km) AS distance_km,\n         AVG(d.outside_temp_avg_c) AS temp_c,\n         COUNT(*) AS drives,\n         SUM(d.$start_range - d.$end_range) AS range_diff,\n         SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km) AS energy_wh\n  FROM drives d JOIN vehicles v ON v.id = d.vehicle_id\n  WHERE d.status = 'closed' AND d.start_time >= datetime('now', '-1 year')\n  GROUP BY 1\n), charge_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', start_time)\n    WHEN 'year'  THEN strftime('%Y', start_time)\n    ELSE strftime('%Y-%m', start_time)\n  END AS period,\n         COUNT(*) AS charges,\n         SUM(charge_energy_added_kwh) AS added_kwh,\n         SUM(MAX(COALESCE(charge_energy_added_kwh, 0), COALESCE(charge_energy_used_kwh, 0))) AS used_kwh,\n         SUM(cost) AS cost\n  FROM charging_sessions\n  WHERE status = 'closed' AND start_time >= datetime('now', '-1 year')\n    AND (charge_energy_added_kwh IS NULL OR charge_energy_added_kwh > 0)\n  GROUP BY 1\n), periods AS (\n  SELECT period FROM drive_stats UNION SELECT period FROM charge_stats\n)\nSELECT p.period AS \"Period\",\n       ROUND(d.minutes, 0) AS \"Minutes driven\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$temp_unit' = 'C' THEN d.temp_c ELSE d.temp_c * 9.0 / 5.0 + 32 END, 1) AS \"Ø temp (°$temp_unit)\",\n       d.drives AS \"# of drives\",\n       ROUND(d.distance_km / NULLIF(d.range_diff, 0) * 100, 0) AS \"Efficiency %\",\n       ROUND(d.energy_wh / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS \"Consumption (Wh/$length_unit)\",\n       c.charges AS \"# of charges\",\n       ROUND(c.added_kwh, 1) AS \"Energy added (kWh)\",\n       ROUND(c.used_kwh, 1) AS \"Energy used (kWh)\",\n       ROUND(c.used_kwh / NULLIF(c.charges, 0), 1) AS \"Ø per charge (kWh)\",\n       ROUND(c.cost, 2) AS \"Cost\"\nFROM periods p\nLEFT JOIN drive_stats d ON d.period = p.period\nLEFT JOIN charge_stats c ON c.period = p.period\nORDER BY 1 DESC",
+          "rawQueryText": "WITH drive_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', d.start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', d.start_time)\n    WHEN 'year'  THEN strftime('%Y', d.start_time)\n    ELSE strftime('%Y-%m', d.start_time)\n  END AS period,\n         SUM(d.duration_min) AS minutes,\n         SUM(d.distance_km) AS distance_km,\n         AVG(d.outside_temp_avg_c) AS temp_c,\n         COUNT(*) AS drives,\n         SUM(d.$start_range - d.$end_range) AS range_diff,\n         SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km) AS energy_wh\n  FROM drives d JOIN vehicles v ON v.id = d.vehicle_id\n  WHERE d.status = 'closed' AND d.start_time >= datetime('now', '-1 year')\n  GROUP BY 1\n), charge_stats AS (\n  SELECT CASE '$period'\n    WHEN 'day'   THEN strftime('%Y-%m-%d', start_time)\n    WHEN 'week'  THEN strftime('%Y-W%W', start_time)\n    WHEN 'year'  THEN strftime('%Y', start_time)\n    ELSE strftime('%Y-%m', start_time)\n  END AS period,\n         COUNT(*) AS charges,\n         SUM(charge_energy_added_kwh) AS added_kwh,\n         SUM(MAX(COALESCE(charge_energy_added_kwh, 0), COALESCE(charge_energy_used_kwh, 0))) AS used_kwh,\n         SUM(cost) AS cost\n  FROM charging_sessions\n  WHERE status = 'closed' AND start_time >= datetime('now', '-1 year')\n    AND (charge_energy_added_kwh IS NULL OR charge_energy_added_kwh > 0)\n  GROUP BY 1\n), periods AS (\n  SELECT period FROM drive_stats UNION SELECT period FROM charge_stats\n)\nSELECT p.period AS \"Period\",\n       ROUND(d.minutes, 0) AS \"Minutes driven\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$temp_unit' = 'C' THEN d.temp_c ELSE d.temp_c * 9.0 / 5.0 + 32 END, 1) AS \"Ø temp (°$temp_unit)\",\n       d.drives AS \"# of drives\",\n       ROUND(d.distance_km / NULLIF(d.range_diff, 0) * 100, 0) AS \"Efficiency %\",\n       ROUND(d.energy_wh / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END, 0), 0) AS \"Consumption (Wh/$length_unit)\",\n       c.charges AS \"# of charges\",\n       ROUND(c.added_kwh, 1) AS \"Energy added (kWh)\",\n       ROUND(c.used_kwh, 1) AS \"Energy used (kWh)\",\n       ROUND(c.used_kwh / NULLIF(c.charges, 0), 1) AS \"Ø per charge (kWh)\",\n       ROUND(c.cost, 2) AS \"Cost\"\nFROM periods p\nLEFT JOIN drive_stats d ON d.period = p.period\nLEFT JOIN charge_stats c ON c.period = p.period\nORDER BY 1 DESC",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -70,42 +70,12 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Efficiency %"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "gauge",
-                  "mode": "lcd"
-                }
-              },
-              {
-                "id": "max",
-                "value": 100
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "continuous-GrYlRd"
-                }
-              }
-            ]
-          }
-        ]
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
       },
-      "options": {
-        "showHeader": true
-      }
+      "options": {}
     }
   ]
 }

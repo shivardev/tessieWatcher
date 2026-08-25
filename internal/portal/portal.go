@@ -399,18 +399,19 @@ func (s *Server) handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 	out := apiStatus{VehicleName: "Vehicle", Version: s.version, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 
 	var vehicleID int64
-	var displayName, firmware string
-	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)
-	if err := row.Scan(&vehicleID, &displayName, &firmware); err != nil {
+	var displayName, firmware, model, marketingName string
+	row := s.store.DB().QueryRow(`
+		SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, ''),
+		       COALESCE(model, ''), COALESCE(marketing_name, '')
+		FROM vehicles ORDER BY id LIMIT 1`)
+	if err := row.Scan(&vehicleID, &displayName, &firmware, &model, &marketingName); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("portal: api/status query vehicle failed", "error", err)
 		}
 		writeJSON(w, out)
 		return
 	}
-	if displayName != "" {
-		out.VehicleName = displayName
-	}
+	out.VehicleName = vehicleDisplayName(displayName, model, marketingName)
 	out.Firmware = firmware
 
 	if state, err := s.store.CurrentState(vehicleID); err == nil && state != "" {
@@ -516,9 +517,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit(), Version: s.version}
 
 	var vehicleID int64
-	row := s.store.DB().QueryRow(`SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, '') FROM vehicles ORDER BY id LIMIT 1`)
-	var displayName string
-	if err := row.Scan(&vehicleID, &displayName, &data.Firmware); err != nil {
+	row := s.store.DB().QueryRow(`
+		SELECT id, COALESCE(display_name, ''), COALESCE(firmware_version, ''),
+		       COALESCE(model, ''), COALESCE(marketing_name, '')
+		FROM vehicles ORDER BY id LIMIT 1`)
+	var displayName, model, marketingName string
+	if err := row.Scan(&vehicleID, &displayName, &data.Firmware, &model, &marketingName); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("portal: query vehicle failed", "error", err)
 		}
@@ -526,9 +530,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		indexTemplate.Execute(w, data)
 		return
 	}
-	if displayName != "" {
-		data.VehicleName = displayName
-	}
+	data.VehicleName = vehicleDisplayName(displayName, model, marketingName)
 
 	if lt, err := s.store.Lifetime(vehicleID); err != nil {
 		slog.Warn("portal: lifetime stats failed", "error", err)
@@ -651,4 +653,24 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	filename := fmt.Sprintf("tesla-%s.db", time.Now().UTC().Format("2006-01-02"))
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
 	http.ServeContent(w, r, filename, time.Now(), f)
+}
+
+// vehicleDisplayName picks the best available name for the car. Tesla
+// returns an empty display_name for a vehicle the owner never named in
+// the app, which is the common case - so falling straight through to
+// the literal word "Vehicle" mislabels every unnamed car. The model is
+// known from vehicle_config either way, so "Model Y" is both available
+// and what the owner would call it.
+func vehicleDisplayName(displayName, model, marketingName string) string {
+	if displayName != "" {
+		return displayName
+	}
+	if model == "" {
+		return "Vehicle"
+	}
+	name := "Model " + model
+	if marketingName != "" {
+		return name + " " + marketingName
+	}
+	return name
 }

@@ -1,9 +1,22 @@
-import { lazy, Suspense, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { CarFront, Database, Gauge, Menu, Upload, X } from 'lucide-react'
+import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
+import { CarFront, Database, Gauge, Menu, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric } from './domain'
 import { openDatabase, openDatabaseBytes } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
+import {
+  fetchMeta,
+  fetchSnapshot,
+  fetchStatus,
+  hasNewData,
+  mixedContentBlocked,
+  normaliseBaseUrl,
+  pollIntervalMs,
+  rememberUrl,
+  rememberedUrl,
+  type LiveMeta,
+  type LiveStatus,
+} from './liveConnection'
 import {
   BatteryHealthDashboard,
   DatabaseInformationDashboard,
@@ -506,7 +519,77 @@ export default function App() {
   const [selectedDriveId, setSelectedDriveId] = useState<number | null>(null)
   const [selectedChargeId, setSelectedChargeId] = useState<number | null>(null)
   const [settings, setSettings] = useState<ViewSettings>(defaultViewSettings)
+  const [liveUrl, setLiveUrl] = useState(rememberedUrl)
+  const [live, setLive] = useState<LiveStatus | null>(null)
+  const [liveMeta, setLiveMeta] = useState<LiveMeta | null>(null)
+  const [liveCheckedAt, setLiveCheckedAt] = useState<Date | null>(null)
   const choose = (): void => input.current?.click()
+
+  // Pull a snapshot from a running teslalog and open it. Kept separate
+  // from the poll loop so the Connect button and the loop share one code
+  // path for "the data moved, fetch it".
+  const pullSnapshot = async (baseUrl: string, meta: LiveMeta): Promise<void> => {
+    const bytes = await fetchSnapshot(baseUrl)
+    setData(await openDatabaseBytes('tesla.db', bytes.byteLength, bytes))
+    setLiveMeta(meta)
+  }
+
+  const connect = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      const baseUrl = normaliseBaseUrl(liveUrl)
+      const [status, meta] = await Promise.all([fetchStatus(baseUrl), fetchMeta(baseUrl)])
+      setLive(status)
+      await pullSnapshot(baseUrl, meta)
+      setLiveUrl(baseUrl)
+      rememberUrl(baseUrl)
+      setLiveCheckedAt(new Date())
+      setActive('Overview')
+      setSelectedDriveId(null)
+      setSelectedChargeId(null)
+    } catch (reason: unknown) {
+      setLive(null)
+      setError(reason instanceof Error ? reason.message : 'Could not connect.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // While connected, ask /api/meta on a timer and re-download only when
+  // it says something changed. /api/meta is ~100 bytes and ~54 ms on the
+  // Pi; /download rebuilds the whole 10 MB snapshot, so the check is
+  // what makes this affordable to leave running.
+  useEffect(() => {
+    if (live === null || liveMeta === null) return
+    let active = true
+    const timer = setInterval(() => {
+      void (async () => {
+        try {
+          const next = await fetchMeta(liveUrl)
+          if (!active) return
+          setLiveCheckedAt(new Date())
+          if (hasNewData(liveMeta, next)) await pullSnapshot(liveUrl, next)
+        } catch {
+          // A missed poll is not worth interrupting the view for - the
+          // Pi reboots, the laptop sleeps, the wifi drops. The next tick
+          // picks it up, and the "checked" timestamp stops advancing,
+          // which is the honest signal that something is wrong.
+        }
+      })()
+    }, pollIntervalMs)
+    return () => {
+      active = false
+      clearInterval(timer)
+    }
+  }, [live, liveMeta, liveUrl])
+
+  const disconnect = (): void => {
+    setLive(null)
+    setLiveMeta(null)
+    setLiveCheckedAt(null)
+  }
+
   const change = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -655,6 +738,21 @@ export default function App() {
               </label>
             </div>
           )}
+          {live !== null && (
+            <div className="live-badge" title={`Connected to ${liveUrl} — teslalog ${live.version}`}>
+              <Wifi />
+              <span>
+                {live.vehicleName} · {live.state}
+                {live.batteryLevel === null ? '' : ` · ${live.batteryLevel}%`}
+              </span>
+              <small>
+                {liveCheckedAt === null ? '' : `checked ${liveCheckedAt.toLocaleTimeString()}`}
+              </small>
+              <button type="button" onClick={disconnect} aria-label="Disconnect">
+                <X />
+              </button>
+            </div>
+          )}
           <button className="open" type="button" onClick={choose} disabled={busy}>
             <Upload />
             {busy ? 'Opening…' : data ? 'Change database' : 'Open database'}
@@ -745,6 +843,34 @@ export default function App() {
               <Upload />
               Open database or dump
             </button>
+            <form
+              className="live-connect"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void connect()
+              }}
+            >
+              <label htmlFor="live-url">…or connect to a running teslalog</label>
+              <div>
+                <input
+                  id="live-url"
+                  value={liveUrl}
+                  onChange={(event) => setLiveUrl(event.target.value)}
+                  placeholder="10.0.0.236:8083"
+                  spellCheck={false}
+                />
+                <button type="submit" disabled={busy}>
+                  <Wifi />
+                  {busy ? 'Connecting…' : 'Connect'}
+                </button>
+              </div>
+              <small>
+                Fetches the snapshot once, then checks for new drives every minute and re-downloads
+                only when something has changed.
+                {mixedContentBlocked('http://') &&
+                  ' This page is served over HTTPS, so it cannot reach a plain-HTTP address on your LAN — open the viewer from the teslalog portal itself.'}
+              </small>
+            </form>
             <small>
               <Database />
               Your file never leaves this device

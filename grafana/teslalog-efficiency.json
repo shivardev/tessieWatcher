@@ -2,7 +2,7 @@
   "id": null,
   "uid": "teslalog-efficiency",
   "title": "teslalog: Efficiency",
-  "description": "Derived efficiency figures from drive battery/range deltas - teslalog stores the same raw columns TeslaMate's own efficiency panel computes from, but doesn't pre-compute this itself (see README's Data model section).",
+  "description": "Port of TeslaMate's Efficiency dashboard. Net consumption counts only range lost while driving; gross also counts range lost while parked. Both follow the Range type (rated/ideal) setting.",
   "tags": [
     "teslalog"
   ],
@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Configured Wh/km (if set)",
+      "title": "Ø Consumption (net) (Wh/$length_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1",
-          "rawQueryText": "SELECT efficiency_wh_km AS value FROM vehicles ORDER BY id LIMIT 1",
+          "queryText": "SELECT SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km)\n       / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (SUM(d.distance_km)) / 1.60934 ELSE (SUM(d.distance_km)) END, 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id\nWHERE d.status = 'closed'\n  AND d.distance_km IS NOT NULL\n  AND d.$start_range - d.$end_range >= 0.1\n  AND d.start_time >= datetime('now', '-90 days')",
+          "rawQueryText": "SELECT SUM((d.$start_range - d.$end_range) * v.efficiency_wh_km)\n       / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (SUM(d.distance_km)) / 1.60934 ELSE (SUM(d.distance_km)) END, 0) AS value\nFROM drives d JOIN vehicles v ON v.id = d.vehicle_id\nWHERE d.status = 'closed'\n  AND d.distance_km IS NOT NULL\n  AND d.$start_range - d.$end_range >= 0.1\n  AND d.start_time >= datetime('now', '-90 days')",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -88,7 +88,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Avg battery %/km used (90d)",
+      "title": "Ø Consumption (gross) (Wh/$length_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -105,8 +105,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')",
-          "rawQueryText": "SELECT COALESCE(AVG((start_battery_level - end_battery_level) * 1.0 / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_time >= datetime('now', '-90 days')",
+          "queryText": "SELECT (\nWITH events AS (\n  SELECT 'drive_start' AS event, start_time AS time, $start_range AS range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'drive_end', COALESCE(end_time, start_time), $end_range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_start', start_time, $start_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_end', COALESCE(end_time, start_time), $end_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n), ordered AS (\n  SELECT event, range, LEAD(range) OVER (ORDER BY time) AS next_range FROM events WHERE range IS NOT NULL\n), losses AS (\n  SELECT CASE\n           WHEN event = 'drive_start' THEN range - next_range\n           WHEN range - next_range > 0 THEN range - next_range\n           ELSE 0\n         END AS loss\n  FROM ordered WHERE next_range IS NOT NULL\n)\nSELECT COALESCE(SUM(loss), 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1) FROM losses) / NULLIF((SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')), 0) AS value",
+          "rawQueryText": "SELECT (\nWITH events AS (\n  SELECT 'drive_start' AS event, start_time AS time, $start_range AS range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'drive_end', COALESCE(end_time, start_time), $end_range FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_start', start_time, $start_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n  UNION ALL SELECT 'charge_end', COALESCE(end_time, start_time), $end_range FROM charging_sessions WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')\n), ordered AS (\n  SELECT event, range, LEAD(range) OVER (ORDER BY time) AS next_range FROM events WHERE range IS NOT NULL\n), losses AS (\n  SELECT CASE\n           WHEN event = 'drive_start' THEN range - next_range\n           WHEN range - next_range > 0 THEN range - next_range\n           ELSE 0\n         END AS loss\n  FROM ordered WHERE next_range IS NOT NULL\n)\nSELECT COALESCE(SUM(loss), 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1) FROM losses) / NULLIF((SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')), 0) AS value",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -118,7 +118,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "decimals": 3
+          "decimals": 0
         },
         "overrides": []
       },
@@ -134,7 +134,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Avg rated-range km lost per km driven (90d)",
+      "title": "Logged Distance ($length_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -151,8 +151,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')",
-          "rawQueryText": "SELECT COALESCE(AVG((start_range_km - end_range_km) / distance_km), 0) AS value\nFROM drives\nWHERE status = 'closed' AND distance_km > 1 AND start_range_km IS NOT NULL AND end_range_km IS NOT NULL\n  AND start_time >= datetime('now', '-90 days')",
+          "queryText": "SELECT (SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')) AS value",
+          "rawQueryText": "SELECT (SELECT CASE WHEN '$length_unit' = 'mi' THEN (SUM(distance_km)) / 1.60934 ELSE (SUM(distance_km)) END FROM drives WHERE status = 'closed' AND start_time >= datetime('now', '-90 days')) AS value",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -164,7 +164,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "decimals": 2
+          "decimals": 1
         },
         "overrides": []
       },
@@ -179,8 +179,8 @@
     },
     {
       "id": 4,
-      "type": "table",
-      "title": "Per-drive efficiency (most recent 200)",
+      "type": "stat",
+      "title": "Current $preferred_range efficiency (Wh/$length_unit)",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -188,8 +188,8 @@
       "gridPos": {
         "x": 0,
         "y": 4,
-        "w": 24,
-        "h": 10
+        "w": 8,
+        "h": 4
       },
       "targets": [
         {
@@ -197,8 +197,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200",
-          "rawQueryText": "SELECT\n  start_time AS time,\n  ROUND(distance_km, 1) AS \"km\",\n  (start_battery_level - end_battery_level) AS \"% used\",\n  ROUND(CASE WHEN distance_km > 0 THEN (start_battery_level - end_battery_level) * 1.0 / distance_km ELSE NULL END, 3) AS \"%/km\",\n  ROUND(start_range_km - end_range_km, 1) AS \"rated km lost\"\nFROM drives\nWHERE status = 'closed' AND distance_km > 0\nORDER BY start_time DESC\nLIMIT 200",
+          "queryText": "SELECT efficiency_wh_km * CASE WHEN '$length_unit' = 'mi' THEN 1.60934 ELSE 1 END AS value\nFROM vehicles ORDER BY id LIMIT 1",
+          "rawQueryText": "SELECT efficiency_wh_km * CASE WHEN '$length_unit' = 'mi' THEN 1.60934 ELSE 1 END AS value\nFROM vehicles ORDER BY id LIMIT 1",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -208,12 +208,134 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "none",
+          "decimals": 0
+        },
         "overrides": []
       },
       "options": {
-        "showHeader": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
       }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Temperature – Driving Efficiency",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH t AS (\n  SELECT CASE WHEN '$temp_unit' = 'C'\n              THEN ROUND(d.outside_temp_avg_c / 5.0) * 5\n              ELSE ROUND((d.outside_temp_avg_c * 9.0 / 5.0 + 32) / 10.0) * 10\n         END AS bucket,\n         SUM(d.$start_range - d.$end_range) AS total_range,\n         SUM(d.distance_km) AS total_distance,\n         SUM(d.duration_min) AS duration\n  FROM drives d\n  WHERE d.status = 'closed'\n    AND d.distance_km IS NOT NULL\n    AND d.outside_temp_avg_c IS NOT NULL\n    AND CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END >= $min_distance\n    AND d.$start_range - d.$end_range > 0.1\n    AND d.start_time >= datetime('now', '-90 days')\n  GROUP BY 1\n)\nSELECT bucket AS \"Outside temp (°$temp_unit)\",\n       ROUND(total_distance / NULLIF(total_range, 0), 3) AS \"Efficiency\",\n       ROUND(total_range / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1), 0) AS \"Consumption (Wh/$length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END / NULLIF(duration, 0) * 60, 1) AS \"Ø speed ($length_unit/h)\"\nFROM t\nORDER BY 1 DESC",
+          "rawQueryText": "WITH t AS (\n  SELECT CASE WHEN '$temp_unit' = 'C'\n              THEN ROUND(d.outside_temp_avg_c / 5.0) * 5\n              ELSE ROUND((d.outside_temp_avg_c * 9.0 / 5.0 + 32) / 10.0) * 10\n         END AS bucket,\n         SUM(d.$start_range - d.$end_range) AS total_range,\n         SUM(d.distance_km) AS total_distance,\n         SUM(d.duration_min) AS duration\n  FROM drives d\n  WHERE d.status = 'closed'\n    AND d.distance_km IS NOT NULL\n    AND d.outside_temp_avg_c IS NOT NULL\n    AND CASE WHEN '$length_unit' = 'mi' THEN (d.distance_km) / 1.60934 ELSE (d.distance_km) END >= $min_distance\n    AND d.$start_range - d.$end_range > 0.1\n    AND d.start_time >= datetime('now', '-90 days')\n  GROUP BY 1\n)\nSELECT bucket AS \"Outside temp (°$temp_unit)\",\n       ROUND(total_distance / NULLIF(total_range, 0), 3) AS \"Efficiency\",\n       ROUND(total_range / NULLIF(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 0) * (SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1), 0) AS \"Consumption (Wh/$length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END, 1) AS \"Driven ($length_unit)\",\n       ROUND(CASE WHEN '$length_unit' = 'mi' THEN (total_distance) / 1.60934 ELSE (total_distance) END / NULLIF(duration, 0) * 60, 1) AS \"Ø speed ($length_unit/h)\"\nFROM t\nORDER BY 1 DESC",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Derived ideal efficiencies (Wh/$length_unit)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_ideal_range_km - start_ideal_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_ideal_range_km IS NOT NULL\n  AND end_ideal_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3",
+          "rawQueryText": "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_ideal_range_km - start_ideal_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_ideal_range_km IS NOT NULL\n  AND end_ideal_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 7,
+      "type": "table",
+      "title": "Derived rated efficiencies (Wh/$length_unit)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_range_km - start_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_range_km IS NOT NULL\n  AND end_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3",
+          "rawQueryText": "SELECT ROUND(charge_energy_added_kwh\n              / NULLIF(end_range_km - start_range_km, 0)\n              / CASE WHEN '$length_unit' = 'mi' THEN 1.0 / 1.60934 ELSE 1 END, 3) * 1000 AS \"efficiency_$length_unit\",\n       COUNT(*) AS \"count\"\nFROM charging_sessions\nWHERE status = 'closed'\n  AND (julianday(end_time) - julianday(start_time)) * 1440 > 10\n  AND end_battery_level <= 95\n  AND start_range_km IS NOT NULL\n  AND end_range_km IS NOT NULL\n  AND charge_energy_added_kwh > 0\nGROUP BY 1\nHAVING \"efficiency_$length_unit\" IS NOT NULL\nORDER BY 2 DESC\nLIMIT 3",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
     }
   ]
 }

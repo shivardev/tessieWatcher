@@ -242,3 +242,25 @@ func TestAPIMetaReportsChangeCounters(t *testing.T) {
 		t.Fatalf("expected the closed drive to tick the counter, got %d", d)
 	}
 }
+
+// TestVehicleDisplayNameFallsBackToTheModel pins that an unnamed car is
+// still labelled usefully. Tesla returns an empty display_name for a
+// vehicle the owner never named in the app - the live database has
+// exactly that - so falling through to the literal word "Vehicle"
+// mislabels the common case, when vehicle_config already told us the
+// model.
+func TestVehicleDisplayNameFallsBackToTheModel(t *testing.T) {
+	cases := []struct{ displayName, model, marketing, want string }{
+		{"Bluey", "Y", "LR AWD", "Bluey"},
+		{"", "Y", "LR AWD", "Model Y LR AWD"},
+		{"", "Y", "", "Model Y"},
+		{"", "3", "", "Model 3"},
+		{"", "", "", "Vehicle"},
+	}
+	for _, tc := range cases {
+		if got := vehicleDisplayName(tc.displayName, tc.model, tc.marketing); got != tc.want {
+			t.Errorf("vehicleDisplayName(%q, %q, %q) = %q, want %q",
+				tc.displayName, tc.model, tc.marketing, got, tc.want)
+		}
+	}
+}

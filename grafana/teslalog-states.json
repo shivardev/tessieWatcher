@@ -2,7 +2,7 @@
   "id": null,
   "uid": "teslalog-states",
   "title": "teslalog: States",
-  "description": "State-machine history (asleep/offline/online/driving/charging/idle/suspended) - teslalog's states table is a superset of TeslaMate's own (which only tracks online/offline/asleep).",
+  "description": "Port of TeslaMate's States dashboard: what the car is doing now, when that last changed, and how much of the logged period it has spent parked.",
   "tags": [
     "teslalog"
   ],
@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Currently",
+      "title": "Current State",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -50,7 +50,7 @@
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 6,
+        "w": 8,
         "h": 4
       },
       "targets": [
@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1",
-          "rawQueryText": "SELECT state AS value FROM states ORDER BY id DESC LIMIT 1",
+          "queryText": "SELECT state AS value FROM states ORDER BY started_at DESC LIMIT 1",
+          "rawQueryText": "SELECT state AS value FROM states ORDER BY started_at DESC LIMIT 1",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -71,8 +71,7 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
-          "decimals": 0
+          "unit": "none"
         },
         "overrides": []
       },
@@ -87,17 +86,17 @@
     },
     {
       "id": 2,
-      "type": "table",
-      "title": "Recent state changes",
+      "type": "stat",
+      "title": "Last state change",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
       },
       "gridPos": {
-        "x": 0,
-        "y": 4,
-        "w": 24,
-        "h": 10
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
       },
       "targets": [
         {
@@ -105,8 +104,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500",
-          "rawQueryText": "SELECT\n  started_at AS time,\n  state AS \"State\",\n  ended_at AS \"Ended\",\n  CASE WHEN ended_at IS NOT NULL\n    THEN ROUND((julianday(ended_at) - julianday(started_at)) * 24 * 60, 1)\n    ELSE NULL\n  END AS \"Duration (min)\"\nFROM states\nORDER BY started_at DESC\nLIMIT 500",
+          "queryText": "SELECT started_at AS value FROM states ORDER BY started_at DESC LIMIT 1",
+          "rawQueryText": "SELECT started_at AS value FROM states ORDER BY started_at DESC LIMIT 1",
           "queryType": "table",
           "timeColumns": [
             "time",
@@ -116,11 +115,183 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "none"
+        },
         "overrides": []
       },
       "options": {
-        "showHeader": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "parked (%)",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT (1 - SUM(duration_min)\n             / NULLIF((julianday(MAX(end_time)) - julianday(MIN(start_time))) * 1440, 0)) * 100 AS value\nFROM drives WHERE status = 'closed'",
+          "rawQueryText": "SELECT (1 - SUM(duration_min)\n             / NULLIF((julianday(MAX(end_time)) - julianday(MIN(start_time))) * 1440, 0)) * 100 AS value\nFROM drives WHERE status = 'closed'",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "state-timeline",
+      "title": "States",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT started_at AS time, state AS \"State\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at",
+          "rawQueryText": "SELECT started_at AS time, state AS \"State\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Recent state changes",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT started_at AS \"Time\", state AS \"State\", ended_at AS \"Ended\",\n       ROUND((julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 1440, 1) AS \"Duration (min)\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at DESC\nLIMIT 200",
+          "rawQueryText": "SELECT started_at AS \"Time\", state AS \"State\", ended_at AS \"Ended\",\n       ROUND((julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 1440, 1) AS \"Duration (min)\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nORDER BY started_at DESC\nLIMIT 200",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 6,
+      "type": "piechart",
+      "title": "Time in each state",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "SELECT state AS \"State\",\n       ROUND(SUM(julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 24, 2) AS \"Hours\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nGROUP BY 1\nORDER BY 2 DESC",
+          "rawQueryText": "SELECT state AS \"State\",\n       ROUND(SUM(julianday(COALESCE(ended_at, datetime('now'))) - julianday(started_at)) * 24, 2) AS \"Hours\"\nFROM states\nWHERE started_at >= datetime('now', '-90 days')\nGROUP BY 1\nORDER BY 2 DESC",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "right"
+        }
       }
     }
   ]

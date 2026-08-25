@@ -1,8 +1,8 @@
 {
   "id": null,
   "uid": "teslalog-projected-range",
-  "title": "teslalog: Projected Range",
-  "description": "Rated range extrapolated to 100% SoC (battery_range_km * 100 / battery_level) plotted against cumulative mileage over the vehicle's life - matching TeslaMate's own Projected Range dashboard. A declining trend here over months/years is the clearest signal of real battery degradation.",
+  "title": "teslalog: Projected range",
+  "description": "Port of TeslaMate's Projected range dashboard. Projected range is the range the car would report at 100% SOC; plotting it against mileage, battery level and outdoor temperature separates real degradation from the two effects that merely look like it.",
   "tags": [
     "teslalog"
   ],
@@ -12,7 +12,7 @@
   "editable": true,
   "graphTooltip": 1,
   "time": {
-    "from": "now-1y",
+    "from": "now-90d",
     "to": "now"
   },
   "templating": {
@@ -42,7 +42,7 @@
     {
       "id": 1,
       "type": "timeseries",
-      "title": "Projected range at 100% vs mileage",
+      "title": "Projected Range - Mileage",
       "datasource": {
         "type": "frser-sqlite-datasource",
         "uid": "${DS_SQLITE}"
@@ -51,7 +51,7 @@
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 14
+        "h": 9
       },
       "targets": [
         {
@@ -59,85 +59,99 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, ROUND(battery_range_km * 100.0 / NULLIF(battery_level,0), 1) AS \"Projected range (km)\" FROM battery_samples WHERE battery_level > 0 ORDER BY timestamp",
+          "queryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (odometer) / 1.60934 ELSE (odometer) END, 0) AS \"Odometer ($length_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE odometer IS NOT NULL\nGROUP BY 1\nORDER BY 1",
+          "rawQueryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT ROUND(CASE WHEN '$length_unit' = 'mi' THEN (odometer) / 1.60934 ELSE (odometer) END, 0) AS \"Odometer ($length_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE odometer IS NOT NULL\nGROUP BY 1\nORDER BY 1",
           "queryType": "table",
           "timeColumns": [
             "time",
             "ts"
           ],
           "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
         },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Projected Range - Battery Level",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
         {
           "datasource": {
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time",
-          "rawQueryText": "SELECT end_time AS time, end_odometer_km AS \"Mileage (km)\" FROM drives WHERE status = 'closed' AND end_odometer_km IS NOT NULL ORDER BY end_time",
+          "queryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT soc AS \"Battery level (%)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nGROUP BY 1\nORDER BY 1",
+          "rawQueryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT soc AS \"Battery level (%)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nGROUP BY 1\nORDER BY 1",
           "queryType": "table",
           "timeColumns": [
             "time",
             "ts"
           ],
-          "refId": "B"
+          "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "pointSize": 3
-          }
+          "unit": "none"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Mileage (km)"
-            },
-            "properties": [
-              {
-                "id": "custom.axisPlacement",
-                "value": "right"
-              },
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#fbbf24"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Projected range (km)"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#4ade80"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
-      "options": {
-        "tooltip": {
-          "mode": "multi"
-        },
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Projected Range - Outdoor Temp",
+      "datasource": {
+        "type": "frser-sqlite-datasource",
+        "uid": "${DS_SQLITE}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "frser-sqlite-datasource",
+            "uid": "${DS_SQLITE}"
+          },
+          "queryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT CASE WHEN '$temp_unit' = 'C' THEN ROUND(temp) ELSE ROUND(temp * 9.0 / 5.0 + 32) END AS \"Outside temp (°$temp_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE temp IS NOT NULL\nGROUP BY 1\nORDER BY 1",
+          "rawQueryText": "WITH samples AS (\n  SELECT p.timestamp, p.$pos_range AS range, p.usable_battery_level AS soc,\n         p.odometer_km AS odometer, p.outside_temp_c AS temp\n  FROM positions p\n  WHERE p.usable_battery_level > 0 AND p.$pos_range > 0\n    AND p.battery_level = p.usable_battery_level\n    AND p.timestamp >= datetime('now', '-90 days')\n  UNION ALL\n  SELECT cs.timestamp, cs.$pos_range, cs.usable_battery_level,\n         (SELECT MAX(d.end_odometer_km) FROM drives d WHERE d.end_time <= cs.timestamp),\n         NULL\n  FROM charging_samples cs\n  WHERE cs.usable_battery_level > 0 AND cs.$pos_range > 0\n    AND cs.battery_level = cs.usable_battery_level\n    AND cs.timestamp >= datetime('now', '-90 days')\n)\nSELECT CASE WHEN '$temp_unit' = 'C' THEN ROUND(temp) ELSE ROUND(temp * 9.0 / 5.0 + 32) END AS \"Outside temp (°$temp_unit)\",\n       ROUND(AVG(CASE WHEN '$length_unit' = 'mi' THEN (range * 100.0 / soc) / 1.60934 ELSE (range * 100.0 / soc) END), 1) AS \"Projected range ($length_unit)\"\nFROM samples\nWHERE temp IS NOT NULL\nGROUP BY 1\nORDER BY 1",
+          "queryType": "table",
+          "timeColumns": [
+            "time",
+            "ts"
+          ],
+          "refId": "A"
         }
-      }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {}
     }
   ]
 }
