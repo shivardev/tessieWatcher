@@ -469,7 +469,7 @@ export function TripDashboard({
   const tripQueries = useMemo(
     () => [
       `SELECT p.latitude, p.longitude, p.timestamp FROM positions p JOIN drives d ON d.id=p.drive_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange, 'd.start_time')} AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL AND (p.id % 25)=0 ORDER BY p.timestamp`,
-      `SELECT COALESCE(SUM(d.distance_km),0), COALESCE(SUM(d.duration_min),0), COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0), COALESCE(SUM(d.distance_km)/NULLIF(SUM(d.duration_min)/60.0,0),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange, 'd.start_time')}`,
+      `SELECT COALESCE(SUM(d.distance_km),0), COALESCE(SUM(d.duration_min),0), COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0), COALESCE(SUM(d.distance_km)/NULLIF(SUM(d.duration_min)/60.0,0),0), COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange, 'd.start_time')}`,
       `SELECT COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*24 ELSE 0 END),0), COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0) FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
       `WITH events AS (
          SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}
@@ -513,6 +513,11 @@ export function TripDashboard({
   const billedEnergy = number(charge?.[6]) ?? 0
   const grossEnergy = number(results[3]?.rows[0]?.[0]) ?? 0
   const shownDistance = distance(distanceKm, settings.lengthUnit)
+  // Gross consumption divides by the odometer span, not the summed drive
+  // distance - see the Efficiency dashboard's gross panel for why. Falls
+  // back to drive distance if the odometer delta is unavailable.
+  const odometerKm = number(aggregate?.[4]) ?? 0
+  const grossDistance = distance(odometerKm > 0 ? odometerKm : distanceKm, settings.lengthUnit)
   const timeSpent = [
     { name: 'driving', value: driveMinutes * 60, color: '#5794f2' },
     { name: 'charging (AC)', value: acSeconds, color: '#73bf69' },
@@ -535,7 +540,7 @@ export function TripDashboard({
           <article><span>Ø Speed excl. breaks</span><strong>{speed(averageSpeed, settings.lengthUnit).toFixed(1)} {settings.lengthUnit}/h</strong></article>
           <article><span>Ø Speed incl. DC charging</span><strong>{(shownDistance / Math.max(driveMinutes / 60 + dcHours, 0.001)).toFixed(1)} {settings.lengthUnit}/h</strong></article>
           <article><span>Ø Consumption (net)</span><strong>{(netEnergy / Math.max(shownDistance, .001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article>
-          <article><span>Ø Consumption (gross)</span><strong>{(grossEnergy / Math.max(shownDistance, .001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article>
+          <article><span>Ø Consumption (gross)</span><strong>{(grossEnergy / Math.max(grossDistance, .001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article>
           <article><span>Total charging cost</span><strong>{chargingCost.toFixed(2)}</strong></article>
           <article><span>Ø Cost per 100 {settings.lengthUnit}</span><strong>{(chargingCost / Math.max(billedEnergy, .001) * (grossEnergy / 1000) / Math.max(shownDistance, .001) * 100).toFixed(2)}</strong></article>
           <article className="energy-bars"><span>Total energy</span><div><i style={{width:`${Math.min(100,grossEnergy/1000/Math.max(grossEnergy/1000,acEnergy+dcEnergy)*100)}%`}} />{(grossEnergy/1000).toFixed(2)} kWh consumed</div><div><i style={{width:`${Math.min(100,(acEnergy+dcEnergy)/Math.max(grossEnergy/1000,acEnergy+dcEnergy)*100)}%`}} />{(acEnergy+dcEnergy).toFixed(2)} kWh added</div></article>
@@ -678,7 +683,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
       (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN inside_temp_c*9.0/5+32 ELSE inside_temp_c END FROM positions WHERE inside_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1),
       (SELECT charger_voltage FROM charging_samples ORDER BY timestamp DESC LIMIT 1),(SELECT charger_power_kw FROM charging_samples ORDER BY timestamp DESC LIMIT 1)
      FROM vehicles v ORDER BY v.id LIMIT 1`,
-    `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0),COALESCE(SUM(d.distance_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings.timeRange,'d.start_time')}`,
+    `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0),COALESCE(SUM(d.distance_km),0),COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings.timeRange,'d.start_time')}`,
     `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT COALESCE(SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1),0) FROM losses`,
     `SELECT timestamp time,battery_level "SOC (%)" FROM battery_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
     `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
@@ -692,6 +697,10 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
   const distanceKm=number(results[1]?.rows[0]?.[1])??0
   const gross=number(results[2]?.rows[0]?.[0])??0
   const shownDistance=distance(distanceKm,settings.lengthUnit)
+  // Gross divides by odometer span (see the Efficiency gross panel);
+  // net keeps summed drive distance.
+  const odometerKm=number(results[1]?.rows[0]?.[2])??0
+  const grossDistance=distance(odometerKm>0?odometerKm:distanceKm,settings.lengthUnit)
   const states=(results[5]?.rows??[]).flatMap((stateRow)=>{
     if(typeof stateRow[0]!=='string'||typeof stateRow[1]!=='string'||typeof stateRow[2]!=='string')return[]
     return[{start:timestampDate(stateRow[0]).getTime(),end:timestampDate(stateRow[1]).getTime(),state:stateRow[2]}]
@@ -701,7 +710,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     {error&&<p className="no-data">{error}</p>}
     <section className="overview-stat-grid">
       <article><span>Battery level</span><strong>{value(4)}%</strong></article><article><span>Charging voltage</span><strong>{value(10)} V</strong></article><article><span>Charging power</span><strong>{value(11)} kW</strong></article>
-      <article><span>Ø Consumption (net)</span><strong>{(net/Math.max(shownDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Ø Consumption (gross)</span><strong>{(gross/Math.max(shownDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Total distance logged</span><strong>{shownDistance.toFixed(1)} {settings.lengthUnit}</strong></article>
+      <article><span>Ø Consumption (net)</span><strong>{(net/Math.max(shownDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Ø Consumption (gross)</span><strong>{(gross/Math.max(grossDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Total distance logged</span><strong>{shownDistance.toFixed(1)} {settings.lengthUnit}</strong></article>
       <article><span>Range</span><strong>{value(5)} {settings.lengthUnit}</strong></article><article><span>Firmware</span><strong>{text(row?.[2])}</strong></article><article><span>Odometer</span><strong>{value(6)} {settings.lengthUnit}</strong></article>
       <article><span>Driver temp</span><strong>{value(7)} °{settings.temperatureUnit}</strong></article><article><span>Outside temp</span><strong>{value(8)} °{settings.temperatureUnit}</strong></article><article><span>Inside temp</span><strong>{value(9)} °{settings.temperatureUnit}</strong></article>
     </section>

@@ -169,7 +169,7 @@ describe('TeslaMate import file encodings', () => {
 
   const importsToOneDrive = async (bytes: Uint8Array) => {
     await initSqlJs()
-    const file = new File([bytes], 'teslamate.sql')
+    const file = new File([bytes as BlobPart], 'teslamate.sql')
     expect(await isPostgresDump(file)).toBe(true)
     const out = await importTeslaMateDump(file, () => undefined)
     const SQL = await initSqlJs()
@@ -194,7 +194,7 @@ describe('TeslaMate import file encodings', () => {
   })
 
   it('rejects a UTF-16LE custom-format dump with the plain-format hint', async () => {
-    const file = new File([toUtf16le('PGDMP\u0000\u0000junk')], 'teslamate.dump')
+    const file = new File([toUtf16le('PGDMP\u0000\u0000junk') as BlobPart], 'teslamate.dump')
     await expect(importTeslaMateDump(file, () => undefined)).rejects.toThrow(/--format=plain/u)
   })
 })

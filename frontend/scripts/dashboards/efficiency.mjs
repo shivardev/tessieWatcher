@@ -45,7 +45,19 @@ WITH events AS (
 )
 SELECT COALESCE(SUM(loss), 0) * ${carEfficiency} FROM losses`
 
+// The "Logged Distance" stat is the sum of drive distances, matching
+// TeslaMate's own panel of that name.
 const loggedDistance = `(SELECT ${toUnit(`SUM(distance_km)`)} FROM drives WHERE ${closedDrives})`
+
+// Gross consumption divides by the ODOMETER SPAN, not by summed drive
+// distance - TeslaMate's shared gross query telescopes the odometer
+// across every drive/charge boundary event, which is the car's true
+// mileage. Summed drive distance under-counts it whenever a drive was
+// incomplete or unlogged: on the real dump the odometer span is 4400 mi
+// against 3640 mi of summed drives, and dividing the gross energy by the
+// smaller number inflated gross consumption to 288 Wh/mi where TeslaMate
+// shows 238. Using the odometer span brings it to 238.6, matching.
+const odometerDistance = `(SELECT ${toUnit(`MAX(end_odometer_km) - MIN(start_odometer_km)`)} FROM drives WHERE ${closedDrives})`
 
 await buildDashboard({
   uid: 'teslalog-efficiency',
@@ -73,7 +85,7 @@ WHERE d.status = 'closed'
       w: 8,
       h: 4,
       decimals: 0,
-      sql: `SELECT (${grossEnergyWh}) / NULLIF(${loggedDistance}, 0) AS value`,
+      sql: `SELECT (${grossEnergyWh}) / NULLIF(${odometerDistance}, 0) AS value`,
     },
     {
       type: 'stat',
