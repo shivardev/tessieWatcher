@@ -9,6 +9,7 @@ import {
   fetchSnapshot,
   fetchStatus,
   hasNewData,
+  hostingOrigin,
   mixedContentBlocked,
   normaliseBaseUrl,
   pollIntervalMs,
@@ -534,11 +535,15 @@ export default function App() {
     setLiveMeta(meta)
   }
 
-  const connect = async (): Promise<void> => {
+  // quiet suppresses the error banner for a connection the user did not
+  // ask for. The automatic probe below tries the origin this page came
+  // from, which is simply not a teslalog portal in the hosted and
+  // dev-server cases; announcing that as a failure would be noise.
+  const connectTo = async (address: string, quiet = false): Promise<void> => {
     setBusy(true)
-    setError(null)
+    if (!quiet) setError(null)
     try {
-      const baseUrl = normaliseBaseUrl(liveUrl)
+      const baseUrl = normaliseBaseUrl(address)
       const [status, meta] = await Promise.all([fetchStatus(baseUrl), fetchMeta(baseUrl)])
       setLive(status)
       await pullSnapshot(baseUrl, meta)
@@ -550,11 +555,28 @@ export default function App() {
       setSelectedChargeId(null)
     } catch (reason: unknown) {
       setLive(null)
-      setError(reason instanceof Error ? reason.message : 'Could not connect.')
+      if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not connect.')
     } finally {
       setBusy(false)
     }
   }
+  const connect = async (): Promise<void> => connectTo(liveUrl)
+
+  // The portal embeds this viewer at /app and serves the API from the
+  // same origin, so a viewer opened that way should just be connected -
+  // there is nothing for the user to configure and no address they could
+  // usefully type. Runs once; the ref rather than a dependency list
+  // because it must not re-fire when the connection state it sets
+  // changes.
+  const probedHost = useRef(false)
+  useEffect(() => {
+    if (probedHost.current) return
+    probedHost.current = true
+    const origin = hostingOrigin()
+    if (origin === null) return
+    void connectTo(origin, true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // While connected, ask /api/meta on a timer and re-download only when
   // it says something changed. /api/meta is ~100 bytes and ~54 ms on the

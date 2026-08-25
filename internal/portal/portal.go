@@ -33,6 +33,7 @@ import (
 
 	"teslalog/internal/backup"
 	"teslalog/internal/storage"
+	"teslalog/internal/webui"
 )
 
 // Server serves the portal's routes: "/" (status + download button),
@@ -83,6 +84,20 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/download", s.handleDownload)
 	mux.HandleFunc("/api/status", s.handleAPIStatus)
 	mux.HandleFunc("/api/meta", s.handleAPIMeta)
+
+	// The full browser viewer, embedded in the binary. Served from here
+	// rather than only from GitHub Pages because a page served over
+	// HTTPS cannot fetch a plain-HTTP LAN address - so only a same-origin
+	// copy can actually read /api/meta and /download and stay current.
+	// See internal/webui.
+	if webui.Available() {
+		if app, err := webui.Handler("/app"); err == nil {
+			mux.Handle("/app", app)
+			mux.Handle("/app/", app)
+		} else {
+			slog.Warn("portal: could not mount the embedded viewer", "error", err)
+		}
+	}
 	return withCORS(mux)
 }
 
@@ -173,6 +188,10 @@ type indexData struct {
 	// the very first day, before any drives have happened yet.
 	HasSleepStats bool
 	AsleepPct24h  float64
+	// HasViewer gates the link to the embedded browser viewer: a build
+	// whose frontend assets were never compiled should not advertise a
+	// page that would 404. See internal/webui.
+	HasViewer     bool
 	RecentDrives  []recentDrive
 	RecentCharges []recentCharge
 	LogLines      []string
@@ -266,7 +285,17 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
     width: 100%;
   }
   button:hover { background: #5fb8ff; }
-  form { margin: 1.25rem 0; }
+  form { margin: 0; flex: 1; }
+  .actions { display: flex; gap: 0.6rem; margin: 1.25rem 0; flex-wrap: wrap; }
+  .actions > * { flex: 1 1 12rem; }
+  a.button {
+    display: block; text-align: center; text-decoration: none;
+    font-size: 1rem; padding: 0.65rem 1.4rem; border-radius: 8px;
+    border: 1px solid var(--border); background: transparent;
+    color: var(--text); cursor: pointer; font-weight: 600;
+  }
+  a.button.primary { background: var(--accent); border-color: var(--accent); color: #04121f; }
+  a.button.primary:hover { background: #5fb8ff; }
   h2 { font-size: 0.95rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; margin: 1.75rem 0 0.6rem; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   table th, table td { text-align: left; padding: 0.45rem 0.4rem; border-bottom: 1px solid var(--border); }
@@ -309,9 +338,14 @@ var indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
     {{end}}
   </div>
 
-  <form action="/download" method="get">
-    <button type="submit">⬇ Download database (tesla.db)</button>
-  </form>
+  <div class="actions">
+    {{if .HasViewer}}
+    <a class="button primary" href="/app/">📊 Open the dashboards</a>
+    {{end}}
+    <form action="/download" method="get">
+      <button type="submit">⬇ Download database (tesla.db)</button>
+    </form>
+  </div>
 
   {{if .HasLifetime}}
   <div class="card">
@@ -514,7 +548,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit(), Version: s.version}
+	data := indexData{VehicleName: "Vehicle", DistanceUnit: s.distanceUnit(), Version: s.version, HasViewer: webui.Available()}
 
 	var vehicleID int64
 	row := s.store.DB().QueryRow(`

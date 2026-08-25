@@ -81,9 +81,22 @@ const request = async (baseUrl: string, path: string, signal?: AbortSignal): Pro
   return response
 }
 
+// parseJson rejects a non-JSON body as a connection failure rather than
+// letting a SyntaxError escape. A dev server (and many reverse proxies)
+// answer an unknown path with index.html and HTTP 200, so "this origin
+// is not a teslalog portal" arrives as valid HTML, not as an error.
+const parseJson = async (response: Response, baseUrl: string): Promise<Record<string, unknown>> => {
+  const text = await response.text()
+  try {
+    return JSON.parse(text) as Record<string, unknown>
+  } catch {
+    throw new LiveConnectionError(`${baseUrl} responded, but not with teslalog's JSON API.`)
+  }
+}
+
 export const fetchStatus = async (baseUrl: string, signal?: AbortSignal): Promise<LiveStatus> => {
-  const body: unknown = await (await request(baseUrl, '/api/status', signal)).json()
-  const record = body as Record<string, unknown>
+  const response = await request(baseUrl, '/api/status', signal)
+  const record = await parseJson(response, baseUrl)
   return {
     vehicleName: typeof record.vehicle_name === 'string' ? record.vehicle_name : 'Vehicle',
     state: typeof record.state === 'string' ? record.state : 'unknown',
@@ -93,8 +106,8 @@ export const fetchStatus = async (baseUrl: string, signal?: AbortSignal): Promis
 }
 
 export const fetchMeta = async (baseUrl: string, signal?: AbortSignal): Promise<LiveMeta> => {
-  const body: unknown = await (await request(baseUrl, '/api/meta', signal)).json()
-  const record = body as Record<string, unknown>
+  const response = await request(baseUrl, '/api/meta', signal)
+  const record = await parseJson(response, baseUrl)
   const count = (value: unknown): number => (typeof value === 'number' ? value : 0)
   return {
     lastUpdated: typeof record.last_updated === 'string' ? record.last_updated : '',
@@ -126,6 +139,22 @@ export const hasNewData = (previous: LiveMeta | null, next: LiveMeta): boolean =
 // matter, frequent enough that a finished drive shows up within a
 // minute.
 export const pollIntervalMs = 60_000
+
+// hostingOrigin is the origin this page was served from, when that could
+// plausibly be a teslalog portal. The portal embeds this viewer at /app
+// and serves the API from the same origin, so a viewer opened that way
+// can connect to itself with nothing configured and no address typed -
+// which is the only arrangement where the live connection works at all,
+// since an HTTPS page cannot fetch a plain-HTTP LAN address.
+//
+// Returns null for a file:// page (no origin to speak of). It does NOT
+// exclude the dev server: probing it costs one request that fails
+// harmlessly, and excluding it by port would also exclude a real portal
+// behind a proxy on the same port.
+export const hostingOrigin = (): string | null => {
+  const origin = globalThis.location?.origin
+  return origin === undefined || origin === 'null' || origin.startsWith('file:') ? null : origin
+}
 
 const storageKey = 'teslalog.viewer.liveUrl'
 

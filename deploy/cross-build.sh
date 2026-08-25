@@ -18,6 +18,25 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# The browser viewer is embedded in the binary (internal/webui) so the Pi
+# can serve it same-origin with its own API - the only arrangement where
+# the viewer's live connection works, since a page served over HTTPS
+# cannot fetch a plain-HTTP LAN address. Rebuild it here so a release can
+# never ship a binary carrying a stale frontend.
+#
+# Skipped when npm is unavailable: the committed assets under
+# internal/webui/dist are then used as-is, which is what makes `go build`
+# work from a clean checkout without Node installed.
+if command -v npm >/dev/null 2>&1; then
+  echo "Building the browser viewer ..."
+  (cd frontend && npm run build >/dev/null)
+  rm -rf internal/webui/dist
+  cp -r frontend/dist internal/webui/dist
+  echo "  -> internal/webui/dist ($(du -sh internal/webui/dist | cut -f1) embedded)"
+else
+  echo "npm not found - embedding the committed internal/webui/dist as-is."
+fi
+
 build() {
   local goos="$1" goarch="$2" out="$3"
   echo "Building $out ..."
