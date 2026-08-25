@@ -20,9 +20,21 @@ import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
 import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
-import { distance, speed, timeRangeSql, timestampDate, type ViewSettings } from './viewSettings'
+import { distance, speed, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
 
-type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string }>
+type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string; speedKmh?: number }>
+
+// speedColor maps a speed to the route colour: blue when slow, green at
+// an easy cruise, red when fast. The scale is anchored to the drive's own
+// fast end (vmax) rather than a fixed number, so a city errand and a
+// highway run each use the full range and read clearly. Hue runs 210°
+// (blue) down through 120° (green) to 0° (red); green therefore lands
+// around 43% of vmax, which is normal cruising, matching "green eco".
+const speedColor = (speedKmh: number, vmaxKmh: number): string => {
+  const t = vmaxKmh <= 0 ? 0 : Math.max(0, Math.min(1, speedKmh / vmaxKmh))
+  const hue = (1 - t) * 210
+  return `hsl(${hue.toFixed(0)}, 85%, 48%)`
+}
 const text = (value: QueryValue | undefined): string =>
   value === null || value === undefined
     ? '—'
@@ -206,23 +218,85 @@ function FitRoute({ points }: Readonly<{ points: readonly LatLngExpression[] }>)
   return null
 }
 
-function RouteMap({ points, activePoint }: Readonly<{ points: readonly Point[]; activePoint?: Point | undefined }>) {
+// speedSegments turns the route into consecutive coloured segments when
+// the points carry speed. Segments are capped at ~600 so a drive with
+// thousands of positions does not spawn thousands of Leaflet layers; the
+// route is thinned by an even stride, and each segment is coloured by the
+// faster of its two endpoints so a brief slow sample does not wash out a
+// fast stretch. Returns null when there is no usable speed, and the map
+// falls back to a single line.
+type Segment = Readonly<{ positions: readonly LatLngExpression[]; color: string }>
+const speedSegments = (points: readonly Point[]): { segments: readonly Segment[]; vmaxKmh: number } | null => {
+  const speeds = points.flatMap((p) => (typeof p.speedKmh === 'number' ? [p.speedKmh] : []))
+  if (speeds.length < 2) return null
+  // 95th percentile as the "fast" anchor, so one GPS speed spike does not
+  // push the whole scale into blue.
+  const sorted = [...speeds].toSorted((a, b) => a - b)
+  const vmaxKmh = sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1] ?? 0
+  if (vmaxKmh <= 0) return null
+
+  const stride = Math.max(1, Math.ceil(points.length / 600))
+  const thinned = points.filter((_, index) => index % stride === 0 || index === points.length - 1)
+  const segments: Segment[] = []
+  for (let i = 0; i < thinned.length - 1; i++) {
+    const a = thinned[i]!
+    const b = thinned[i + 1]!
+    const speed = Math.max(a.speedKmh ?? 0, b.speedKmh ?? 0)
+    segments.push({
+      positions: [
+        [a.latitude, a.longitude],
+        [b.latitude, b.longitude],
+      ],
+      color: speedColor(speed, vmaxKmh),
+    })
+  }
+  return { segments, vmaxKmh }
+}
+
+function RouteMap({
+  points,
+  activePoint,
+  lengthUnit,
+}: Readonly<{ points: readonly Point[]; activePoint?: Point | undefined; lengthUnit?: LengthUnit }>) {
   const positions = useMemo<readonly LatLngExpression[]>(
     () => points.map((point) => [point.latitude, point.longitude]),
     [points],
   )
+  const speedRoute = useMemo(() => speedSegments(points), [points])
   if (positions.length === 0) return <p className="no-data">No route coordinates recorded.</p>
+
+  const unit = lengthUnit ?? 'km'
+  const fast = speedRoute ? speed(speedRoute.vmaxKmh, unit) : 0
   return (
-    <MapContainer className="route-map" center={positions[0] ?? [0, 0]} zoom={13} scrollWheelZoom>
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      <Polyline positions={[...positions]} pathOptions={{ color: '#2455d6', weight: 4 }} />
-      {positions.length === 1 && <CircleMarker center={positions[0] ?? [0, 0]} radius={8} pathOptions={{ color: '#c9ff43', fillColor: '#c9ff43', fillOpacity: 0.85 }} />}
-      {activePoint && <CircleMarker center={[activePoint.latitude, activePoint.longitude]} radius={7} pathOptions={{ color: '#ffffff', weight: 2, fillColor: '#c9ff43', fillOpacity: 1 }} />}
-      <FitRoute points={positions} />
-    </MapContainer>
+    <div className="route-map-wrap">
+      <MapContainer className="route-map" center={positions[0] ?? [0, 0]} zoom={13} scrollWheelZoom>
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {speedRoute ? (
+          speedRoute.segments.map((segment, index) => (
+            <Polyline
+              key={index}
+              positions={[...segment.positions]}
+              pathOptions={{ color: segment.color, weight: 4, opacity: 0.95 }}
+            />
+          ))
+        ) : (
+          <Polyline positions={[...positions]} pathOptions={{ color: '#2455d6', weight: 4 }} />
+        )}
+        {positions.length === 1 && <CircleMarker center={positions[0] ?? [0, 0]} radius={8} pathOptions={{ color: '#c9ff43', fillColor: '#c9ff43', fillOpacity: 0.85 }} />}
+        {activePoint && <CircleMarker center={[activePoint.latitude, activePoint.longitude]} radius={7} pathOptions={{ color: '#ffffff', weight: 2, fillColor: '#c9ff43', fillOpacity: 1 }} />}
+        <FitRoute points={positions} />
+      </MapContainer>
+      {speedRoute && (
+        <div className="route-speed-legend" aria-hidden="true">
+          <span>slow</span>
+          <i className="route-speed-gradient" />
+          <span>{`${Math.round(fast)} ${unit}/h`}</span>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1016,9 +1090,10 @@ export function DriveDetailsDashboard({
       (results[routeIndex]?.rows ?? []).flatMap<Point>((row) => {
         const latitude = number(row[0])
         const longitude = number(row[1])
+        const speedKmh = number(row[2]) ?? undefined
         const timestamp = typeof row[3] === 'string' ? row[3] : undefined
         if (latitude === null || longitude === null) return []
-        return timestamp ? [{ latitude, longitude, timestamp }] : [{ latitude, longitude }]
+        return [{ latitude, longitude, ...(speedKmh === undefined ? {} : { speedKmh }), ...(timestamp === undefined ? {} : { timestamp }) }]
       }),
     [results, routeIndex],
   )
@@ -1083,7 +1158,7 @@ export function DriveDetailsDashboard({
         <TelemetryChart result={results[telemetryIndex]} title="Drive" onHoverTime={setHoverTime} />
         <article className="catalog-panel drive-route-panel">
           <h2>Route</h2>
-          <RouteMap points={route} activePoint={activePoint} />
+          <RouteMap points={route} activePoint={activePoint} lengthUnit={settings.lengthUnit} />
         </article>
         <TelemetryChart
           result={results[elevationIndex]}

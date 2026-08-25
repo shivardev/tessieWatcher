@@ -1126,3 +1126,36 @@ main:not(.empty) {
 @media (prefers-reduced-motion: reduce) {
   .dashboard-loading .spinner { animation: none; border-top-color: var(--accent); }
 }
+
+/* Speed-coloured route legend (drive detail map). The route polyline is
+   split into per-segment colours - blue slow, green cruise, red fast -
+   so this strip just names the ends. The gradient mirrors speedColor's
+   hue sweep (210deg blue -> 120deg green -> 0deg red). */
+.route-map-wrap { position: relative; }
+.route-speed-legend {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(6, 14, 15, 0.82);
+  border: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.route-speed-gradient {
+  width: 84px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    hsl(210, 85%, 48%),
+    hsl(120, 85%, 48%),
+    hsl(0, 85%, 48%)
+  );
+}
