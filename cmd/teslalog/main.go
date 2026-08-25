@@ -24,7 +24,7 @@ import (
 	"teslalog/internal/tesla"
 )
 
-const version = "0.4.8"
+const version = "0.4.9"
 
 func main() {
 	if len(os.Args) < 2 {
