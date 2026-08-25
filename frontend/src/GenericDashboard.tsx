@@ -15,6 +15,7 @@ import {
   YAxis,
 } from 'recharts'
 import { dashboardCatalog, type PanelDefinition } from './catalog'
+import { nearestTimeSync } from './chartSync'
 import { executeQueries, interpolateLabel } from './database'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, temperature, timestampDate, type ViewSettings } from './viewSettings'
@@ -254,7 +255,7 @@ function TimeSeriesPanel({ panel }: Readonly<{ panel: PanelState }>) {
     <article className="catalog-panel chart">
       <h2>{panel.definition.title}</h2>
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={[...data]} syncId="dashboard-time" syncMethod="value">
+        <LineChart data={[...data]} syncId="dashboard-time" syncMethod={nearestTimeSync}>
           <CartesianGrid stroke="#26322f" vertical={false} />
           <XAxis
             dataKey={xKey}

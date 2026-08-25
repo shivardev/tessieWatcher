@@ -17,6 +17,7 @@ import {
 } from 'recharts'
 import { executeQueries, type QueryVariables } from './database'
 import { dashboardCatalog } from './catalog'
+import { epochMs, nearestTimeSync } from './chartSync'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, timeRangeSql, timestampDate, type ViewSettings } from './viewSettings'
 
@@ -339,7 +340,7 @@ function TelemetryChart({
           <LineChart
             data={data}
             margin={{ top: 8, right: 14, bottom: 4, left: 2 }}
-            {...(xIsTime ? { syncId: 'drive-telemetry', syncMethod: 'value' as const } : {})}
+            {...(xIsTime ? { syncId: 'drive-telemetry', syncMethod: nearestTimeSync } : {})}
             onMouseMove={(state) => onHoverTime?.(typeof state.activeLabel === 'string' ? state.activeLabel : null)}
             onMouseLeave={() => onHoverTime?.(null)}
           >
@@ -883,6 +884,14 @@ export function DriveDetailsDashboard({
   // route map the odometer query.
   const catalogQuery = (title: string): string =>
     definition?.panels.find((panel) => panel.title === title)?.queries[0] ?? 'SELECT NULL AS value'
+  // Every telemetry query below filters to rows that actually carry its
+  // own columns. The positions table is written by two paths with
+  // different coverage - the stream supplies speed and elevation, polls
+  // supply temperature and climate - so on a real 4096-position drive
+  // only 478 rows hold a temperature. Selecting all 4096 and then
+  // downsampling to a fixed point budget keeps every 13th row, which
+  // throws away roughly seven eighths of the readings and leaves the
+  // chart's tooltip empty at most cursor positions.
   const queries = useMemo(
     () => [
       ...driveStatTitles.map(catalogQuery),
@@ -906,11 +915,17 @@ export function DriveDetailsDashboard({
         (CASE WHEN '$temp_unit' = 'F' THEN NULLIF(passenger_temp_setting_c, 0) * 9.0 / 5 + 32 ELSE NULLIF(passenger_temp_setting_c, 0) END) AS "Passenger (°$temp_unit)",
         is_climate_on AS "Climate",
         fan_status AS "Fan"
-       FROM positions WHERE drive_id = $drive_id ORDER BY timestamp`,
+       FROM positions WHERE drive_id = $drive_id
+         AND (outside_temp_c IS NOT NULL OR inside_temp_c IS NOT NULL
+              OR is_climate_on IS NOT NULL OR fan_status IS NOT NULL)
+       ORDER BY timestamp`,
       `SELECT timestamp AS time,
         NULLIF(tpms_pressure_fl, 0) AS "Front left (bar)", NULLIF(tpms_pressure_fr, 0) AS "Front right (bar)",
         NULLIF(tpms_pressure_rl, 0) AS "Rear left (bar)", NULLIF(tpms_pressure_rr, 0) AS "Rear right (bar)"
-       FROM positions WHERE drive_id = $drive_id ORDER BY timestamp`,
+       FROM positions WHERE drive_id = $drive_id
+         AND COALESCE(NULLIF(tpms_pressure_fl, 0), NULLIF(tpms_pressure_fr, 0),
+                      NULLIF(tpms_pressure_rl, 0), NULLIF(tpms_pressure_rr, 0)) IS NOT NULL
+       ORDER BY timestamp`,
     ],
     [definition],
   )
@@ -941,18 +956,42 @@ export function DriveDetailsDashboard({
   const elevationIndex = routeIndex + 2
   const temperatureIndex = routeIndex + 3
   const tyreIndex = routeIndex + 4
-  const route: readonly Point[] = (results[routeIndex]?.rows ?? []).flatMap<Point>((row) => {
-    const latitude = number(row[0])
-    const longitude = number(row[1])
-    const timestamp = typeof row[3] === 'string' ? row[3] : undefined
-    if (latitude === null || longitude === null) return []
-    return timestamp ? [{ latitude, longitude, timestamp }] : [{ latitude, longitude }]
-  })
-  const activePoint = hoverTime === null ? undefined : route.reduce<Point | undefined>((closest, point) => {
-    if (!point.timestamp) return closest
-    if (!closest?.timestamp) return point
-    return Math.abs(timestampDate(point.timestamp).getTime() - timestampDate(hoverTime).getTime()) < Math.abs(timestampDate(closest.timestamp).getTime() - timestampDate(hoverTime).getTime()) ? point : closest
-  }, undefined)
+  // route and its parsed timestamps are memoised because hoverTime
+  // changes on every mouse move. Rebuilt inline, a 4096-position drive
+  // reallocated the whole array and re-parsed every timestamp - roughly
+  // twelve thousand Date constructions - for each pixel of cursor
+  // movement, which is what made the crosshair feel like it was
+  // stuttering rather than following.
+  const route: readonly Point[] = useMemo(
+    () =>
+      (results[routeIndex]?.rows ?? []).flatMap<Point>((row) => {
+        const latitude = number(row[0])
+        const longitude = number(row[1])
+        const timestamp = typeof row[3] === 'string' ? row[3] : undefined
+        if (latitude === null || longitude === null) return []
+        return timestamp ? [{ latitude, longitude, timestamp }] : [{ latitude, longitude }]
+      }),
+    [results, routeIndex],
+  )
+  const routeEpochs = useMemo(
+    () => route.map((point) => (point.timestamp === undefined ? Number.NaN : epochMs(point.timestamp))),
+    [route],
+  )
+  const activePoint = useMemo(() => {
+    if (hoverTime === null) return undefined
+    const target = epochMs(hoverTime)
+    if (Number.isNaN(target)) return undefined
+    let closest: Point | undefined
+    let closestGap = Number.POSITIVE_INFINITY
+    for (const [index, point] of route.entries()) {
+      const gap = Math.abs((routeEpochs[index] ?? Number.NaN) - target)
+      if (gap < closestGap) {
+        closestGap = gap
+        closest = point
+      }
+    }
+    return closest
+  }, [hoverTime, route, routeEpochs])
   const exportGpx = (): void => {
     const points = route.map((point) => `<trkpt lat="${point.latitude}" lon="${point.longitude}">${point.timestamp ? `<time>${timestampDate(point.timestamp).toISOString()}</time>` : ''}</trkpt>`).join('')
     const gpx = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="teslalog viewer" xmlns="http://www.topografix.com/GPX/1/1"><trk><name>Drive ${driveId}</name><trkseg>${points}</trkseg></trk></gpx>`
