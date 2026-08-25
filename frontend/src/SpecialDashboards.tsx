@@ -18,6 +18,7 @@ import {
 import { executeQueries, type QueryVariables } from './database'
 import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
+import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, timeRangeSql, timestampDate, type ViewSettings } from './viewSettings'
 
@@ -493,8 +494,6 @@ export function TripDashboard({
     const state = typeof row[2] === 'string' ? row[2] : 'unknown'
     return start === null || end === null ? [] : [{ start, end, state }]
   })
-  const timelineStart = timeline.length === 0 ? 0 : Math.min(...timeline.map((segment) => segment.start))
-  const timelineEnd = timeline.length === 0 ? 1 : Math.max(...timeline.map((segment) => segment.end), timelineStart + 1)
   return (
     <main>
       <Heading title="Trip" note={settings.timeRange === 'all' ? 'All time' : settings.timeRange} />
@@ -513,7 +512,7 @@ export function TripDashboard({
         </div>
         <article className="catalog-panel trip-pie"><h2>Time spent</h2><ResponsiveContainer width="100%" height={260}><PieChart><Pie data={timeSpent} dataKey="value" nameKey="name" outerRadius={88} label={({name,percent}) => `${String(name)} ${((percent ?? 0)*100).toFixed(1)}%`}>{timeSpent.map((entry)=><Cell key={entry.name} fill={entry.color}/>)}</Pie><Tooltip formatter={(value) => `${(Number(value)/3600).toFixed(1)} hours`} /></PieChart></ResponsiveContainer></article>
       </section>
-      <section className="state-timeline" aria-label="Vehicle state timeline">{timeline.map((segment,index)=><i key={`${segment.start}-${index}`} className={`state-${segment.state.replace(/[^a-z]+/giu,'-')}`} title={segment.state} style={{left:`${(segment.start-timelineStart)/(timelineEnd-timelineStart)*100}%`,width:`${Math.max(.3,(segment.end-segment.start)/(timelineEnd-timelineStart)*100)}%`}} />)}</section>
+      <StateTimeline spans={timeline} title="States" />
       <h2 className="telemetry-heading">Drives</h2>
       <div className="table-panel trip-table"><table><thead><tr><th>Date</th><th>Start</th><th>Destination</th><th>Duration</th><th>Distance</th><th>% Start</th><th>% End</th><th>Ø Consumption (net)</th></tr></thead><tbody>{(results[4]?.rows ?? []).map((row)=><tr key={text(row[0])}><td><button className="table-link" type="button" onClick={()=>{const id=number(row[0]); if(id!==null) onSelectDrive?.(id)}}>{typeof row[1]==='string' ? timestampDate(row[1]).toLocaleString() : '—'}</button></td><td>{text(row[2])}</td><td>{text(row[3])}</td><td>{text(row[4])} min</td><td>{typeof row[5]==='number' ? `${distance(row[5],settings.lengthUnit).toFixed(1)} ${settings.lengthUnit}`:'—'}</td><td>{text(row[6])}%</td><td>{text(row[7])}%</td><td>{typeof row[8]==='number' ? `${(row[8]*(settings.lengthUnit==='mi'?1.60934:1)).toFixed(0)} Wh/${settings.lengthUnit}`:'—'}</td></tr>)}</tbody></table></div>
       <h2 className="telemetry-heading">Charges</h2><DataTable result={results[5]} />
@@ -664,8 +663,6 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     if(typeof stateRow[0]!=='string'||typeof stateRow[1]!=='string'||typeof stateRow[2]!=='string')return[]
     return[{start:timestampDate(stateRow[0]).getTime(),end:timestampDate(stateRow[1]).getTime(),state:stateRow[2]}]
   })
-  const start=states.length?Math.min(...states.map((state)=>state.start)):0
-  const end=states.length?Math.max(...states.map((state)=>state.end),start+1):1
   return <main>
     <Heading title={text(row?.[0])} note={text(row?.[1])}/>
     {error&&<p className="no-data">{error}</p>}
@@ -676,7 +673,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
       <article><span>Driver temp</span><strong>{value(7)} °{settings.temperatureUnit}</strong></article><article><span>Outside temp</span><strong>{value(8)} °{settings.temperatureUnit}</strong></article><article><span>Inside temp</span><strong>{value(9)} °{settings.temperatureUnit}</strong></article>
     </section>
     <section className="drive-detail-grid"><TelemetryChart result={results[3]} title="Charge Level"/><TelemetryChart result={results[4]} title="Charging Details"/></section>
-    <h2 className="telemetry-heading">States</h2><section className="state-timeline">{states.map((state,index)=><i key={`${state.start}-${index}`} className={`state-${state.state}`} title={state.state} style={{left:`${(state.start-start)/(end-start)*100}%`,width:`${Math.max(.3,(state.end-state.start)/(end-start)*100)}%`}}/>)}</section>
+    <StateTimeline spans={states} title="States" />
   </main>
 }
 

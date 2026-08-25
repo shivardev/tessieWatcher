@@ -16,6 +16,7 @@ import {
 } from 'recharts'
 import { dashboardCatalog, type PanelDefinition } from './catalog'
 import { nearestTimeSync } from './chartSync'
+import { StateTimeline, spansFromRows } from './StateTimeline'
 import { executeQueries, interpolateLabel } from './database'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, temperature, timestampDate, type ViewSettings } from './viewSettings'
@@ -320,24 +321,15 @@ function PiePanel({ panel }: Readonly<{ panel: PanelState }>) {
   )
 }
 
+// The catalog's state-timeline panels return one row per state CHANGE,
+// as a plain "time, state" series so the same SQL also works in Grafana.
+// spansFromRows turns those points into intervals.
 function StateTimelinePanel({ panel }: Readonly<{ panel: PanelState }>) {
   const result = panel.results[0]
+  const spans = spansFromRows(result?.rows ?? [])
   return (
     <article className="catalog-panel timeline-panel">
-      <h2>{panel.definition.title}</h2>
-      <div className="state-segments">
-        {(result?.rows ?? []).map((row, index) => (
-          <div
-            className={`segment state-${display(row[1]).toLowerCase()}`}
-            key={`${display(row[0])}-${index}`}
-            title={`${displayCell(row[0])}: ${display(row[1])}`}
-          >
-            <b>{display(row[1])}</b>
-            <small>{displayCell(row[0])}</small>
-          </div>
-        ))}
-      </div>
-      {!result?.rows.length && <p className="no-data">No state history.</p>}
+      <StateTimeline spans={spans} title={panel.definition.title} />
     </article>
   )
 }
