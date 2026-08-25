@@ -60,10 +60,61 @@ enabled = true
 url     = "wss://streaming.vn.teslamotors.com/streaming/"
 
 [backup]
-enabled        = true
-dir            = "/var/lib/teslalog/backups"
-retention_days = 30
-interval       = "24h"
+enabled = true
+dir     = "/var/lib/teslalog/backups"
+
+# Local retention. Short by design: this is the working copy on the same
+# SD card as the database it was taken from, so it survives a mistake but
+# not a card failure. The copies that matter are the offsite ones below.
+retention_days = 7
+
+# The local time to run the daily backup, 24-hour. Preferred over
+# interval: an interval counts from process start, so every restart moves
+# the backup, and a Pi rebooted each evening would only ever hold evening
+# snapshots. 03:00 is chosen because the car is reliably parked then.
+at = "03:00"
+
+# interval is the fallback used only when "at" is empty.
+interval = "24h"
+
+# Offsite copies. Each is an rclone remote and path, so anything rclone
+# speaks works - Google Drive, an SMB share on a NAS, S3, WebDAV.
+#
+# Why rclone rather than something built in: the credentials that matter
+# here already exist and already work. An rclone remote holds a
+# refreshable Google OAuth token, or a NAS share's login, set up once by
+# whoever owns the account. Reimplementing Google's consent flow inside
+# teslalog would mean a second copy of the same secret and a fresh
+# browser dance, to reach a service rclone already reaches.
+#
+# Set one up with `rclone config` (once, as yourself), then make the
+# result readable by the service user teslalog runs as - it cannot read
+# your home directory:
+#
+#   sudo install -d -o teslalog -g teslalog -m 750 /etc/teslalog
+#   sudo install -o teslalog -g teslalog -m 600 \
+#       ~/.config/rclone/rclone.conf /etc/teslalog/rclone.conf
+#
+# Verify before trusting it:
+#   sudo -u teslalog rclone --config /etc/teslalog/rclone.conf listremotes
+rclone_path   = "rclone"
+rclone_config = "/etc/teslalog/rclone.conf"
+
+# Remote retention is generous: these are the copies you would actually
+# restore from, and a 2 MB gzip a day is nothing. 0 means keep forever.
+#
+# Pruning only ever deletes files matching teslalog-*.db.gz, so pointing
+# a destination at a folder you use for other things is safe.
+#
+# [[backup.upload]]
+# name           = "Google Drive"
+# remote         = "googledrive:teslalog-backups"
+# retention_days = 90
+#
+# [[backup.upload]]
+# name           = "NAS"
+# remote         = "nas:teslalog-backups"
+# retention_days = 90
 
 [portal]
 # On by default: a tiny read-only HTTP page (current state, today's

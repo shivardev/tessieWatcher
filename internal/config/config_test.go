@@ -255,3 +255,79 @@ func TestLoadOfflineChargeMinGapOverride(t *testing.T) {
 		t.Fatalf("expected a positive default offline_charge_min_gap, got %s", def.Polling.OfflineChargeMinGap)
 	}
 }
+
+// TestBackupUploadParsing pins the [[backup.upload]] shape and, more
+// importantly, the validation: a "remote" with no colon is a LOCAL path
+// to rclone, which would quietly make the offsite copy a second file on
+// the same SD card - the exact failure an offsite backup exists to
+// survive. That has to be an error, not a surprise.
+func TestBackupUploadParsing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `
+database = "/tmp/x.db"
+
+[backup]
+at = "04:30"
+retention_days = 7
+rclone_config = "/etc/teslalog/rclone.conf"
+
+[[backup.upload]]
+name = "Google Drive"
+remote = "googledrive:teslalog-backups"
+retention_days = 90
+
+[[backup.upload]]
+remote = "nas:teslalog-backups"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Backup.At != "04:30" {
+		t.Errorf("backup.at: got %q", cfg.Backup.At)
+	}
+	if len(cfg.Backup.Uploads) != 2 {
+		t.Fatalf("expected 2 destinations, got %d", len(cfg.Backup.Uploads))
+	}
+	if got := cfg.Backup.Uploads[0]; got.Name != "Google Drive" || got.RetentionDays != 90 {
+		t.Errorf("first destination: %+v", got)
+	}
+	// An unnamed destination is labelled by its remote, so a log line
+	// still says which one failed.
+	if got := cfg.Backup.Uploads[1].Name; got != "nas" {
+		t.Errorf("expected the remote name as a fallback label, got %q", got)
+	}
+}
+
+func TestBackupUploadRejectsALocalPathMasqueradingAsARemote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	body := `
+database = "/tmp/x.db"
+
+[[backup.upload]]
+remote = "/mnt/somewhere/backups"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected a local path to be rejected as a remote")
+	}
+}
+
+func TestBackupAtMustBeAWallClockTime(t *testing.T) {
+	for _, value := range []string{"3h", "25:00", "tea time", "03"} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		body := "database = \"/tmp/x.db\"\n\n[backup]\nat = \"" + value + "\"\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("%q: expected a validation error", value)
+		}
+	}
+}

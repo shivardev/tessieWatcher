@@ -143,8 +143,11 @@ func TestRunProducesAGzippedRestorableBackup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if filepath.Base(backupPath) != "teslalog-2026-08-20.db.gz" {
-		t.Fatalf("unexpected backup filename: %s", backupPath)
+	// The name stamps LOCAL time, so this asserts against FileName
+	// rather than a literal: hard-coding an offset would make the test
+	// pass only in the timezone it was written in.
+	if got, want := filepath.Base(backupPath), FileName(at); got != want {
+		t.Fatalf("unexpected backup filename: got %s, want %s", got, want)
 	}
 
 	gz, err := os.Open(backupPath)

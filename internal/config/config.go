@@ -10,6 +10,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -216,6 +217,41 @@ type BackupConfig struct {
 	Dir           string
 	RetentionDays int
 	Interval      time.Duration
+
+	// At is a local wall-clock time ("03:00") to run the daily backup.
+	// Preferred over Interval: an interval counts from process start, so
+	// every restart moves the backup, and a daemon restarted each
+	// afternoon would only ever snapshot the afternoon. A fixed local
+	// hour also lands when the car is reliably parked. Empty means fall
+	// back to Interval.
+	At string
+
+	// Uploads are offsite copies, made after each successful local
+	// backup. A backup that only ever exists on the same SD card as the
+	// database it came from does not survive the failure it exists for.
+	Uploads []UploadConfig
+
+	// RclonePath/RcloneConfig locate the rclone binary and its
+	// configuration. rclone is used rather than a native Go client
+	// because it already holds working, refreshable credentials for the
+	// destinations people actually have - reimplementing Google's OAuth
+	// dance in teslalog would mean a fresh consent flow for no gain.
+	RclonePath   string
+	RcloneConfig string
+}
+
+// UploadConfig is one offsite destination for finished backups, named as
+// an rclone remote and path ("googledrive:teslalog-backups").
+type UploadConfig struct {
+	// Name is for log lines only, so a failure says which destination
+	// failed without printing the remote path.
+	Name   string
+	Remote string
+
+	// RetentionDays prunes the destination. Zero keeps everything -
+	// the right default for somewhere that is not short of space, and
+	// never something to infer.
+	RetentionDays int
 }
 
 type APIConfig struct {
@@ -257,6 +293,14 @@ type rawConfig struct {
 		Dir           string `toml:"dir"`
 		RetentionDays int    `toml:"retention_days"`
 		Interval      string `toml:"interval"`
+		At            string `toml:"at"`
+		RclonePath    string `toml:"rclone_path"`
+		RcloneConfig  string `toml:"rclone_config"`
+		Upload        []struct {
+			Name          string `toml:"name"`
+			Remote        string `toml:"remote"`
+			RetentionDays int    `toml:"retention_days"`
+		} `toml:"upload"`
 	} `toml:"backup"`
 
 	Portal struct {
@@ -338,8 +382,15 @@ func Default() Config {
 		Backup: BackupConfig{
 			Enabled:       true,
 			Dir:           "/var/lib/teslalog/backups",
-			RetentionDays: 30,
+			// Seven days locally: this is the scratch copy on a small SD
+			// card, and the copies that matter live offsite.
+			RetentionDays: 7,
 			Interval:      24 * time.Hour,
+			// 03:00 local - the car is reliably parked, and nothing else
+			// teslalog does is competing for the Pi at that hour.
+			At:           "03:00",
+			RclonePath:   "rclone",
+			RcloneConfig: "/etc/teslalog/rclone.conf",
 		},
 		Portal: PortalConfig{
 			// On by default: it's the primary way to see the daemon is
@@ -461,6 +512,36 @@ func Load(path string) (Config, error) {
 	if raw.Backup.Enabled != nil {
 		cfg.Backup.Enabled = *raw.Backup.Enabled
 	}
+	if raw.Backup.At != "" {
+		if _, _, err := ParseDailyTime(raw.Backup.At); err != nil {
+			return cfg, fmt.Errorf("backup.at: %w", err)
+		}
+		cfg.Backup.At = raw.Backup.At
+	}
+	if raw.Backup.RclonePath != "" {
+		cfg.Backup.RclonePath = raw.Backup.RclonePath
+	}
+	if raw.Backup.RcloneConfig != "" {
+		cfg.Backup.RcloneConfig = raw.Backup.RcloneConfig
+	}
+	for i, u := range raw.Backup.Upload {
+		if u.Remote == "" {
+			return cfg, fmt.Errorf("backup.upload[%d]: remote is required (e.g. \"googledrive:teslalog-backups\")", i)
+		}
+		// A remote with no colon is a local path, which would silently
+		// make the "offsite" copy a second file on the same SD card -
+		// the one failure mode an offsite backup exists to survive.
+		if !strings.Contains(u.Remote, ":") {
+			return cfg, fmt.Errorf("backup.upload[%d]: %q is not an rclone remote - it needs a remote name and a colon, e.g. \"googledrive:teslalog-backups\"", i, u.Remote)
+		}
+		name := u.Name
+		if name == "" {
+			name = strings.SplitN(u.Remote, ":", 2)[0]
+		}
+		cfg.Backup.Uploads = append(cfg.Backup.Uploads, UploadConfig{
+			Name: name, Remote: u.Remote, RetentionDays: u.RetentionDays,
+		})
+	}
 
 	if raw.Portal.Enabled != nil {
 		cfg.Portal.Enabled = *raw.Portal.Enabled
@@ -533,4 +614,16 @@ func parseDurationOr(s string, fallback time.Duration) (time.Duration, error) {
 		return fallback, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// ParseDailyTime parses a local wall-clock "HH:MM" (backup.at) into
+// hour and minute. Deliberately not a time.Duration: "03:00" means three
+// in the morning where the car is parked, which is a different thing
+// from "every 3 hours" and must not silently be read as one.
+func ParseDailyTime(value string) (hour, minute int, err error) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	if err != nil {
+		return 0, 0, fmt.Errorf("expected a 24-hour local time like \"03:00\", got %q", value)
+	}
+	return parsed.Hour(), parsed.Minute(), nil
 }

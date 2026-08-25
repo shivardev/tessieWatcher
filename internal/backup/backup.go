@@ -18,10 +18,34 @@ import (
 	"github.com/ncruces/go-sqlite3"
 )
 
+// nameLayout stamps backups in LOCAL time, with the UTC offset, e.g.
+// teslalog-2026-08-25_030000-0400.db.gz.
+//
+// Local rather than UTC because the filename is read by a person, and
+// "the backup from the morning of the 25th" is a local-time idea: a UTC
+// date rolls over at 8pm in New York, so a UTC-named file disagrees with
+// the day the user would call it. The offset is included so the name
+// stays unambiguous across a DST change, when the same local hour occurs
+// twice.
+//
+// Layout choices: no colons (illegal on Windows, awkward in shells), and
+// the date first so the names sort chronologically in any file listing.
+const nameLayout = "2006-01-02_150405-0700"
+
+// backupGlob matches the files this package creates, and nothing else.
+// Used to keep remote pruning from touching anything a person put in the
+// same folder.
+const backupGlob = "teslalog-*.db.gz"
+
+// FileName is the backup filename for a moment in time. Exported so the
+// portal and the uploader agree on the naming without duplicating it.
+func FileName(at time.Time) string {
+	return fmt.Sprintf("teslalog-%s.db.gz", at.Local().Format(nameLayout))
+}
+
 // Run performs one backup of the SQLite database at dbPath into
-// backupDir, named teslalog-YYYY-MM-DD.db.gz (UTC date of at), then
-// deletes backups older than retentionDays. Returns the path to the
-// newly-created backup file.
+// backupDir (see FileName for the naming), then deletes backups older
+// than retentionDays. Returns the path to the newly-created backup file.
 func Run(ctx context.Context, dbPath, backupDir string, retentionDays int, at time.Time) (string, error) {
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return "", fmt.Errorf("create backup dir: %w", err)
@@ -34,7 +58,7 @@ func Run(ctx context.Context, dbPath, backupDir string, retentionDays int, at ti
 		return "", fmt.Errorf("sqlite backup: %w", err)
 	}
 
-	finalPath := filepath.Join(backupDir, fmt.Sprintf("teslalog-%s.db.gz", at.UTC().Format("2006-01-02")))
+	finalPath := filepath.Join(backupDir, FileName(at))
 	if err := gzipFile(tmpPath, finalPath); err != nil {
 		return "", fmt.Errorf("gzip backup: %w", err)
 	}
@@ -129,8 +153,7 @@ func prune(dir string, retentionDays int, now time.Time) error {
 		if e.IsDir() || !strings.HasPrefix(e.Name(), "teslalog-") || !strings.HasSuffix(e.Name(), ".db.gz") {
 			continue
 		}
-		datePart := strings.TrimSuffix(strings.TrimPrefix(e.Name(), "teslalog-"), ".db.gz")
-		t, err := time.Parse("2006-01-02", datePart)
+		t, err := parseBackupTime(e.Name())
 		if err != nil {
 			continue // don't touch files we don't recognize
 		}
@@ -147,21 +170,47 @@ func prune(dir string, retentionDays int, now time.Time) error {
 	return nil
 }
 
-// Scheduler runs Run on a fixed interval in the background until ctx is
-// canceled. It runs once shortly after Start (30s, to let the daemon
-// finish initializing) and then every interval.
+// Scheduler runs backups in the background until ctx is canceled, then
+// copies each one offsite.
 type Scheduler struct {
 	DBPath        string
 	BackupDir     string
 	RetentionDays int
-	Interval      time.Duration
+
+	// Interval is the legacy cadence, used only when DailyAt is unset.
+	Interval time.Duration
+
+	// DailyAt is a local wall-clock time to run at, in "HH:MM" form.
+	// Preferred over Interval: an interval counts from process start, so
+	// every restart of the daemon moves the backup, and a Pi rebooted
+	// each evening would only ever hold evening snapshots. Empty falls
+	// back to Interval.
+	DailyAt string
+
+	// Uploader copies each finished backup offsite. Zero value means
+	// local backups only.
+	Uploader Uploader
 }
 
 // Start blocks until ctx is canceled, running backups on schedule.
 // Intended to be run in its own goroutine.
 func (s Scheduler) Start(ctx context.Context) {
-	initialDelay := 30 * time.Second
-	timer := time.NewTimer(initialDelay)
+	if ok, why := s.Uploader.Available(); ok {
+		names := make([]string, 0, len(s.Uploader.Destinations))
+		for _, d := range s.Uploader.Destinations {
+			names = append(names, d.Name)
+		}
+		slog.Info("offsite backup copies enabled", "destinations", names)
+	} else if len(s.Uploader.Destinations) > 0 {
+		// Configured but unusable. Said once, loudly, at startup - the
+		// alternative is discovering it from a missing file after the
+		// disk you needed the backup for has already died.
+		slog.Error("offsite backup copies are configured but cannot run", "reason", why)
+	}
+
+	// A first backup shortly after start, so a fresh install proves the
+	// whole path works now rather than at 03:00 tomorrow.
+	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
 
 	for {
@@ -169,13 +218,61 @@ func (s Scheduler) Start(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-timer.C:
-			path, err := Run(ctx, s.DBPath, s.BackupDir, s.RetentionDays, now)
-			if err != nil {
-				slog.Error("scheduled backup failed", "error", err)
-			} else {
-				slog.Info("backup complete", "path", path)
-			}
-			timer.Reset(s.Interval)
+			s.runOnce(ctx, now)
+			timer.Reset(s.nextDelay(time.Now()))
 		}
 	}
+}
+
+// runOnce takes one backup and copies it offsite. Upload failures are
+// logged, never fatal: a local backup that exists is strictly better
+// than no backup, and the next run will try the upload again.
+func (s Scheduler) runOnce(ctx context.Context, now time.Time) {
+	path, err := Run(ctx, s.DBPath, s.BackupDir, s.RetentionDays, now)
+	if err != nil {
+		slog.Error("scheduled backup failed", "error", err)
+		return
+	}
+	slog.Info("backup complete", "path", path)
+
+	if err := s.Uploader.Upload(ctx, path); err != nil {
+		slog.Error("offsite backup copy incomplete", "error", err)
+	}
+}
+
+// nextDelay is how long to wait before the next run. With DailyAt set,
+// this is the gap to that local time tomorrow (or today, if it has not
+// happened yet) - computed from the wall clock each time rather than by
+// adding 24h, so it stays correct across a DST change instead of
+// drifting an hour twice a year.
+func (s Scheduler) nextDelay(now time.Time) time.Duration {
+	if s.DailyAt == "" {
+		return s.Interval
+	}
+	target, err := time.Parse("15:04", s.DailyAt)
+	if err != nil {
+		slog.Warn("invalid backup time, falling back to interval", "at", s.DailyAt, "error", err)
+		return s.Interval
+	}
+
+	local := now.Local()
+	next := time.Date(local.Year(), local.Month(), local.Day(), target.Hour(), target.Minute(), 0, 0, local.Location())
+	if !next.After(local) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next.Sub(local)
+}
+
+// parseBackupTime reads the timestamp back out of a backup filename.
+//
+// Accepts the older date-only UTC form as well as the current
+// local-time-with-offset one, so upgrading does not orphan the backups
+// already on disk - unrecognised names are skipped by prune, which would
+// otherwise mean the old files were never cleaned up again.
+func parseBackupTime(name string) (time.Time, error) {
+	stamp := strings.TrimSuffix(strings.TrimPrefix(name, "teslalog-"), ".db.gz")
+	if at, err := time.Parse(nameLayout, stamp); err == nil {
+		return at, nil
+	}
+	return time.Parse("2006-01-02", stamp)
 }

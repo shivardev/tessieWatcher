@@ -68,11 +68,23 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	}
 
 	if cfg.Backup.Enabled {
+		destinations := make([]backup.Destination, 0, len(cfg.Backup.Uploads))
+		for _, u := range cfg.Backup.Uploads {
+			destinations = append(destinations, backup.Destination{
+				Name: u.Name, Remote: u.Remote, RetentionDays: u.RetentionDays,
+			})
+		}
 		sched := backup.Scheduler{
 			DBPath:        cfg.Database,
 			BackupDir:     cfg.Backup.Dir,
 			RetentionDays: cfg.Backup.RetentionDays,
 			Interval:      cfg.Backup.Interval,
+			DailyAt:       cfg.Backup.At,
+			Uploader: backup.Uploader{
+				RclonePath:   cfg.Backup.RclonePath,
+				ConfigPath:   cfg.Backup.RcloneConfig,
+				Destinations: destinations,
+			},
 		}
 		go sched.Start(ctx)
 	}
