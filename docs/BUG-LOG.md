@@ -108,6 +108,19 @@ storing the zero turned "not reported" into a reading. Same class as the
 streaming-zeros bug above, in a field that fix had already covered on
 the streaming path but not the polling one.
 
+**Every poll erased the car's name.** (P2) The vehicle-list endpoint
+carries `display_name`; `vehicle_data` carries `vehicle_config` (and so
+the model) but not always the name. Both paths upsert the vehicle row,
+and the upsert assigned each column straight from the incoming value —
+so every `vehicle_data` poll wrote `display_name = ""`. Found on the
+live database: the API reports "Shivaradhan's Model Y" while the stored
+row held an empty string, which is why the portal and the viewer had
+been showing a generic label. Fixed at the SQL level for every column at
+once, with `COALESCE(NULLIF(excluded.x, ''), vehicles.x)`, so an absent
+field can never overwrite a known one — while a genuine rename still
+wins, which a test pins so this cannot quietly become a write-once
+field.
+
 **No minimum-drive filter.** (P1) TeslaMate discards a drive with
 fewer than 2 positions or under 10 m. Without it, every bumped shifter
 and GPS jitter became a permanent row.

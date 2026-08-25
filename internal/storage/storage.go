@@ -182,14 +182,24 @@ func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 		INSERT INTO vehicles (vin, tesla_id, display_name, model, trim_badging, marketing_name, exterior_color, wheel_type, spoiler_type)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(vin) DO UPDATE SET
-			tesla_id = excluded.tesla_id,
-			display_name = excluded.display_name,
-			model = excluded.model,
-			trim_badging = excluded.trim_badging,
-			marketing_name = excluded.marketing_name,
-			exterior_color = excluded.exterior_color,
-			wheel_type = excluded.wheel_type,
-			spoiler_type = excluded.spoiler_type
+			-- An EMPTY incoming value never erases a known one.
+			--
+			-- These fields arrive from two different endpoints. The
+			-- vehicle list carries display_name; vehicle_data carries
+			-- vehicle_config (and so the model), but not always the
+			-- name. The polling path upserts on every poll, so a plain
+			-- "display_name = excluded.display_name" meant each poll
+			-- overwrote the real name with "" - which is exactly what
+			-- had happened to the live database, where the API reports
+			-- "Shivaradhan's Model Y" and the row held "".
+			tesla_id = COALESCE(NULLIF(excluded.tesla_id, ''), vehicles.tesla_id),
+			display_name = COALESCE(NULLIF(excluded.display_name, ''), vehicles.display_name),
+			model = COALESCE(NULLIF(excluded.model, ''), vehicles.model),
+			trim_badging = COALESCE(NULLIF(excluded.trim_badging, ''), vehicles.trim_badging),
+			marketing_name = COALESCE(NULLIF(excluded.marketing_name, ''), vehicles.marketing_name),
+			exterior_color = COALESCE(NULLIF(excluded.exterior_color, ''), vehicles.exterior_color),
+			wheel_type = COALESCE(NULLIF(excluded.wheel_type, ''), vehicles.wheel_type),
+			spoiler_type = COALESCE(NULLIF(excluded.spoiler_type, ''), vehicles.spoiler_type)
 	`, v.VIN, v.TeslaID, v.DisplayName, v.Model, v.TrimBadging, v.MarketingName, v.ExteriorColor, v.WheelType, v.SpoilerType)
 	if err != nil {
 		return 0, fmt.Errorf("upsert vehicle: %w", err)

@@ -1251,3 +1251,67 @@ func TestVehicleEfficiencyReportsUnknownRatherThanZero(t *testing.T) {
 		t.Fatalf("expected ok=false for a vehicle with no efficiency yet, got ok=%v err=%v", ok, err)
 	}
 }
+
+// TestUpsertVehicleNeverErasesAKnownFieldWithAnEmptyOne pins the bug
+// found on the live database: the API reported "Shivaradhan's Model Y"
+// and the stored row held "".
+//
+// The fields arrive from two endpoints. The vehicle list carries
+// display_name; vehicle_data carries vehicle_config (and so the model)
+// but not always the name. The polling path upserts on every poll, so a
+// plain assignment meant every poll overwrote the real name with empty.
+func TestUpsertVehicleNeverErasesAKnownFieldWithAnEmptyOne(t *testing.T) {
+	store := openTestStore(t)
+
+	if _, err := store.UpsertVehicle(VehicleMeta{
+		VIN: "VIN-KEEP", TeslaID: "111", DisplayName: "Shivaradhan's Model Y",
+		Model: "Y", TrimBadging: "62", MarketingName: "LR AWD",
+	}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+
+	// What a vehicle_data poll looks like: model present, name absent.
+	if _, err := store.UpsertVehicle(VehicleMeta{
+		VIN: "VIN-KEEP", TeslaID: "111", Model: "Y",
+	}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	var name, marketing, trim string
+	if err := store.DB().QueryRow(
+		`SELECT COALESCE(display_name,''), COALESCE(marketing_name,''), COALESCE(trim_badging,'')
+		 FROM vehicles WHERE vin = 'VIN-KEEP'`).Scan(&name, &marketing, &trim); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if name != "Shivaradhan's Model Y" {
+		t.Errorf("display_name was erased: got %q", name)
+	}
+	if marketing != "LR AWD" {
+		t.Errorf("marketing_name was erased: got %q", marketing)
+	}
+	if trim != "62" {
+		t.Errorf("trim_badging was erased: got %q", trim)
+	}
+}
+
+// A genuinely new value must still win - this must not become a
+// write-once field, or renaming the car in the app would never show up.
+func TestUpsertVehicleAcceptsAChangedName(t *testing.T) {
+	store := openTestStore(t)
+
+	if _, err := store.UpsertVehicle(VehicleMeta{VIN: "VIN-RENAME", DisplayName: "Old Name"}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if _, err := store.UpsertVehicle(VehicleMeta{VIN: "VIN-RENAME", DisplayName: "New Name"}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	var name string
+	if err := store.DB().QueryRow(
+		`SELECT display_name FROM vehicles WHERE vin = 'VIN-RENAME'`).Scan(&name); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if name != "New Name" {
+		t.Errorf("expected the rename to stick, got %q", name)
+	}
+}
