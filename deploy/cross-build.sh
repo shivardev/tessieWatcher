@@ -33,6 +33,10 @@ if command -v npm >/dev/null 2>&1; then
   rm -rf internal/webui/dist
   cp -r frontend/dist internal/webui/dist
   echo "  -> internal/webui/dist ($(du -sh internal/webui/dist | cut -f1) embedded)"
+  if ! git diff --quiet -- internal/webui/dist 2>/dev/null; then
+    echo "  !! internal/webui/dist changed - COMMIT IT before tagging, or the tag"
+    echo "     will not contain the viewer the release binary embeds."
+  fi
 else
   echo "npm not found - embedding the committed internal/webui/dist as-is."
 fi
