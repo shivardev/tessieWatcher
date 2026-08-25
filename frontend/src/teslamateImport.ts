@@ -98,8 +98,36 @@ const prepare = (database: Database, sql: string): Statement => database.prepare
 const yieldToBrowser = async (): Promise<void> =>
   new Promise((resolve) => globalThis.setTimeout(resolve, 0))
 
+// detectEncoding reads the leading bytes' byte-order mark. PowerShell's
+// `pg_dump ... > file.sql` writes UTF-16LE, not UTF-8 - the single most
+// common way a Windows-produced dump arrives - so every byte gets a null
+// partner and a naive UTF-8 read sees garbage. A UTF-8 BOM is also
+// stripped here so it does not cling to the first line and break the
+// "PostgreSQL database dump" header check.
+type DumpEncoding = 'utf-8' | 'utf-16le' | 'utf-16be'
+
+const detectEncoding = (head: Uint8Array): { encoding: DumpEncoding; bomLength: number } => {
+  if (head[0] === 0xff && head[1] === 0xfe) return { encoding: 'utf-16le', bomLength: 2 }
+  if (head[0] === 0xfe && head[1] === 0xff) return { encoding: 'utf-16be', bomLength: 2 }
+  if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf)
+    return { encoding: 'utf-8', bomLength: 3 }
+  // No BOM, but PowerShell's UTF-16LE for ASCII text is every-other-byte
+  // zero. A real UTF-8 dump starts with "--", so a NUL in the first few
+  // bytes is a reliable tell even without the mark.
+  if (head[1] === 0x00 && head[0] !== 0x00) return { encoding: 'utf-16le', bomLength: 0 }
+  return { encoding: 'utf-8', bomLength: 0 }
+}
+
+// decodedPrefix reads the first bytes of the file in whatever encoding
+// the BOM indicates, so the header sniff works on UTF-16 dumps too.
+const decodedPrefix = async (file: File): Promise<string> => {
+  const head = new Uint8Array(await file.slice(0, 512).arrayBuffer())
+  const { encoding, bomLength } = detectEncoding(head)
+  return new TextDecoder(encoding).decode(head.slice(bomLength))
+}
+
 export const isPostgresDump = async (file: File): Promise<boolean> => {
-  const prefix = await file.slice(0, 256).text()
+  const prefix = await decodedPrefix(file)
   return prefix.includes('PostgreSQL database dump') || prefix.startsWith('PGDMP')
 }
 
@@ -107,7 +135,9 @@ export const importTeslaMateDump = async (
   file: File,
   onProgress: ImportProgressHandler,
 ): Promise<Uint8Array> => {
-  const prefix = await file.slice(0, 256).text()
+  const head = new Uint8Array(await file.slice(0, 512).arrayBuffer())
+  const { encoding, bomLength } = detectEncoding(head)
+  const prefix = new TextDecoder(encoding).decode(head.slice(bomLength))
   if (prefix.startsWith('PGDMP'))
     throw new Error(
       'This is a custom-format PostgreSQL dump. Export TeslaMate with pg_dump --format=plain.',
@@ -503,14 +533,26 @@ export const importTeslaMateDump = async (
 
   try {
     database.exec('BEGIN')
-    const reader = file.stream().getReader()
-    const decoder = new TextDecoder()
+    // The decoder is created once and fed { stream: true } so a code unit
+    // spanning a chunk boundary - a UTF-16 pair, or a multi-byte UTF-8
+    // sequence - is carried into the next chunk rather than corrupted. A
+    // leading BOM is consumed by default (ignoreBOM stays false).
+    const decoder = new TextDecoder(encoding)
+
+    // Fixed 4 MB reads via file.slice, NOT file.stream(): the stream's
+    // chunk size is up to the runtime, and some hand a single chunk for
+    // the whole file. A 344 MB UTF-16 dump decoded in one call throws in
+    // undici (and would spike memory in a browser), so the read size is
+    // pinned here where it is the same everywhere. Aligned to two bytes
+    // so a UTF-16 code unit is never split at the slice itself - belt to
+    // the decoder's braces.
+    const chunkSize = 4 * 1024 * 1024
     let buffer = ''
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      bytesRead += chunk.value.byteLength
-      buffer += decoder.decode(chunk.value, { stream: true })
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      const end = Math.min(offset + chunkSize, file.size)
+      const chunk = new Uint8Array(await file.slice(offset, end).arrayBuffer())
+      bytesRead = end
+      buffer += decoder.decode(chunk, { stream: true })
       let newline = buffer.indexOf('\n')
       while (newline >= 0) {
         const rawLine = buffer.slice(0, newline)

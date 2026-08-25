@@ -141,3 +141,60 @@ describe('TeslaMate import units and address components', () => {
     }
   })
 })
+
+describe('TeslaMate import file encodings', () => {
+  // PowerShell's `pg_dump ... > file.sql` writes UTF-16LE with a BOM, not
+  // UTF-8 - the single most common way a Windows-produced dump arrives.
+  // A naive UTF-8 read sees a null after every character and recognises
+  // nothing. The 344 MB real dump landed exactly this way.
+  const toUtf16le = (text: string): Uint8Array => {
+    const bytes = new Uint8Array(2 + text.length * 2)
+    bytes[0] = 0xff // BOM
+    bytes[1] = 0xfe
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i)
+      bytes[2 + i * 2] = code & 0xff
+      bytes[2 + i * 2 + 1] = code >> 8
+    }
+    return bytes
+  }
+
+  const withBomUtf8 = (text: string): Uint8Array => {
+    const body = new TextEncoder().encode(text)
+    const bytes = new Uint8Array(3 + body.length)
+    bytes.set([0xef, 0xbb, 0xbf], 0)
+    bytes.set(body, 3)
+    return bytes
+  }
+
+  const importsToOneDrive = async (bytes: Uint8Array) => {
+    await initSqlJs()
+    const file = new File([bytes], 'teslamate.sql')
+    expect(await isPostgresDump(file)).toBe(true)
+    const out = await importTeslaMateDump(file, () => undefined)
+    const SQL = await initSqlJs()
+    const db = new SQL.Database(out)
+    try {
+      return db.exec('SELECT COUNT(*) FROM drives')[0]?.values[0]?.[0]
+    } finally {
+      db.close()
+    }
+  }
+
+  it('imports a UTF-16LE dump the way PowerShell writes it', async () => {
+    expect(await importsToOneDrive(toUtf16le(tinyDump))).toBe(1)
+  })
+
+  it('imports a UTF-8 dump carrying a byte-order mark', async () => {
+    expect(await importsToOneDrive(withBomUtf8(tinyDump))).toBe(1)
+  })
+
+  it('still imports a plain UTF-8 dump with no mark', async () => {
+    expect(await importsToOneDrive(new TextEncoder().encode(tinyDump))).toBe(1)
+  })
+
+  it('rejects a UTF-16LE custom-format dump with the plain-format hint', async () => {
+    const file = new File([toUtf16le('PGDMP\u0000\u0000junk')], 'teslamate.dump')
+    await expect(importTeslaMateDump(file, () => undefined)).rejects.toThrow(/--format=plain/u)
+  })
+})
