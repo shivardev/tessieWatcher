@@ -24,4 +24,3 @@ test-data/*.db
 *.njsproj
 *.sln
 *.sw?
-public/tm.sql
