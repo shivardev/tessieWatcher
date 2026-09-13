@@ -416,7 +416,7 @@ main:not(.empty) {
 .charges-table th:nth-child(9) { width: 104px; }
 .charges-table th:nth-child(10) { width: 76px; }
 .charges-table td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
-.drives-table table { table-layout: fixed; min-width: 1100px; font-size: 12px; }
+.drives-table table { table-layout: fixed; min-width: 1500px; font-size: 12px; }
 .drives-table th, .drives-table td { padding: 10px 9px; }
 .drives-table th button { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }
 .drives-table th:nth-child(1) { width: 165px; }
@@ -425,6 +425,12 @@ main:not(.empty) {
 .drives-table th:nth-child(6), .drives-table th:nth-child(7) { width: 64px; }
 .drives-table th:nth-child(8) { width: 70px; }
 .drives-table th:nth-child(9), .drives-table th:nth-child(10) { width: 84px; }
+/* max Power, ❄ (narrow), Efficiency (bar + %), Energy, Ø Consumption */
+.drives-table th:nth-child(11) { width: 88px; }
+.drives-table th:nth-child(12) { width: 44px; }
+.drives-table th:nth-child(13) { width: 100px; }
+.drives-table th:nth-child(14) { width: 92px; }
+.drives-table th:nth-child(15) { width: 100px; }
 .drives-table td:nth-child(2), .drives-table td:nth-child(3) { overflow: hidden; text-overflow: ellipsis; }
 .drive-filters label:first-child { flex: 1 1 340px; }
 .drive-filters label:first-child select { width: 100%; }
