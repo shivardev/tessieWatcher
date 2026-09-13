@@ -125,6 +125,13 @@ func Snapshot(ctx context.Context, srcPath, dstPath string) error {
 	return nil
 }
 
+// GzipFile writes a gzip-compressed copy of srcPath to dstPath. Exported
+// for the portal's download cache, which pre-compresses its snapshot so
+// /download can be served with Content-Encoding: gzip - a SQLite file
+// shrinks roughly threefold, and doing it once per rebuild keeps the
+// compression off the request path and the Pi.
+func GzipFile(srcPath, dstPath string) error { return gzipFile(srcPath, dstPath) }
+
 func gzipFile(srcPath, dstPath string) error {
 	src, err := os.Open(srcPath)
 	if err != nil {

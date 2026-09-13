@@ -196,16 +196,31 @@ func TestSnapshotCacheReusesUntilDataChanges(t *testing.T) {
 	cache := newSnapshotCache(store, dbPath)
 	ctx := context.Background()
 
-	first, _, err := cache.get(ctx)
+	first, err := cache.get(ctx)
 	if err != nil {
 		t.Fatalf("first get: %v", err)
 	}
-	same, _, err := cache.get(ctx)
+	same, err := cache.get(ctx)
 	if err != nil {
 		t.Fatalf("second get: %v", err)
 	}
-	if same != first {
-		t.Fatalf("expected the unchanged snapshot to be reused, got %q then %q", first, same)
+	if same.path != first.path {
+		t.Fatalf("expected the unchanged snapshot to be reused, got %q then %q", first.path, same.path)
+	}
+	// The gzip companion must be built and must actually be smaller.
+	if first.gzPath == "" {
+		t.Fatalf("expected a gzip companion to be built")
+	}
+	rawInfo, err := os.Stat(first.path)
+	if err != nil {
+		t.Fatalf("stat snapshot: %v", err)
+	}
+	gzInfo, err := os.Stat(first.gzPath)
+	if err != nil {
+		t.Fatalf("stat gzip snapshot: %v", err)
+	}
+	if gzInfo.Size() >= rawInfo.Size() {
+		t.Fatalf("expected gzip (%d) smaller than raw (%d)", gzInfo.Size(), rawInfo.Size())
 	}
 
 	// Closing a drive changes the signature (see snapshotCache.signature),
@@ -215,15 +230,18 @@ func TestSnapshotCacheReusesUntilDataChanges(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert drive: %v", err)
 	}
-	rebuilt, _, err := cache.get(ctx)
+	rebuilt, err := cache.get(ctx)
 	if err != nil {
 		t.Fatalf("get after change: %v", err)
 	}
-	if rebuilt == first {
-		t.Fatalf("expected a rebuild after the data changed, still got %q", rebuilt)
+	if rebuilt.path == first.path {
+		t.Fatalf("expected a rebuild after the data changed, still got %q", rebuilt.path)
 	}
-	if _, err := os.Stat(first); !os.IsNotExist(err) {
-		t.Fatalf("expected the superseded snapshot %q to be removed", first)
+	if _, err := os.Stat(first.path); !os.IsNotExist(err) {
+		t.Fatalf("expected the superseded snapshot %q to be removed", first.path)
+	}
+	if _, err := os.Stat(first.gzPath); !os.IsNotExist(err) {
+		t.Fatalf("expected the superseded gzip %q to be removed", first.gzPath)
 	}
 }
 

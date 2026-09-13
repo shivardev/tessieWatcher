@@ -25,10 +25,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -711,12 +713,21 @@ type snapshotCache struct {
 	srcPath string
 	dir     string
 
-	mu        sync.Mutex
-	readyPath string        // newest built snapshot, "" until the first build
-	readySig  string        // source signature readyPath was built from
-	readyAt   time.Time     // when readyPath was built (ServeContent modtime)
-	building  chan struct{} // non-nil while a build is in flight; closed when it ends
-	buildErr  error         // result of the most recent build
+	mu          sync.Mutex
+	readyPath   string        // newest built snapshot (.db), "" until the first build
+	readyGzPath string        // gzip of readyPath, served when the client accepts gzip
+	readySig    string        // source signature readyPath was built from
+	readyAt     time.Time     // when readyPath was built (ServeContent modtime)
+	building    chan struct{} // non-nil while a build is in flight; closed when it ends
+	buildErr    error         // result of the most recent build
+}
+
+// snapshotFile is a ready snapshot: the plain .db, its gzip (may be "" if
+// compression failed), and the build time used as the HTTP modtime.
+type snapshotFile struct {
+	path    string
+	gzPath  string
+	modTime time.Time
 }
 
 func newSnapshotCache(store *storage.Store, srcPath string) *snapshotCache {
@@ -752,14 +763,14 @@ func (c *snapshotCache) signature() string {
 // signature, building one if the cache is empty or stale. Concurrent
 // callers that arrive while a build is running wait for it and share its
 // result. ctx cancellation only stops waiting - never the build itself.
-func (c *snapshotCache) get(ctx context.Context) (path string, modTime time.Time, err error) {
+func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 	sig := c.signature()
 
 	c.mu.Lock()
 	if c.readyPath != "" && c.readySig == sig {
-		path, modTime = c.readyPath, c.readyAt
+		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
 		c.mu.Unlock()
-		return path, modTime, nil
+		return f, nil
 	}
 	if c.building != nil {
 		wait := c.building
@@ -767,32 +778,50 @@ func (c *snapshotCache) get(ctx context.Context) (path string, modTime time.Time
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return "", time.Time{}, ctx.Err()
+			return snapshotFile{}, ctx.Err()
 		}
 		c.mu.Lock()
-		path, modTime, err = c.readyPath, c.readyAt, c.buildErr
+		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
+		err := c.buildErr
 		c.mu.Unlock()
-		if path == "" {
-			return "", time.Time{}, err
+		if f.path == "" {
+			return snapshotFile{}, err
 		}
-		return path, modTime, nil
+		return f, nil
 	}
 	done := make(chan struct{})
 	c.building = done
 	c.mu.Unlock()
 
-	tmp := filepath.Join(c.dir, fmt.Sprintf("snap-%d.db", time.Now().UnixNano()))
+	stamp := time.Now().UnixNano()
+	tmp := filepath.Join(c.dir, fmt.Sprintf("snap-%d.db", stamp))
 	// context.Background(), not the caller's ctx: a build started for one
 	// request is shared by every concurrent and subsequent caller, so a
 	// single client hanging up must not abort it. This is the specific
 	// regression that produced the "context canceled" build loop.
 	buildErr := backup.Snapshot(context.Background(), c.srcPath, tmp)
 
-	c.mu.Lock()
-	old := c.readyPath
+	// Pre-compress so /download can be served with Content-Encoding: gzip -
+	// a SQLite file shrinks ~3x, which is the dominant cost of connecting
+	// the viewer over the Pi's wifi. Done here, off the request path, so it
+	// costs the Pi nothing per download. A gzip failure is non-fatal: the
+	// plain .db is still served, just uncompressed.
+	gzTmp := ""
 	if buildErr == nil {
-		c.readyPath, c.readySig, c.readyAt = tmp, sig, time.Now()
-		path, modTime = c.readyPath, c.readyAt
+		gzTmp = tmp + ".gz"
+		if err := backup.GzipFile(tmp, gzTmp); err != nil {
+			slog.Warn("portal: could not gzip snapshot; serving uncompressed", "error", err)
+			_ = os.Remove(gzTmp)
+			gzTmp = ""
+		}
+	}
+
+	c.mu.Lock()
+	oldDB, oldGz := c.readyPath, c.readyGzPath
+	var f snapshotFile
+	if buildErr == nil {
+		c.readyPath, c.readyGzPath, c.readySig, c.readyAt = tmp, gzTmp, sig, time.Now()
+		f = snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
 	} else {
 		_ = os.Remove(tmp)
 	}
@@ -801,10 +830,15 @@ func (c *snapshotCache) get(ctx context.Context) (path string, modTime time.Time
 	close(done)
 	c.mu.Unlock()
 
-	if buildErr == nil && old != "" && old != tmp {
-		_ = os.Remove(old)
+	if buildErr == nil {
+		if oldDB != "" && oldDB != tmp {
+			_ = os.Remove(oldDB)
+		}
+		if oldGz != "" && oldGz != gzTmp {
+			_ = os.Remove(oldGz)
+		}
 	}
-	return path, modTime, buildErr
+	return f, buildErr
 }
 
 // refresh keeps the cache warm so /download stays instant. It runs get on
@@ -814,7 +848,7 @@ func (c *snapshotCache) get(ctx context.Context) (path string, modTime time.Time
 // viewer's next minute poll asks for it.
 func (c *snapshotCache) refresh(ctx context.Context, every time.Duration) {
 	warm := func() {
-		if _, _, err := c.get(ctx); err != nil && ctx.Err() == nil {
+		if _, err := c.get(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("portal: background snapshot refresh failed", "error", err)
 		}
 	}
@@ -836,7 +870,7 @@ func (c *snapshotCache) refresh(ctx context.Context, every time.Duration) {
 // opens directly in Grafana's SQLite datasource or any other tool with no
 // unzip and, crucially, no per-request build latency.
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	path, modTime, err := s.snapshots.get(r.Context())
+	snap, err := s.snapshots.get(r.Context())
 	if err != nil {
 		if r.Context().Err() != nil {
 			return // client hung up; not our error to report
@@ -846,17 +880,51 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := os.Open(path)
+	filename := fmt.Sprintf("tesla-%s.db", time.Now().UTC().Format("2006-01-02"))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+	// Serve the pre-compressed copy when the client accepts gzip (every
+	// browser and download manager does), so the ~67 MB file crosses the
+	// wifi at roughly a third the size. Content-Encoding: gzip is transport
+	// compression: fetch() in the viewer and a browser's own Save both hand
+	// back the decoded .db, so nothing downstream sees a .gz. Range requests
+	// are declined for the compressed stream (a range over gzip bytes is
+	// meaningless to the client); the viewer fetches the whole file anyway.
+	if snap.gzPath != "" && acceptsGzip(r) {
+		gz, err := os.Open(snap.gzPath)
+		if err == nil {
+			defer gz.Close()
+			if info, err := gz.Stat(); err == nil {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+				if _, err := io.Copy(w, gz); err != nil {
+					slog.Warn("portal: sending gzip snapshot failed", "error", err)
+				}
+				return
+			}
+		}
+		slog.Warn("portal: gzip snapshot unavailable, serving uncompressed", "error", err)
+	}
+
+	f, err := os.Open(snap.path)
 	if err != nil {
 		slog.Error("portal: open snapshot for download failed", "error", err)
 		http.Error(w, "failed to read database snapshot", http.StatusInternalServerError)
 		return
 	}
 	defer f.Close()
+	http.ServeContent(w, r, filename, snap.modTime, f)
+}
 
-	filename := fmt.Sprintf("tesla-%s.db", time.Now().UTC().Format("2006-01-02"))
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-	http.ServeContent(w, r, filename, modTime, f)
+// acceptsGzip reports whether the client's Accept-Encoding lists gzip.
+func acceptsGzip(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.EqualFold(strings.TrimSpace(strings.SplitN(part, ";", 2)[0]), "gzip") {
+			return true
+		}
+	}
+	return false
 }
 
 // vehicleDisplayName picks the best available name for the car. Tesla
