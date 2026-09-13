@@ -23,6 +23,7 @@ export const driveRowSchema = z.object({
   startBattery: z.number().nullable(),
   endBattery: z.number().nullable(),
   maxSpeedKmh: z.number().nullable(),
+  maxPowerKw: z.number().nullable(),
   ascentM: z.number().nullable(),
   descentM: z.number().nullable(),
   outsideTempC: z.number().nullable(),
@@ -30,6 +31,10 @@ export const driveRowSchema = z.object({
   energyKwh: z.number().nullable(),
   rangeDiffKm: z.number().nullable(),
   carEfficiencyKwhKm: z.number().nullable(),
+  // TeslaMate's ❄ column (drives.json has_reduced_range): 1 when more than
+  // 25% of the drive's position samples had battery_level above
+  // usable_battery_level, i.e. cold-weather reduced range. 0/null otherwise.
+  hasReducedRange: z.number().nullable(),
 })
 export type DriveRow = z.infer<typeof driveRowSchema>
 export const chargeRowSchema = z.object({

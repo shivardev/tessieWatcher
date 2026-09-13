@@ -52,6 +52,35 @@ const format = (value: number, digits = 0): string =>
   new Intl.NumberFormat(undefined, { maximumFractionDigits: digits }).format(value)
 const cell = (value: number | null, digits = 0): string =>
   value === null ? '—' : format(value, digits)
+// Renders TeslaMate's Efficiency column: the percentage plus the tinted
+// bar behind it, filling toward 150% so anything at or above 100% (the car
+// beating its rated range) reads as a full green bar, and worse-than-rated
+// drives read amber. Takes the ratio (1.0 == 100%) from driveEfficiency.
+const efficiencyCell = (ratio: number | null): ReactNode => {
+  if (ratio === null) return '—'
+  const fill = (Math.max(0, Math.min(ratio, 1.5)) / 1.5) * 100
+  const hue = ratio >= 1 ? 140 : 30
+  return (
+    <span style={{ position: 'relative', display: 'inline-block', minWidth: '68px' }}>
+      <span
+        style={{
+          position: 'absolute',
+          insetBlock: 0,
+          insetInlineStart: 0,
+          width: `${fill}%`,
+          backgroundColor: `hsl(${hue} 70% 45%)`,
+          opacity: 0.25,
+          borderRadius: '3px',
+        }}
+      />
+      <span style={{ position: 'relative' }}>{format(ratio * 100, 1)}%</span>
+    </span>
+  )
+}
+// Energy consumed per drive, auto-scaled the way TeslaMate's table is:
+// sub-kilowatt-hour drives read in Wh, larger ones in kWh.
+const energyCell = (kwh: number | null): string =>
+  kwh === null ? '—' : Math.abs(kwh) < 1 ? `${format(kwh * 1000, 1)} Wh` : `${format(kwh, 2)} kWh`
 const date = (value: string): string =>
   new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
     timestampDate(value),
@@ -162,7 +191,7 @@ function Drives({
   onSelect: (driveId: number) => void
   settings: ViewSettings
 }>) {
-  type DriveSort = 'time' | 'from' | 'to' | 'durationMin' | 'distanceKm' | 'startBattery' | 'endBattery' | 'outsideTempC' | 'averageSpeedKmh' | 'maxSpeedKmh'
+  type DriveSort = 'time' | 'from' | 'to' | 'durationMin' | 'distanceKm' | 'startBattery' | 'endBattery' | 'outsideTempC' | 'averageSpeedKmh' | 'maxSpeedKmh' | 'maxPowerKw' | 'reducedRange' | 'efficiency' | 'energyKwh' | 'consumption'
   const [geofence, setGeofence] = useState('All')
   const [location, setLocation] = useState('')
   const [minimumDistance, setMinimumDistance] = useState('0')
@@ -173,9 +202,40 @@ function Drives({
   const places = [...new Set(data.drives.flatMap((drive) => [drive.from, drive.to]))].sort()
   const convertedDistance = (drive: DriveRow): number => distance(drive.distanceKm ?? 0, settings.lengthUnit)
   const convertedSpeed = (value: number | null): number => speed(value ?? 0, settings.lengthUnit)
+  // The drive's efficiency ratio, exactly as TeslaMate's drives.json
+  // computes the Efficiency column, honouring the same two modes:
+  //   by distance:    distance / range_diff
+  //   slope-adjusted: distance·E / (range_diff·E + descent term − ascent term)
+  // where E is the car's efficiency in kWh/km (carEfficiencyKwhKm is stored
+  // as Wh/km, hence /1000), and the elevation terms model a 2100 kg car with
+  // 85% regen recovery, in kWh (2100·g·Δh joules / 3600 / 1000). Returned as
+  // a ratio; ×100 for the percentage shown. Null when it is undefined, e.g.
+  // range gained on a net-downhill drive in "by distance" mode.
+  const driveEfficiency = (drive: DriveRow): number | null => {
+    const { distanceKm, rangeDiffKm, carEfficiencyKwhKm } = drive
+    if (distanceKm === null) return null
+    if (efficiency === 'by distance') {
+      if (rangeDiffKm === null || rangeDiffKm <= 0) return null
+      return distanceKm / rangeDiffKm
+    }
+    if (rangeDiffKm === null || carEfficiencyKwhKm === null) return null
+    const e = carEfficiencyKwhKm / 1000
+    const descentTerm = (2100 * 0.85 * 9.81 * (drive.descentM ?? 0)) / 3600 / 1000
+    const ascentTerm = (2100 * 9.81 * (drive.ascentM ?? 0)) / 3600 / 1000
+    const denominator = rangeDiffKm * e + descentTerm - ascentTerm
+    if (denominator === 0) return null
+    return (distanceKm * e) / denominator
+  }
+  const driveConsumption = (drive: DriveRow): number | null =>
+    drive.energyKwh === null || !drive.distanceKm
+      ? null
+      : (drive.energyKwh * 1000) / distance(drive.distanceKm, settings.lengthUnit)
   const sortValue = (drive: DriveRow, key: DriveSort): string | number => {
     if (key === 'time') return timestampDate(drive.time).getTime()
     if (key === 'from' || key === 'to') return drive[key].toLocaleLowerCase()
+    if (key === 'efficiency') return driveEfficiency(drive) ?? Number.NEGATIVE_INFINITY
+    if (key === 'consumption') return driveConsumption(drive) ?? Number.NEGATIVE_INFINITY
+    if (key === 'reducedRange') return drive.hasReducedRange ?? Number.NEGATIVE_INFINITY
     return drive[key] ?? Number.NEGATIVE_INFINITY
   }
   const toggleSort = (key: DriveSort): void => {
@@ -227,7 +287,7 @@ function Drives({
         <table>
           <thead>
             <tr>
-              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed']] as const).map(([key,label]) => <th key={key}><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></th>)}
+              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed'],['maxPowerKw','max Power'],['reducedRange','❄'],['efficiency','Efficiency'],['energyKwh','Energy (net)'],['consumption','Ø Consum.']] as const).map(([key,label]) => <th key={key}><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></th>)}
             </tr>
           </thead>
           <tbody>
@@ -256,6 +316,21 @@ function Drives({
                     ? '—'
                     : cell(speed(drive.maxSpeedKmh, settings.lengthUnit))}{' '}
                   {settings.lengthUnit}/h
+                </td>
+                <td>{drive.maxPowerKw === null ? '—' : `${cell(drive.maxPowerKw)} kW`}</td>
+                <td className="reduced-range-cell">
+                  {drive.hasReducedRange ? (
+                    <span title="Reduced range: over 25% of this drive's samples showed the battery colder than usable (TeslaMate ❄).">❄</span>
+                  ) : (
+                    ''
+                  )}
+                </td>
+                <td>{efficiencyCell(driveEfficiency(drive))}</td>
+                <td>{energyCell(drive.energyKwh)}</td>
+                <td>
+                  {driveConsumption(drive) === null
+                    ? '—'
+                    : `${format(driveConsumption(drive) as number, 0)} Wh/${settings.lengthUnit}`}
                 </td>
               </tr>
             ))}
