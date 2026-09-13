@@ -71,46 +71,56 @@ func Run(ctx context.Context, dbPath, backupDir string, retentionDays int, at ti
 	return finalPath, nil
 }
 
-// Snapshot uses SQLite's online backup API (sqlite3_backup_init /
-// _step / _finish), via ncruces/go-sqlite3's native Conn.Backup, which
-// is safe to run against a live WAL-mode database that teslalog is
-// actively writing to (this opens its own connection to srcPath rather
-// than sharing the daemon's, so it never blocks/is blocked by it).
-// Exported so callers other than Run (e.g. internal/portal's on-demand
-// download) can get a consistent, safe copy of the live database without
-// going through Run's gzip+rotation-into-backupDir behavior.
+// Snapshot writes a consistent, self-contained copy of the live database
+// at srcPath to dstPath using SQLite's `VACUUM INTO`, run from a separate
+// read-only connection so it never blocks (or is blocked by) the daemon's
+// own writes.
+//
+// This replaced the online backup API (sqlite3_backup_init/_step/_finish
+// via Conn.Backup). The backup API restarts its copy from the beginning
+// every time a concurrent writer commits to the source - and teslalog
+// writes to tesla.db every few seconds while a car is awake, especially
+// while charging - so on the live Pi a backup could stall indefinitely,
+// never converging. `VACUUM INTO` instead runs inside a single read
+// transaction: it takes one consistent view of the database at the moment
+// it starts and is immune to concurrent-write restarts (validated on the
+// Pi under an active charging session). It is a single pass, and unlike
+// the backup API it produces a freshly-packed database in the connection's
+// default rollback (DELETE) journal mode, not WAL - so there is no second
+// journal-mode fixup pass and no -wal/-shm sidecar to lose.
+//
+// The DELETE-mode output matters for portability: a WAL-flagged .db with
+// no sidecar files forces every reader to run WAL recovery on first open,
+// and concurrent readers (e.g. Grafana loading a dashboard's several
+// panels at once) race for that recovery and lose with
+// SQLITE_BUSY_RECOVERY ("database is locked"). VACUUM INTO's compacted,
+// single-file DELETE-mode output is the most portable format for any
+// external tool to open, and immune to that race.
+//
+// Exported so callers other than Run (e.g. internal/portal's download
+// snapshot cache) can get a consistent, safe copy of the live database
+// without going through Run's gzip+rotation-into-backupDir behavior.
 func Snapshot(ctx context.Context, srcPath, dstPath string) error {
+	// VACUUM INTO refuses to overwrite an existing file. The portal cache
+	// writes to a temp path it controls, but guard here so a stale file
+	// never turns a snapshot into a silent failure.
+	if err := os.Remove(dstPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clear snapshot destination: %w", err)
+	}
+
 	src, err := sqlite3.OpenContext(ctx, "file:"+srcPath+"?mode=ro")
 	if err != nil {
 		return fmt.Errorf("open source db: %w", err)
 	}
 	defer src.Close()
 
-	if err := src.Backup("main", dstPath); err != nil {
-		return fmt.Errorf("backup: %w", err)
-	}
-
-	// The backup API creates dstPath as a fresh database, which defaults
-	// to WAL mode (matching the live one) - fine for a database teslalog
-	// itself keeps writing to, but this snapshot is a static, one-shot
-	// artifact nothing ever writes to again. Left in WAL mode, it needs
-	// matching -wal/-shm sidecar files that this function doesn't
-	// produce (and that get lost anyway once this file is copied
-	// elsewhere, e.g. downloaded via the portal) - opening a WAL-flagged
-	// .db with no sidecar files forces every reader to perform WAL
-	// recovery on first open, and concurrent readers (e.g. Grafana
-	// loading a dashboard's several panels at once) race for that
-	// recovery and lose with SQLITE_BUSY_RECOVERY ("database is
-	// locked"). Switching to DELETE mode checkpoints and folds
-	// everything into the single main file - the most portable format
-	// for any external tool to open, and immune to this race.
-	dst, err := sqlite3.OpenContext(ctx, "file:"+dstPath)
-	if err != nil {
-		return fmt.Errorf("open snapshot for journal-mode fixup: %w", err)
-	}
-	defer dst.Close()
-	if err := dst.Exec("PRAGMA journal_mode = DELETE"); err != nil {
-		return fmt.Errorf("set snapshot journal mode: %w", err)
+	// The destination path is a string literal in the SQL. Single-quotes
+	// are the only character that could break out of it; double them, the
+	// standard SQL escape, so an unusual temp path can't corrupt the
+	// statement.
+	quoted := strings.ReplaceAll(dstPath, "'", "''")
+	if err := src.Exec("VACUUM INTO '" + quoted + "'"); err != nil {
+		return fmt.Errorf("vacuum into: %w", err)
 	}
 	return nil
 }

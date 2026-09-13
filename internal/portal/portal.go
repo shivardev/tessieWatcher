@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"teslalog/internal/backup"
@@ -40,11 +41,12 @@ import (
 // "/download" (a fresh database snapshot), "/api/status" (cheap live
 // status JSON), and "/api/meta" (cheap freshness-check JSON).
 type Server struct {
-	store    *storage.Store
-	dbPath   string
-	logs     *LogBuffer
-	version  string
-	imperial bool
+	store     *storage.Store
+	dbPath    string
+	logs      *LogBuffer
+	version   string
+	imperial  bool
+	snapshots *snapshotCache
 }
 
 // New constructs a Server. store is used read-only, for the status line
@@ -57,7 +59,14 @@ type Server struct {
 // snapshot, and /api/status's JSON are always km, matching every other
 // distance value in the database.
 func New(store *storage.Store, dbPath string, logs *LogBuffer, units, version string) *Server {
-	return &Server{store: store, dbPath: dbPath, logs: logs, imperial: units == "imperial", version: version}
+	return &Server{
+		store:     store,
+		dbPath:    dbPath,
+		logs:      logs,
+		imperial:  units == "imperial",
+		version:   version,
+		snapshots: newSnapshotCache(store, dbPath),
+	}
 }
 
 const kmPerMi = 1.609344
@@ -122,6 +131,13 @@ func withCORS(h http.Handler) http.Handler {
 // then shuts it down gracefully.
 func (s *Server) Run(ctx context.Context, addr string) error {
 	srv := &http.Server{Addr: addr, Handler: s.handler()}
+
+	// Keep the download snapshot pre-built so /download and the embedded
+	// viewer's auto-connect serve instantly instead of building on demand.
+	// A 60s tick matches the viewer's own /api/meta poll interval, so a
+	// finished drive is snapshotted before the viewer next asks for it,
+	// and an idle car costs only a cheap signature check per tick.
+	go s.snapshots.refresh(ctx, 60*time.Second)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -661,22 +677,176 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDownload takes a fresh, consistent online-backup snapshot of the
-// live database (safe under WAL, via internal/backup.Snapshot) and
-// serves it uncompressed, so it can be opened directly by Grafana's
-// SQLite datasource plugin or any other tool without an extra unzip
-// step. The snapshot is written to a temp file and removed once served.
-func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
-	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf(".teslalog-portal-snapshot-%d.db", time.Now().UnixNano()))
-	defer os.Remove(tmpPath)
+// snapshotCache serves /download from a pre-built, VACUUM INTO'd copy of
+// the live database instead of building one inside every request.
+//
+// Why this exists: /download used to snapshot the whole database on
+// demand, which put seconds of work in front of the first byte, and the
+// old online-backup mechanism restarted from scratch on every concurrent
+// write - so while a car was charging (a write every few seconds) a
+// download could stall for minutes, and each client that gave up and
+// retried kicked off another competing build. The Pi's journal showed a
+// loop of "snapshot for download failed ... context canceled".
+//
+// The cache fixes both halves. Builds are single-flighted, so N concurrent
+// requests (a reload, several viewer tabs) share ONE build rather than
+// racing. A build runs on a background context, so a client disconnecting
+// mid-download can no longer cancel the shared build out from under
+// everyone else. And a ready snapshot whose signature still matches the
+// live database is served immediately with no build at all.
+//
+// The signature is the same triple the viewer's /api/meta freshness check
+// keys on - closed drives, closed charges, latest position id - so a
+// cached snapshot is reused exactly when the viewer would consider it
+// current, and rebuilt exactly when the viewer would re-pull. That keeps
+// the served file from ever being older than the metadata a client just
+// saw, without rebuilding on a fixed timer: a parked or sleeping car
+// changes none of those and triggers no work at all.
+type snapshotCache struct {
+	store   *storage.Store
+	srcPath string
+	dir     string
 
-	if err := backup.Snapshot(r.Context(), s.dbPath, tmpPath); err != nil {
+	mu        sync.Mutex
+	readyPath string        // newest built snapshot, "" until the first build
+	readySig  string        // source signature readyPath was built from
+	readyAt   time.Time     // when readyPath was built (ServeContent modtime)
+	building  chan struct{} // non-nil while a build is in flight; closed when it ends
+	buildErr  error         // result of the most recent build
+}
+
+func newSnapshotCache(store *storage.Store, srcPath string) *snapshotCache {
+	dir := filepath.Join(os.TempDir(), "teslalog-snapshots")
+	// A crash or restart can leave a previous run's snapshot behind;
+	// clear the directory so it never accumulates 66 MB files.
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("portal: could not create snapshot dir, falling back to temp", "error", err)
+		dir = os.TempDir()
+	}
+	return &snapshotCache{store: store, srcPath: srcPath, dir: dir}
+}
+
+// signature is a cheap fingerprint of the live database's history. It
+// mirrors the counters /api/meta reports (see handleAPIMeta) so a snapshot
+// is considered fresh under exactly the same conditions the viewer uses to
+// decide whether to re-download. On any query error it returns a unique
+// value, which forces a rebuild rather than serving a possibly-stale file.
+func (c *snapshotCache) signature() string {
+	var drives, charges int
+	var latestPos sql.NullInt64
+	db := c.store.DB()
+	if err := db.QueryRow(`SELECT COUNT(*) FROM drives WHERE status = 'closed'`).Scan(&drives); err != nil {
+		return fmt.Sprintf("err-%d", time.Now().UnixNano())
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM charging_sessions WHERE status = 'closed'`).Scan(&charges); err != nil {
+		return fmt.Sprintf("err-%d", time.Now().UnixNano())
+	}
+	if err := db.QueryRow(`SELECT MAX(id) FROM positions`).Scan(&latestPos); err != nil {
+		return fmt.Sprintf("err-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%d-%d-%d", drives, charges, latestPos.Int64)
+}
+
+// get returns the path to a snapshot that matches the current source
+// signature, building one if the cache is empty or stale. Concurrent
+// callers that arrive while a build is running wait for it and share its
+// result. ctx cancellation only stops waiting - never the build itself.
+func (c *snapshotCache) get(ctx context.Context) (path string, modTime time.Time, err error) {
+	sig := c.signature()
+
+	c.mu.Lock()
+	if c.readyPath != "" && c.readySig == sig {
+		path, modTime = c.readyPath, c.readyAt
+		c.mu.Unlock()
+		return path, modTime, nil
+	}
+	if c.building != nil {
+		wait := c.building
+		c.mu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return "", time.Time{}, ctx.Err()
+		}
+		c.mu.Lock()
+		path, modTime, err = c.readyPath, c.readyAt, c.buildErr
+		c.mu.Unlock()
+		if path == "" {
+			return "", time.Time{}, err
+		}
+		return path, modTime, nil
+	}
+	done := make(chan struct{})
+	c.building = done
+	c.mu.Unlock()
+
+	tmp := filepath.Join(c.dir, fmt.Sprintf("snap-%d.db", time.Now().UnixNano()))
+	// context.Background(), not the caller's ctx: a build started for one
+	// request is shared by every concurrent and subsequent caller, so a
+	// single client hanging up must not abort it. This is the specific
+	// regression that produced the "context canceled" build loop.
+	buildErr := backup.Snapshot(context.Background(), c.srcPath, tmp)
+
+	c.mu.Lock()
+	old := c.readyPath
+	if buildErr == nil {
+		c.readyPath, c.readySig, c.readyAt = tmp, sig, time.Now()
+		path, modTime = c.readyPath, c.readyAt
+	} else {
+		_ = os.Remove(tmp)
+	}
+	c.buildErr = buildErr
+	c.building = nil
+	close(done)
+	c.mu.Unlock()
+
+	if buildErr == nil && old != "" && old != tmp {
+		_ = os.Remove(old)
+	}
+	return path, modTime, buildErr
+}
+
+// refresh keeps the cache warm so /download stays instant. It runs get on
+// a timer and discards the result: get only rebuilds when the signature
+// changed, so an idle car costs one signature() call per tick and no I/O,
+// while a just-finished drive is snapshotted within one tick - before the
+// viewer's next minute poll asks for it.
+func (c *snapshotCache) refresh(ctx context.Context, every time.Duration) {
+	warm := func() {
+		if _, _, err := c.get(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("portal: background snapshot refresh failed", "error", err)
+		}
+	}
+	warm() // build once at startup so the first /download is instant too
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			warm()
+		}
+	}
+}
+
+// handleDownload serves the cached snapshot (see snapshotCache) - a
+// consistent, VACUUM INTO'd, DELETE-mode copy of the live database - so it
+// opens directly in Grafana's SQLite datasource or any other tool with no
+// unzip and, crucially, no per-request build latency.
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	path, modTime, err := s.snapshots.get(r.Context())
+	if err != nil {
+		if r.Context().Err() != nil {
+			return // client hung up; not our error to report
+		}
 		slog.Error("portal: snapshot for download failed", "error", err)
 		http.Error(w, "failed to prepare database snapshot", http.StatusInternalServerError)
 		return
 	}
 
-	f, err := os.Open(tmpPath)
+	f, err := os.Open(path)
 	if err != nil {
 		slog.Error("portal: open snapshot for download failed", "error", err)
 		http.Error(w, "failed to read database snapshot", http.StatusInternalServerError)
@@ -686,7 +856,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	filename := fmt.Sprintf("tesla-%s.db", time.Now().UTC().Format("2006-01-02"))
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
-	http.ServeContent(w, r, filename, time.Now(), f)
+	http.ServeContent(w, r, filename, modTime, f)
 }
 
 // vehicleDisplayName picks the best available name for the car. Tesla

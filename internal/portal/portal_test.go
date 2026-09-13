@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -173,6 +174,56 @@ func TestDownloadServesAValidSQLiteSnapshot(t *testing.T) {
 	}
 	if displayName != "My Model 3" {
 		t.Fatalf("expected downloaded snapshot to contain our vehicle, got %q", displayName)
+	}
+}
+
+// The cache must reuse its built snapshot while the database's history is
+// unchanged, and rebuild (retiring the old file) only when a drive/charge/
+// position actually changes - this is what turns /download from a
+// seconds-long per-request build into an instant file serve.
+func TestSnapshotCacheReusesUntilDataChanges(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN1", DisplayName: "Car"}); err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+
+	cache := newSnapshotCache(store, dbPath)
+	ctx := context.Background()
+
+	first, _, err := cache.get(ctx)
+	if err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	same, _, err := cache.get(ctx)
+	if err != nil {
+		t.Fatalf("second get: %v", err)
+	}
+	if same != first {
+		t.Fatalf("expected the unchanged snapshot to be reused, got %q then %q", first, same)
+	}
+
+	// Closing a drive changes the signature (see snapshotCache.signature),
+	// exactly as it changes /api/meta - so the next get must rebuild.
+	if _, err := store.DB().Exec(
+		`INSERT INTO drives (vehicle_id, start_time, status) VALUES (1, '2026-01-01T00:00:00Z', 'closed')`,
+	); err != nil {
+		t.Fatalf("insert drive: %v", err)
+	}
+	rebuilt, _, err := cache.get(ctx)
+	if err != nil {
+		t.Fatalf("get after change: %v", err)
+	}
+	if rebuilt == first {
+		t.Fatalf("expected a rebuild after the data changed, still got %q", rebuilt)
+	}
+	if _, err := os.Stat(first); !os.IsNotExist(err) {
+		t.Fatalf("expected the superseded snapshot %q to be removed", first)
 	}
 }
 
