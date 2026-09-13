@@ -695,13 +695,17 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // everyone else. And a ready snapshot whose signature still matches the
 // live database is served immediately with no build at all.
 //
-// The signature is the same triple the viewer's /api/meta freshness check
-// keys on - closed drives, closed charges, latest position id - so a
-// cached snapshot is reused exactly when the viewer would consider it
-// current, and rebuilt exactly when the viewer would re-pull. That keeps
-// the served file from ever being older than the metadata a client just
-// saw, without rebuilding on a fixed timer: a parked or sleeping car
-// changes none of those and triggers no work at all.
+// The signature is the count of closed drives and closed charges, which
+// tick only when a trip or a charge FINISHES - the moment genuinely new
+// history exists. Deliberately NOT the latest position id: that advances
+// every few seconds throughout a drive, and keying on it would have the
+// background refresher VACUUM the whole ~67 MB database once a minute for
+// the entire drive, even with no viewer open - exactly the kind of
+// needless SD-card wear and CPU load this Pi build works to avoid. The
+// cost of leaving it out is that a drive or charge still in progress is
+// absent from the snapshot until it closes; for a history export and the
+// dashboards that read it, that is the right trade. A parked or sleeping
+// car changes neither counter and triggers no work at all.
 type snapshotCache struct {
 	store   *storage.Store
 	srcPath string
@@ -734,7 +738,6 @@ func newSnapshotCache(store *storage.Store, srcPath string) *snapshotCache {
 // value, which forces a rebuild rather than serving a possibly-stale file.
 func (c *snapshotCache) signature() string {
 	var drives, charges int
-	var latestPos sql.NullInt64
 	db := c.store.DB()
 	if err := db.QueryRow(`SELECT COUNT(*) FROM drives WHERE status = 'closed'`).Scan(&drives); err != nil {
 		return fmt.Sprintf("err-%d", time.Now().UnixNano())
@@ -742,10 +745,7 @@ func (c *snapshotCache) signature() string {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM charging_sessions WHERE status = 'closed'`).Scan(&charges); err != nil {
 		return fmt.Sprintf("err-%d", time.Now().UnixNano())
 	}
-	if err := db.QueryRow(`SELECT MAX(id) FROM positions`).Scan(&latestPos); err != nil {
-		return fmt.Sprintf("err-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("%d-%d-%d", drives, charges, latestPos.Int64)
+	return fmt.Sprintf("%d-%d", drives, charges)
 }
 
 // get returns the path to a snapshot that matches the current source
