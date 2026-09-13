@@ -30,21 +30,47 @@ export type StateSpan = Readonly<{
 // blue/green for the car doing something, warm grey for correctly
 // sleeping, purple for unreachable.
 const stateColors: ReadonlyMap<string, string> = new Map([
-  ['driving', '#5794f2'],
-  ['charging', '#73bf69'],
-  ['charging (ac)', '#73bf69'],
+  ['driving', '#8f3bbd'],
+  ['charging', '#f5d110'],
+  ['charging (ac)', '#f5d110'],
   ['charging (dc)', '#fade2a'],
-  ['online', '#7ebdc9'],
+  ['online', '#71c8d4'],
   ['idle', '#4e8a97'],
-  ['asleep', '#f0b35a'],
+  ['asleep', '#ffb357'],
   ['suspended', '#c79a4a'],
-  ['offline', '#8b6daa'],
+  ['offline', '#ffb357'],
   ['updating', '#f2495c'],
 ])
 const unknownColor = '#5a6b68'
 
 export const stateColor = (state: string): string =>
   stateColors.get(state.trim().toLowerCase()) ?? unknownColor
+
+const statePriority = (state: string): number => {
+  const normalized = state.trim().toLowerCase()
+  if (normalized === 'driving' || normalized.startsWith('charging')) return 2
+  return 1
+}
+
+// TeslaMate overlays drive and charge activity on top of the vehicle's
+// connectivity states. Resolve overlaps into one visible lane so the
+// legend, hover readout, and duration totals describe the same timeline.
+export const resolveStateSpans = (spans: readonly StateSpan[]): readonly StateSpan[] => {
+  const valid = spans.filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
+  const boundaries = [...new Set(valid.flatMap((item) => [item.start, item.end]))].toSorted((a, b) => a - b)
+  const resolved: StateSpan[] = []
+  for (let index = 0; index < boundaries.length - 1; index += 1) {
+    const start = boundaries[index]!
+    const end = boundaries[index + 1]!
+    const winner = valid.filter((item) => item.start <= start && item.end >= end)
+      .toSorted((left, right) => statePriority(right.state) - statePriority(left.state) || right.start - left.start)[0]
+    if (!winner) continue
+    const prior = resolved.at(-1)
+    if (prior?.state === winner.state && prior.end === start) resolved[resolved.length - 1] = { ...prior, end }
+    else resolved.push({ start, end, state: winner.state })
+  }
+  return resolved
+}
 
 export const humanDuration = (milliseconds: number): string => {
   const minutes = milliseconds / 60_000
@@ -127,9 +153,7 @@ export function StateTimeline({
   const [hovered, setHovered] = useState<number | null>(null)
 
   const model = useMemo(() => {
-    const valid = spans
-      .filter((span) => Number.isFinite(span.start) && Number.isFinite(span.end) && span.end >= span.start)
-      .toSorted((left, right) => left.start - right.start)
+    const valid = resolveStateSpans(spans)
     if (valid.length === 0) return null
 
     const start = valid[0]!.start
@@ -186,13 +210,15 @@ export function StateTimeline({
           // A floor on width so a genuinely short state stays visible
           // and clickable instead of collapsing into the background.
           const width = Math.max(0.35, ((item.end - item.start) / model.span) * 100)
+          const label = width >= 6 ? item.state.replace('charging (', 'charging ').replace(')', '') : null
           return (
             <i
               key={`${item.start}-${index}`}
               style={{ left: `${left}%`, width: `${width}%`, background: stateColor(item.state) }}
               className={hovered === index ? 'is-hovered' : undefined}
               onMouseEnter={() => setHovered(index)}
-            />
+              title={`${item.state}: ${new Date(item.start).toLocaleString()} – ${new Date(item.end).toLocaleString()} (${humanDuration(item.end - item.start)})`}
+            >{label}</i>
           )
         })}
       </div>

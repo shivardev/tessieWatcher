@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { axisTicks, humanDuration, spansFromRows, stateColor } from './StateTimeline'
+import { axisTicks, humanDuration, resolveStateSpans, spansFromRows, stateColor } from './StateTimeline'
+
+describe('resolveStateSpans', () => {
+  it('shows driving and charging in place of overlapping connectivity states', () => {
+    expect(resolveStateSpans([
+      { start: 0, end: 100, state: 'online' },
+      { start: 20, end: 40, state: 'driving' },
+      { start: 60, end: 80, state: 'charging (AC)' },
+    ])).toEqual([
+      { start: 0, end: 20, state: 'online' },
+      { start: 20, end: 40, state: 'driving' },
+      { start: 40, end: 60, state: 'online' },
+      { start: 60, end: 80, state: 'charging (AC)' },
+      { start: 80, end: 100, state: 'online' },
+    ])
+  })
+
+  it('coalesces adjacent intervals of the same state', () => {
+    expect(resolveStateSpans([
+      { start: 0, end: 20, state: 'offline' },
+      { start: 20, end: 40, state: 'offline' },
+    ])).toEqual([{ start: 0, end: 40, state: 'offline' }])
+  })
+})
 
 describe('stateColor', () => {
   it('is case- and whitespace-insensitive', () => {
