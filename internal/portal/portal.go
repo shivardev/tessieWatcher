@@ -20,6 +20,7 @@
 package portal
 
 import (
+	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -809,7 +810,7 @@ func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 	gzTmp := ""
 	if buildErr == nil {
 		gzTmp = tmp + ".gz"
-		if err := backup.GzipFile(tmp, gzTmp); err != nil {
+		if err := backup.GzipFileLevel(tmp, gzTmp, gzip.BestSpeed); err != nil {
 			slog.Warn("portal: could not gzip snapshot; serving uncompressed", "error", err)
 			_ = os.Remove(gzTmp)
 			gzTmp = ""

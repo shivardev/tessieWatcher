@@ -125,14 +125,14 @@ func Snapshot(ctx context.Context, srcPath, dstPath string) error {
 	return nil
 }
 
-// GzipFile writes a gzip-compressed copy of srcPath to dstPath. Exported
-// for the portal's download cache, which pre-compresses its snapshot so
-// /download can be served with Content-Encoding: gzip - a SQLite file
-// shrinks roughly threefold, and doing it once per rebuild keeps the
-// compression off the request path and the Pi.
-func GzipFile(srcPath, dstPath string) error { return gzipFile(srcPath, dstPath) }
-
-func gzipFile(srcPath, dstPath string) error {
+// GzipFileLevel writes a gzip-compressed copy of srcPath to dstPath at the
+// given compression level (see compress/gzip constants). Exported for the
+// portal's download cache: it compresses at gzip.BestSpeed, because that
+// runs several times a day (once per finished trip) on a Pi Zero 2 W's
+// slow CPU, where BestSpeed is ~2-3x faster than the default level for a
+// SQLite file that still shrinks roughly fourfold - the transfer saving
+// that matters, without the CPU cost of squeezing out the last few percent.
+func GzipFileLevel(srcPath, dstPath string, level int) error {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return err
@@ -145,12 +145,21 @@ func gzipFile(srcPath, dstPath string) error {
 	}
 	defer dst.Close()
 
-	gw := gzip.NewWriter(dst)
+	gw, err := gzip.NewWriterLevel(dst, level)
+	if err != nil {
+		return err
+	}
 	if _, err := io.Copy(gw, src); err != nil {
 		gw.Close()
 		return err
 	}
 	return gw.Close()
+}
+
+// gzipFile compresses at the default level, used by the daily offsite
+// backup where smaller matters more than speed (it runs once, overnight).
+func gzipFile(srcPath, dstPath string) error {
+	return GzipFileLevel(srcPath, dstPath, gzip.DefaultCompression)
 }
 
 // prune deletes teslalog-*.db.gz files in dir older than retentionDays
