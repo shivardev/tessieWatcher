@@ -1197,8 +1197,14 @@ export function ChargeDetailsDashboard({
   const queries = useMemo(() => [
     `SELECT COALESCE(location, printf('%.4f, %.4f',latitude,longitude)) location,
       ROUND((julianday(end_time)-julianday(start_time))*24*60,0) duration,
-      start_battery_level, end_battery_level, charge_energy_added_kwh, charge_energy_used_kwh,
-      ROUND(charge_energy_added_kwh*100.0/NULLIF(charge_energy_used_kwh,0),1) efficiency,
+      start_battery_level, end_battery_level, charge_energy_added_kwh,
+      CASE WHEN charge_energy_used_kwh IS NULL THEN charge_energy_added_kwh
+           WHEN charge_energy_added_kwh IS NULL THEN charge_energy_used_kwh
+           ELSE MAX(charge_energy_added_kwh,charge_energy_used_kwh) END,
+      ROUND(charge_energy_added_kwh*100.0/NULLIF(
+        CASE WHEN charge_energy_used_kwh IS NULL THEN charge_energy_added_kwh
+             WHEN charge_energy_added_kwh IS NULL THEN charge_energy_used_kwh
+             ELSE MAX(charge_energy_added_kwh,charge_energy_used_kwh) END,0),1) efficiency,
       cost, max_charger_power_kw, outside_temp_avg_c, start_range_km, end_range_km,
       latitude, longitude, CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type
      FROM charging_sessions WHERE id=$charging_session_id`,

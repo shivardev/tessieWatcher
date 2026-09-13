@@ -223,7 +223,24 @@ const drives = (db: Database) =>
 const charges = (db: Database) =>
   rows(
     db,
-    `SELECT id, start_time time, COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) location, CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type, start_battery_level start_battery, end_battery_level end_battery, ROUND(charge_energy_added_kwh,2) energy_added, ROUND(charge_energy_used_kwh,2) energy_used, ROUND(max_charger_power_kw,1) max_power, ROUND(cost,2) cost, ROUND((julianday(end_time)-julianday(start_time))*24*60,0) duration, ROUND(cost/NULLIF(charge_energy_used_kwh,0),2) cost_per_kwh, ROUND(charge_energy_added_kwh*100.0/NULLIF(charge_energy_used_kwh,0),0) efficiency, outside_temp_avg_c FROM charging_sessions WHERE status='closed' ORDER BY start_time DESC LIMIT 500`,
+    `WITH charge_data AS (
+       SELECT *, CASE
+         WHEN charge_energy_used_kwh IS NULL THEN charge_energy_added_kwh
+         WHEN charge_energy_added_kwh IS NULL THEN charge_energy_used_kwh
+         ELSE MAX(charge_energy_used_kwh, charge_energy_added_kwh)
+       END AS displayed_energy_used
+       FROM charging_sessions WHERE status='closed'
+     )
+     SELECT id, start_time time, COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) location,
+       CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type,
+       start_battery_level start_battery, end_battery_level end_battery,
+       charge_energy_added_kwh energy_added, displayed_energy_used energy_used,
+       max_charger_power_kw max_power, cost,
+       ROUND((julianday(end_time)-julianday(start_time))*24*60,0) duration,
+       cost/NULLIF(displayed_energy_used,0) cost_per_kwh,
+       charge_energy_added_kwh*100.0/NULLIF(displayed_energy_used,0) efficiency,
+       outside_temp_avg_c
+     FROM charge_data ORDER BY start_time DESC LIMIT 500`,
   ).map((r) =>
     chargeRowSchema.parse({
       id: num(r.id, 'charge id'),
