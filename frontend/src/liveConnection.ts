@@ -4,19 +4,18 @@
 // tesla.db from the portal and opened it by hand, and it went stale the
 // moment you did. This connects directly instead.
 //
-// The polling shape matters more than it looks. /download serves a
-// pre-built, gzip-compressed snapshot (built only when a trip closes), so
-// the transfer is cheap but still tens of MB. /api/meta answers "would a
-// download get me anything new?" in ~54 ms and ~100 bytes. The one field
-// that answers it correctly is snapshot_revision: the content hash of the
-// snapshot /download would serve right now. It changes only when the
-// served bytes change and never during a drive, so the viewer re-downloads
-// exactly when there is new history - not once a minute while the car is
-// moving, which is what keying on the live position id used to cause.
+// The polling shape matters more than it looks. /download takes a fresh
+// SQLite snapshot on every request - measured on the Pi Zero 2 W at
+// roughly 1000 ms and 10.1 MB - so polling it on a timer would be
+// gigabytes a day of transfer and SD-card reads to observe data that
+// changes a few times a day. /api/meta answers the same question in
+// ~54 ms and ~100 bytes: how many closed drives and charges exist, and
+// the highest position id. Only when one of those moves is the snapshot
+// worth fetching again.
 //
-// drives/charges/latestPositionId are kept for the live status line (and
-// so an older portal without snapshot_revision still animates), but they
-// no longer drive the re-download decision.
+// gzip was measured and rejected: it cut 10.1 MB to 1.9 MB but cost
+// 1711 ms of Pi CPU, which is the wrong trade on a machine whose whole
+// job is to keep polling a car.
 
 export type LiveMeta = Readonly<{
   lastUpdated: string
@@ -24,9 +23,6 @@ export type LiveMeta = Readonly<{
   drives: number
   charges: number
   latestPositionId: number
-  // Content hash of the snapshot /download would serve. "" from an older
-  // portal that predates this field - see hasNewData for the fallback.
-  snapshotRevision: string
 }>
 
 export type LiveStatus = Readonly<{
@@ -119,7 +115,6 @@ export const fetchMeta = async (baseUrl: string, signal?: AbortSignal): Promise<
     drives: count(record.drives),
     charges: count(record.charges),
     latestPositionId: count(record.latest_position_id),
-    snapshotRevision: typeof record.snapshot_revision === 'string' ? record.snapshot_revision : '',
   }
 }
 
@@ -129,20 +124,15 @@ export const fetchSnapshot = async (
 ): Promise<Uint8Array> =>
   new Uint8Array(await (await request(baseUrl, '/download', signal)).arrayBuffer())
 
-// hasNewData decides whether to re-download the snapshot. It keys on
-// snapshot_revision - the hash of the bytes /download would serve - so it
-// fires exactly when those bytes change and never re-fetches an unchanged
-// snapshot, including the every-minute churn that keying on the live
-// position id used to cause during a drive. When the portal is too old to
-// report a revision (both sides ""), fall back to the closed-row counters
-// so such a portal still updates on a finished trip; the position id is
-// deliberately excluded so it cannot drive a re-download.
-export const hasNewData = (previous: LiveMeta | null, next: LiveMeta): boolean => {
-  if (previous === null) return true
-  if (next.snapshotRevision !== '' || previous.snapshotRevision !== '')
-    return previous.snapshotRevision !== next.snapshotRevision
-  return previous.drives !== next.drives || previous.charges !== next.charges
-}
+// hasNewData compares two meta readings. Drives and charges count only
+// CLOSED rows, so they tick exactly when new history becomes available;
+// latestPositionId moves continuously during a drive, which is what
+// makes an in-progress drive visible without waiting for it to end.
+export const hasNewData = (previous: LiveMeta | null, next: LiveMeta): boolean =>
+  previous === null ||
+  previous.drives !== next.drives ||
+  previous.charges !== next.charges ||
+  previous.latestPositionId !== next.latestPositionId
 
 // 60 s. /api/meta costs ~54 ms and ~100 bytes on the Pi, so this is
 // roughly 0.1% of one core and 144 KB a day - small enough not to

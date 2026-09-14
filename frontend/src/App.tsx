@@ -4,7 +4,6 @@ import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedD
 import { openDatabase, openDatabaseBytes } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
-import { loadSnapshot, saveSnapshot, type CachedSnapshot } from './snapshotStore'
 import {
   fetchMeta,
   fetchSnapshot,
@@ -473,7 +472,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
       </section>
       <MetricCards metrics={chargeMetrics} />
       <h2 className="table-heading">Charger type: {type}</h2>
-      <div className="table-panel charges-table" role="region" aria-label="Charges table; scroll horizontally for all columns" tabIndex={0}>
+      <div className="table-panel charges-table">
         <table>
           <thead>
             <tr>
@@ -487,19 +486,10 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
               <th>Energy used</th>
               <th>Efficiency</th>
               <th>Temp</th>
-              <th>Ø Power</th>
-              <th>Ø Charge rate</th>
-              <th>Range gained</th>
-              <th>% Start</th>
-              <th>% End</th>
-              <th title="TeslaLog does not record an odometer reading at charge start">Odometer</th>
             </tr>
           </thead>
           <tbody>
-            {charges.map((charge) => {
-              const rangeAddedKm = settings.preferredRange === 'ideal' ? charge.idealRangeAddedKm : charge.ratedRangeAddedKm
-              const durationHours = charge.durationMin === null || charge.durationMin <= 0 ? null : charge.durationMin / 60
-              return (
+            {charges.map((charge) => (
               <tr key={charge.id}>
                 <td><button className="table-link" type="button" onClick={() => onSelect(charge.id)}>{date(charge.time)}</button></td>
                 <td title={charge.location}>{charge.location}</td>
@@ -511,14 +501,8 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
                 <td>{cell(charge.energyUsedKwh, 2)} kWh</td>
                 <td><span className="efficiency"><i style={{ width: `${Math.min(100, charge.efficiencyPercent ?? 0)}%` }} /> <b>{cell(charge.efficiencyPercent)}%</b></span></td>
                 <td>{charge.outsideTempC === null ? '—' : `${format(temperature(charge.outsideTempC, settings.temperatureUnit), 1)} °${settings.temperatureUnit}`}</td>
-                <td>{durationHours === null || charge.energyAddedKwh === null ? '—' : `${format(charge.energyAddedKwh / durationHours, 1)} kW`}</td>
-                <td>{durationHours === null || rangeAddedKm === null ? '—' : `${format(distance(rangeAddedKm / durationHours, settings.lengthUnit), 0)} ${settings.lengthUnit === 'mi' ? 'mph' : 'km/h'}`}</td>
-                <td>{rangeAddedKm === null ? '—' : `${format(distance(rangeAddedKm, settings.lengthUnit), 0)} ${settings.lengthUnit}`}</td>
-                <td>{charge.startBattery === null ? '—' : `${charge.startBattery}%`}</td>
-                <td>{charge.endBattery === null ? '—' : `${charge.endBattery}%`}</td>
-                <td title="Odometer at charge start was not recorded in this database">{charge.odometerKm === null ? '—' : `${format(distance(charge.odometerKm, settings.lengthUnit), 0)} ${settings.lengthUnit}`}</td>
               </tr>
-            )})}
+            ))}
           </tbody>
         </table>
         {charges.length === 0 && <p className="no-data">No closed charging sessions found.</p>}
@@ -624,10 +608,6 @@ export default function App() {
     const bytes = await fetchSnapshot(baseUrl)
     setData(await openDatabaseBytes('tesla.db', bytes.byteLength, bytes))
     setLiveMeta(meta)
-    // Persist so the next connect to this portal is instant and only
-    // re-downloads when the revision changes. Fire-and-forget: saveSnapshot
-    // never throws, and a failed cache write only costs a future re-fetch.
-    void saveSnapshot(baseUrl, meta.snapshotRevision, bytes)
   }
 
   // quiet suppresses the error banner for a connection the user did not
@@ -637,56 +617,20 @@ export default function App() {
   const connectTo = async (address: string, quiet = false): Promise<void> => {
     setBusy(true)
     if (!quiet) setError(null)
-    let servedFromCache = false
     try {
       const baseUrl = normaliseBaseUrl(address)
-
-      // 1. Show a locally-cached snapshot for this portal immediately, so a
-      // reconnect renders at once instead of waiting on the download. A
-      // stale or schema-incompatible cache is ignored, not fatal.
-      let cached: CachedSnapshot | null = null
-      try {
-        cached = await loadSnapshot(baseUrl)
-      } catch {
-        cached = null
-      }
-      if (cached) {
-        try {
-          setData(await openDatabaseBytes('tesla.db', cached.bytes.byteLength, cached.bytes))
-          setLiveUrl(baseUrl)
-          setActive('Overview')
-          setSelectedDriveId(null)
-          setSelectedChargeId(null)
-          servedFromCache = true
-        } catch {
-          cached = null
-        }
-      }
-
-      // 2. Ask the portal what it holds now.
       const [status, meta] = await Promise.all([fetchStatus(baseUrl), fetchMeta(baseUrl)])
       setLive(status)
+      await pullSnapshot(baseUrl, meta)
       setLiveUrl(baseUrl)
       rememberUrl(baseUrl)
       setLiveCheckedAt(new Date())
-
-      // 3. Re-download only when the served bytes actually changed (or the
-      // portal is too old to report a revision). Otherwise keep the cached
-      // copy and just record the baseline for the poll loop.
-      if (cached === null || cached.revision !== meta.snapshotRevision || meta.snapshotRevision === '') {
-        await pullSnapshot(baseUrl, meta)
-        setActive('Overview')
-        setSelectedDriveId(null)
-        setSelectedChargeId(null)
-      } else {
-        setLiveMeta(meta)
-      }
+      setActive('Overview')
+      setSelectedDriveId(null)
+      setSelectedChargeId(null)
     } catch (reason: unknown) {
       setLive(null)
-      // A revalidation failure after we already rendered cached data is not
-      // fatal - the user is looking at their history offline; stay quiet.
-      if (!quiet && !servedFromCache)
-        setError(reason instanceof Error ? reason.message : 'Could not connect.')
+      if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not connect.')
     } finally {
       setBusy(false)
     }
