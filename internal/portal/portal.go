@@ -22,7 +22,9 @@ package portal
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -524,6 +526,13 @@ func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 		Drives           int   `json:"drives"`
 		Charges          int   `json:"charges"`
 		LatestPositionID int64 `json:"latest_position_id"`
+		// SnapshotRevision is the content hash of the snapshot /download
+		// would currently serve. It is the viewer's cache key: it changes
+		// only when the served bytes change (a trip closing, an import, a
+		// delete), never during a drive - so the viewer re-downloads exactly
+		// when there is genuinely new data and not once a minute while
+		// driving. "" until the first snapshot has been built.
+		SnapshotRevision string `json:"snapshot_revision"`
 	}
 
 	info, err := os.Stat(s.dbPath)
@@ -555,6 +564,7 @@ func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("portal: api/meta position id failed", "error", err)
 	}
 	out.LatestPositionID = maxPos.Int64
+	out.SnapshotRevision = s.snapshots.revision()
 
 	writeJSON(w, out)
 }
@@ -717,6 +727,7 @@ type snapshotCache struct {
 	mu          sync.Mutex
 	readyPath   string        // newest built snapshot (.db), "" until the first build
 	readyGzPath string        // gzip of readyPath, served when the client accepts gzip
+	readyRev    string        // content hash of readyPath - the client's freshness key
 	readySig    string        // source signature readyPath was built from
 	readyAt     time.Time     // when readyPath was built (ServeContent modtime)
 	building    chan struct{} // non-nil while a build is in flight; closed when it ends
@@ -724,11 +735,55 @@ type snapshotCache struct {
 }
 
 // snapshotFile is a ready snapshot: the plain .db, its gzip (may be "" if
-// compression failed), and the build time used as the HTTP modtime.
+// compression failed), a content-hash revision identifying these exact
+// bytes, and the build time used as the HTTP modtime.
 type snapshotFile struct {
-	path    string
-	gzPath  string
-	modTime time.Time
+	path     string
+	gzPath   string
+	revision string
+	modTime  time.Time
+}
+
+// revision returns the current snapshot's content-hash revision, or "" if
+// none has been built yet. The viewer reads this from /api/meta and only
+// re-downloads when it changes - so it never re-fetches unchanged bytes,
+// and (unlike keying on the live position id) does not re-fetch the same
+// snapshot repeatedly during a drive.
+func (c *snapshotCache) revision() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readyRev
+}
+
+// gzipAndHash streams srcPath once, writing a gzip copy to dstGzPath at the
+// given level and returning the hex SHA-256 of the uncompressed bytes. One
+// pass gives both the compressed file to serve and the content revision to
+// advertise, without reading the ~67 MB snapshot twice.
+func gzipAndHash(srcPath, dstGzPath string, level int) (string, error) {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+	dst, err := os.Create(dstGzPath)
+	if err != nil {
+		return "", err
+	}
+	defer dst.Close()
+
+	gw, err := gzip.NewWriterLevel(dst, level)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(gw, h), src); err != nil {
+		gw.Close()
+		return "", err
+	}
+	if err := gw.Close(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func newSnapshotCache(store *storage.Store, srcPath string) *snapshotCache {
@@ -769,7 +824,7 @@ func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 
 	c.mu.Lock()
 	if c.readyPath != "" && c.readySig == sig {
-		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
+		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, revision: c.readyRev, modTime: c.readyAt}
 		c.mu.Unlock()
 		return f, nil
 	}
@@ -782,7 +837,7 @@ func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 			return snapshotFile{}, ctx.Err()
 		}
 		c.mu.Lock()
-		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
+		f := snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, revision: c.readyRev, modTime: c.readyAt}
 		err := c.buildErr
 		c.mu.Unlock()
 		if f.path == "" {
@@ -802,18 +857,22 @@ func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 	// regression that produced the "context canceled" build loop.
 	buildErr := backup.Snapshot(context.Background(), c.srcPath, tmp)
 
-	// Pre-compress so /download can be served with Content-Encoding: gzip -
-	// a SQLite file shrinks ~3x, which is the dominant cost of connecting
-	// the viewer over the Pi's wifi. Done here, off the request path, so it
-	// costs the Pi nothing per download. A gzip failure is non-fatal: the
-	// plain .db is still served, just uncompressed.
-	gzTmp := ""
+	// Pre-compress (Content-Encoding: gzip cuts a SQLite file ~4x, the
+	// dominant cost of connecting the viewer over wifi) and hash in a
+	// single read: the hash is the content revision the viewer keys its
+	// cache on. Done here, off the request path, so it costs the Pi nothing
+	// per download. gzip.BestSpeed because this runs on every finished trip
+	// on a slow Pi CPU. A failure is non-fatal: the plain .db is still
+	// served, and a "" revision just makes the client always re-fetch.
+	gzTmp, rev := "", ""
 	if buildErr == nil {
 		gzTmp = tmp + ".gz"
-		if err := backup.GzipFileLevel(tmp, gzTmp, gzip.BestSpeed); err != nil {
+		if r, err := gzipAndHash(tmp, gzTmp, gzip.BestSpeed); err != nil {
 			slog.Warn("portal: could not gzip snapshot; serving uncompressed", "error", err)
 			_ = os.Remove(gzTmp)
 			gzTmp = ""
+		} else {
+			rev = r
 		}
 	}
 
@@ -821,8 +880,8 @@ func (c *snapshotCache) get(ctx context.Context) (snapshotFile, error) {
 	oldDB, oldGz := c.readyPath, c.readyGzPath
 	var f snapshotFile
 	if buildErr == nil {
-		c.readyPath, c.readyGzPath, c.readySig, c.readyAt = tmp, gzTmp, sig, time.Now()
-		f = snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, modTime: c.readyAt}
+		c.readyPath, c.readyGzPath, c.readyRev, c.readySig, c.readyAt = tmp, gzTmp, rev, sig, time.Now()
+		f = snapshotFile{path: c.readyPath, gzPath: c.readyGzPath, revision: c.readyRev, modTime: c.readyAt}
 	} else {
 		_ = os.Remove(tmp)
 	}
@@ -883,6 +942,20 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	filename := fmt.Sprintf("tesla-%s.db", time.Now().UTC().Format("2006-01-02"))
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+	// The snapshot's content revision is its HTTP validator. The viewer
+	// decides whether to re-download from /api/meta's snapshot_revision, but
+	// publishing it as an ETag lets any HTTP client (a reloading browser, a
+	// proxy) revalidate with If-None-Match and get a cheap 304 while the car
+	// is parked or mid-drive - the snapshot only changes when a trip closes.
+	if snap.revision != "" {
+		etag := `"` + snap.revision + `"`
+		w.Header().Set("ETag", etag)
+		if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, snap.revision) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
 
 	// Serve the pre-compressed copy when the client accepts gzip (every
 	// browser and download manager does), so the ~67 MB file crosses the

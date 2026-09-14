@@ -2,8 +2,10 @@ package portal
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,6 +242,59 @@ func TestAPIMetaReportsChangeCounters(t *testing.T) {
 	}
 	if d, _, _ := read(); d != 1 {
 		t.Fatalf("expected the closed drive to tick the counter, got %d", d)
+	}
+}
+
+// The snapshot revision is the viewer's cache key: /api/meta must publish
+// it, /download must echo it as an ETag, and a matching If-None-Match must
+// get a 304 so an unchanged snapshot is never re-sent.
+func TestSnapshotRevisionAndConditionalDownload(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if _, err := store.UpsertVehicle(storage.VehicleMeta{VIN: "VIN-REV", DisplayName: "Car"}); err != nil {
+		t.Fatalf("upsert vehicle: %v", err)
+	}
+	srv := New(store, dbPath, nil, "metric", "test")
+
+	// A download builds the cache; its ETag is the revision.
+	dl := httptest.NewRecorder()
+	srv.handler().ServeHTTP(dl, httptest.NewRequest("GET", "/download", nil))
+	if dl.Code != 200 {
+		t.Fatalf("download: expected 200, got %d", dl.Code)
+	}
+	etag := dl.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected an ETag on /download")
+	}
+
+	// /api/meta must report the same revision the ETag carries.
+	mr := httptest.NewRecorder()
+	srv.handler().ServeHTTP(mr, httptest.NewRequest("GET", "/api/meta", nil))
+	var out struct {
+		SnapshotRevision string `json:"snapshot_revision"`
+	}
+	if err := json.Unmarshal(mr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if out.SnapshotRevision == "" || !strings.Contains(etag, out.SnapshotRevision) {
+		t.Fatalf("meta revision %q must match download ETag %q", out.SnapshotRevision, etag)
+	}
+
+	// A conditional request with the current revision gets a 304, no body.
+	cond := httptest.NewRequest("GET", "/download", nil)
+	cond.Header.Set("If-None-Match", etag)
+	cr := httptest.NewRecorder()
+	srv.handler().ServeHTTP(cr, cond)
+	if cr.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 for a matching If-None-Match, got %d", cr.Code)
+	}
+	if cr.Body.Len() != 0 {
+		t.Fatalf("expected an empty 304 body, got %d bytes", cr.Body.Len())
 	}
 }
 
