@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"teslalog/internal/backup"
+	"teslalog/internal/cloudsync"
 	"teslalog/internal/config"
 	"teslalog/internal/runner"
 	"teslalog/internal/storage"
@@ -57,6 +58,8 @@ func main() {
 	case "backup":
 		fs.Parse(args)
 		err = runBackup(configPath)
+	case "cloud-push":
+		err = runCloudPush(configPath, args)
 	case "export":
 		err = runExport(configPath, args)
 	case "auth-callback":
@@ -93,6 +96,7 @@ Usage:
   teslalog status [-config path]             print today's drives/energy and last charge
   teslalog wake [-config path]               explicitly wake the vehicle (never done automatically)
   teslalog backup [-config path]             run one SQLite backup immediately
+  teslalog cloud-push -id UUID [-url base]    push the local DB to a Layerbase cloud database (key: LAYERBASE_API_KEY)
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
   teslalog export charges [-year N] [-out f] export closed charging sessions to CSV
   teslalog update                            self-update to the latest GitHub release
@@ -382,6 +386,56 @@ func runBackup(configPath string) error {
 		return err
 	}
 	fmt.Println("backup written:", path)
+	return nil
+}
+
+// ---- cloud-push ----
+
+// runCloudPush copies the local database up to a Layerbase cloud database
+// over its HTTP query API, so a browser viewer can query it in place
+// instead of downloading the whole file. The API key is read from the
+// LAYERBASE_API_KEY environment variable, never a flag, so it never lands
+// in shell history or the process list.
+func runCloudPush(configPath string, args []string) error {
+	fs := flag.NewFlagSet("cloud-push", flag.ExitOnError)
+	var cfgPath, baseURL, databaseID, dbPath string
+	fs.StringVar(&cfgPath, "config", defaultConfigPath(), "path to config.toml (for the database path; ignored if -db is given)")
+	fs.StringVar(&dbPath, "db", "", "path to the SQLite file to push (overrides config's database path)")
+	fs.StringVar(&baseURL, "url", "https://cloud.layerbase.dev", "Layerbase API base URL")
+	fs.StringVar(&databaseID, "id", "", "Layerbase database id (the UUID, not the hostname)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if databaseID == "" {
+		return fmt.Errorf("cloud-push: -id (the Layerbase database UUID) is required")
+	}
+	apiKey := os.Getenv("LAYERBASE_API_KEY")
+	if apiKey == "" {
+		return fmt.Errorf("cloud-push: set LAYERBASE_API_KEY to your sk_... key (kept out of flags on purpose)")
+	}
+
+	// -db lets this run standalone against any SQLite file (e.g. a copy
+	// downloaded from the portal) without needing a config.toml.
+	if dbPath == "" {
+		cfg, err := loadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		dbPath = cfg.Database
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Printf("pushing %s to Layerbase database %s ...\n", dbPath, databaseID)
+	if err := cloudsync.Push(ctx, dbPath, cloudsync.Config{
+		BaseURL:    baseURL,
+		DatabaseID: databaseID,
+		APIKey:     apiKey,
+	}); err != nil {
+		return fmt.Errorf("cloud-push: %w", err)
+	}
+	fmt.Println("cloud push complete.")
 	return nil
 }
 
