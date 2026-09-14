@@ -12,6 +12,7 @@ const meta = (overrides: Partial<LiveMeta> = {}): LiveMeta => ({
   drives: 13,
   charges: 6,
   latestPositionId: 38_030,
+  snapshotRevision: 'abc123',
   ...overrides,
 })
 
@@ -44,29 +45,43 @@ describe('hasNewData', () => {
     expect(hasNewData(null, meta())).toBe(true)
   })
 
-  it('does not re-fetch when nothing has changed', () => {
+  it('does not re-fetch when the revision is unchanged', () => {
     expect(hasNewData(meta(), meta())).toBe(false)
   })
 
-  // latestPositionId moves continuously while the car is driving, which
-  // is what makes an in-progress drive visible without waiting for it to
-  // close. Drives and charges count closed rows only, so they tick
-  // exactly when new history becomes available.
-  it.each([
-    ['a finished drive', { drives: 14 }],
-    ['a finished charge', { charges: 7 }],
-    ['an in-progress drive', { latestPositionId: 38_120 }],
-  ])('re-fetches after %s', (_label, change) => {
-    expect(hasNewData(meta(), meta(change))).toBe(true)
+  // The revision is the hash of the bytes /download would serve. It is the
+  // only thing that should trigger a re-download.
+  it('re-fetches when the snapshot revision changes', () => {
+    expect(hasNewData(meta(), meta({ snapshotRevision: 'def456' }))).toBe(true)
   })
 
-  // The snapshot is rebuilt on every /download, so its byte size and
-  // mtime change even when the data has not. Keying on them would
-  // re-download 10 MB a minute forever.
+  // The whole point of the revision: while the car drives, the position id
+  // moves and the file's size/mtime churn, but the served snapshot (and so
+  // its revision) does not change until a trip closes. None of these may
+  // trigger a re-download.
   it.each([
+    ['an in-progress drive', { latestPositionId: 38_120 }],
     ['the file being rewritten', { sizeBytes: 10_370_000 }],
     ['the mtime moving', { lastUpdated: '2026-08-24T22:00:00Z' }],
-  ])('ignores %s', (_label, change) => {
+    ['drives/charges counters (revision governs)', { drives: 14, charges: 7 }],
+  ])('ignores %s while the revision holds', (_label, change) => {
     expect(hasNewData(meta(), meta(change))).toBe(false)
+  })
+
+  // An older portal that predates snapshot_revision reports "" for it; fall
+  // back to the closed-row counters so such a portal still updates, while
+  // the live position id still cannot drive a re-download.
+  describe('legacy portal without a revision', () => {
+    const legacy = (overrides: Partial<LiveMeta> = {}): LiveMeta =>
+      meta({ snapshotRevision: '', ...overrides })
+    it('re-fetches on a finished drive', () => {
+      expect(hasNewData(legacy(), legacy({ drives: 14 }))).toBe(true)
+    })
+    it('re-fetches on a finished charge', () => {
+      expect(hasNewData(legacy(), legacy({ charges: 7 }))).toBe(true)
+    })
+    it('ignores an in-progress drive', () => {
+      expect(hasNewData(legacy(), legacy({ latestPositionId: 38_120 }))).toBe(false)
+    })
   })
 })
