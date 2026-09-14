@@ -13,6 +13,7 @@ import {
   type SpeedBand,
 } from './domain'
 import type { PreferredRange, StatisticsPeriod, TimeRange } from './viewSettings'
+import { getRemoteBackend, runRemoteQueries } from './remoteBackend'
 const required = [
   'vehicles',
   'states',
@@ -236,10 +237,13 @@ const charges = (db: Database) =>
        start_battery_level start_battery, end_battery_level end_battery,
        charge_energy_added_kwh energy_added, displayed_energy_used energy_used,
        max_charger_power_kw max_power, cost,
-       ROUND((julianday(end_time)-julianday(start_time))*24*60,0) duration,
+       (julianday(end_time)-julianday(start_time))*24*60 duration,
        cost/NULLIF(displayed_energy_used,0) cost_per_kwh,
        charge_energy_added_kwh*100.0/NULLIF(displayed_energy_used,0) efficiency,
-       outside_temp_avg_c
+       outside_temp_avg_c,
+       end_range_km-start_range_km rated_range_added_km,
+       end_ideal_range_km-start_ideal_range_km ideal_range_added_km,
+       NULL odometer_km
      FROM charge_data ORDER BY start_time DESC LIMIT 500`,
   ).map((r) =>
     chargeRowSchema.parse({
@@ -257,6 +261,11 @@ const charges = (db: Database) =>
       costPerKwh: nullableNum(r.cost_per_kwh, 'cost per kWh'),
       efficiencyPercent: nullableNum(r.efficiency, 'efficiency'),
       outsideTempC: nullableNum(r.outside_temp_avg_c, 'outside temperature'),
+      ratedRangeAddedKm: nullableNum(r.rated_range_added_km, 'rated range added'),
+      idealRangeAddedKm: nullableNum(r.ideal_range_added_km, 'ideal range added'),
+      // TeslaMate links a charge to a position with an odometer reading.
+      // teslalog's charging_sessions and charging_samples do not store it.
+      odometerKm: nullableNum(r.odometer_km, 'charge odometer'),
     }),
   )
 // incompleteDrives / incompleteCharges list rows that were opened and
@@ -404,6 +413,17 @@ export const executeQueries = async (
   queries: readonly string[],
   variables: QueryVariables = {},
 ): Promise<readonly QueryResult[]> => {
+  // When a cloud backend is connected, the same interpolated SQL runs
+  // against Layerbase's HTTP query API instead of a local sql.js copy -
+  // no downloaded database, bytes is ignored. The dashboards are unchanged;
+  // only where the query executes moves.
+  const remote = getRemoteBackend()
+  if (remote !== null)
+    return runRemoteQueries(
+      remote,
+      queries.map((sql) => interpolate(sql, variables)),
+    )
+
   const SQL = await initSqlJs({ locateFile: () => wasmUrl })
   const database = new SQL.Database(bytes)
   try {
