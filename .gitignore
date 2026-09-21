@@ -1,0 +1,34 @@
+# Build outputs
+/teslalog-linux-arm64
+/teslalog-linux-amd64
+/teslalog-linux-armv7
+/teslalog
+/teslalog-windows-amd64.exe
+
+# Local Go caches
+/.gocache/
+/.gomodcache/
+
+# Runtime data and backups
+*.db
+*.db-wal
+*.db-shm
+*.db.gz
+
+# grafana/docker-compose.yml's bind-mounted data dir (tesla.db
+# snapshots downloaded by refresh-data.sh/.ps1) - already covered by
+# *.db above, kept explicit here for clarity.
+/grafana/data/
+
+# Local configuration and credentials
+tokens.json
+/config.toml
+.env
+.env.*
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
