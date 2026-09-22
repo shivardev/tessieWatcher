@@ -116,6 +116,19 @@ rclone_config = "/etc/teslalog/rclone.conf"
 # remote         = "nas:teslalog-backups"
 # retention_days = 90
 
+[cloud]
+# Keep a Layerbase database synchronized for the WebUI. Local SQLite remains
+# authoritative and vehicle logging continues if Layerbase is unavailable.
+enabled = false
+base_url = "https://cloud.layerbase.dev"
+database_id = ""
+interval = "15m"
+batch_size = 500
+
+# The secret is read from this environment variable, never stored in TOML.
+# For systemd, add LAYERBASE_API_KEY=sk_... to the service EnvironmentFile.
+api_key_env = "LAYERBASE_API_KEY"
+
 [portal]
 # On by default: a tiny read-only HTTP page (current state, today's
 # drives, last charge, recent drives, recent log activity, and a

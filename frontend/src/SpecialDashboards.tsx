@@ -748,17 +748,25 @@ export function DatabaseInformationDashboard({
 
 export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const queries = useMemo(() => [
-    `SELECT v.display_name,COALESCE(v.marketing_name,v.model,''),COALESCE(v.firmware_version,''),COALESCE((SELECT state FROM states ORDER BY started_at DESC LIMIT 1),'unknown'),
-      (SELECT battery_level FROM battery_samples ORDER BY timestamp DESC LIMIT 1),
-      (SELECT CASE WHEN '${settings.lengthUnit}'='mi' THEN battery_range_km/1.60934 ELSE battery_range_km END FROM battery_samples ORDER BY timestamp DESC LIMIT 1),
-      (SELECT CASE WHEN '${settings.lengthUnit}'='mi' THEN odometer_km/1.60934 ELSE odometer_km END FROM positions WHERE odometer_km IS NOT NULL ORDER BY timestamp DESC LIMIT 1),
-      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN driver_temp_setting_c*9.0/5+32 ELSE driver_temp_setting_c END FROM positions WHERE driver_temp_setting_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1),
-      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN outside_temp_c*9.0/5+32 ELSE outside_temp_c END FROM positions WHERE outside_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1),
-      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN inside_temp_c*9.0/5+32 ELSE inside_temp_c END FROM positions WHERE inside_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1),
-      (SELECT charger_voltage FROM charging_samples ORDER BY timestamp DESC LIMIT 1),(SELECT charger_power_kw FROM charging_samples ORDER BY timestamp DESC LIMIT 1)
+    `SELECT v.display_name AS display_name,
+      COALESCE(v.marketing_name,v.model,'') AS model_name,
+      COALESCE(v.firmware_version,'') AS firmware_version,
+      COALESCE((SELECT state FROM states ORDER BY started_at DESC LIMIT 1),'unknown') AS vehicle_state,
+      (SELECT battery_level FROM battery_samples ORDER BY timestamp DESC LIMIT 1) AS battery_level,
+      (SELECT CASE WHEN '${settings.lengthUnit}'='mi' THEN battery_range_km/1.60934 ELSE battery_range_km END FROM battery_samples ORDER BY timestamp DESC LIMIT 1) AS battery_range,
+      (SELECT CASE WHEN '${settings.lengthUnit}'='mi' THEN odometer_km/1.60934 ELSE odometer_km END FROM positions WHERE odometer_km IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS odometer,
+      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN driver_temp_setting_c*9.0/5+32 ELSE driver_temp_setting_c END FROM positions WHERE driver_temp_setting_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS driver_temp,
+      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN outside_temp_c*9.0/5+32 ELSE outside_temp_c END FROM positions WHERE outside_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS outside_temp,
+      (SELECT CASE WHEN '${settings.temperatureUnit}'='F' THEN inside_temp_c*9.0/5+32 ELSE inside_temp_c END FROM positions WHERE inside_temp_c IS NOT NULL ORDER BY timestamp DESC LIMIT 1) AS inside_temp,
+      (SELECT charger_voltage FROM charging_samples ORDER BY timestamp DESC LIMIT 1) AS charger_voltage,
+      (SELECT charger_power_kw FROM charging_samples ORDER BY timestamp DESC LIMIT 1) AS charger_power
      FROM vehicles v ORDER BY v.id LIMIT 1`,
-    `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0),COALESCE(SUM(d.distance_km),0),COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings.timeRange,'d.start_time')}`,
-    `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT COALESCE(SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1),0) FROM losses`,
+    `SELECT SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km) AS net_energy_wh,
+      SUM(d.distance_km) AS distance_km
+      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings.timeRange,'d.start_time')}`,
+    `SELECT end_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} AND end_odometer_km IS NOT NULL ORDER BY end_odometer_km DESC LIMIT 1`,
+    `SELECT start_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} AND start_odometer_km IS NOT NULL ORDER BY start_odometer_km ASC LIMIT 1`,
+    `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1) AS gross_energy_wh FROM losses`,
     `SELECT timestamp time,battery_level "SOC (%)" FROM battery_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
     `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
     `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings.timeRange,'started_at')}
@@ -772,13 +780,13 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
   const value=(index:number,digits=0):string=>{const current=number(row?.[index]); return current===null?'—':current.toFixed(digits)}
   const net=number(results[1]?.rows[0]?.[0])??0
   const distanceKm=number(results[1]?.rows[0]?.[1])??0
-  const gross=number(results[2]?.rows[0]?.[0])??0
+  const gross=number(results[4]?.rows[0]?.[0])??0
   const shownDistance=distance(distanceKm,settings.lengthUnit)
   // Gross divides by odometer span (see the Efficiency gross panel);
   // net keeps summed drive distance.
-  const odometerKm=number(results[1]?.rows[0]?.[2])??0
+  const odometerKm=Math.max(0,(number(results[2]?.rows[0]?.[0])??0)-(number(results[3]?.rows[0]?.[0])??0))
   const grossDistance=distance(odometerKm>0?odometerKm:distanceKm,settings.lengthUnit)
-  const states=(results[5]?.rows??[]).flatMap((stateRow)=>{
+  const states=(results[7]?.rows??[]).flatMap((stateRow)=>{
     if(typeof stateRow[0]!=='string'||typeof stateRow[1]!=='string'||typeof stateRow[2]!=='string')return[]
     return[{start:timestampDate(stateRow[0]).getTime(),end:timestampDate(stateRow[1]).getTime(),state:stateRow[2]}]
   })
@@ -791,7 +799,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
       <article><span>Range</span><strong>{value(5)} {settings.lengthUnit}</strong></article><article><span>Firmware</span><strong>{text(row?.[2])}</strong></article><article><span>Odometer</span><strong>{value(6)} {settings.lengthUnit}</strong></article>
       <article><span>Driver temp</span><strong>{value(7)} °{settings.temperatureUnit}</strong></article><article><span>Outside temp</span><strong>{value(8)} °{settings.temperatureUnit}</strong></article><article><span>Inside temp</span><strong>{value(9)} °{settings.temperatureUnit}</strong></article>
     </section>
-    <section className="drive-detail-grid"><TelemetryChart result={results[3]} title="Charge Level"/><TelemetryChart result={results[4]} title="Charging Details"/></section>
+    <section className="drive-detail-grid"><TelemetryChart result={results[5]} title="Charge Level"/><TelemetryChart result={results[6]} title="Charging Details"/></section>
     <StateTimeline spans={states} title="States" />
   </main>
 }

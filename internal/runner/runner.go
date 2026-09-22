@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"teslalog/internal/backup"
+	"teslalog/internal/cloudsync"
 	"teslalog/internal/config"
 	"teslalog/internal/geocode"
 	"teslalog/internal/portal"
@@ -149,13 +150,50 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 
 	geofences := make([]geocode.Geofence, 0, len(cfg.Geofences))
 	for _, g := range cfg.Geofences {
+		billingType := g.BillingType
+		if billingType == "" {
+			billingType = "per_kwh"
+		}
 		geofences = append(geofences, geocode.Geofence{
 			Name: g.Name, Lat: g.Lat, Lng: g.Lng, RadiusM: g.RadiusM,
-			HasPricing: g.HasPricing, BillingType: g.BillingType,
+			HasPricing: g.HasPricing, BillingType: billingType,
 			CostPerUnit: g.CostPerUnit, SessionFee: g.SessionFee,
 		})
 	}
+	if err := store.SeedGeofences(geofences); err != nil {
+		return fmt.Errorf("seed geofences: %w", err)
+	}
+	geofences, err = store.Geofences()
+	if err != nil {
+		return fmt.Errorf("load geofences: %w", err)
+	}
 	geo := geocode.New(geofences, store, cfg.Geocoding.Enabled, cfg.Geocoding.BaseURL, cfg.Geocoding.UserAgent)
+
+	if cfg.Cloud.Enabled {
+		apiKey := strings.TrimSpace(os.Getenv(cfg.Cloud.APIKeyEnv))
+		if apiKey == "" {
+			slog.Error("cloud sync disabled: API key environment variable is empty", "environment_variable", cfg.Cloud.APIKeyEnv)
+		} else {
+			sched := cloudsync.Scheduler{
+				DBPath: cfg.Database,
+				Config: cloudsync.Config{
+					BaseURL: cfg.Cloud.BaseURL, DatabaseID: cfg.Cloud.DatabaseID, APIKey: apiKey,
+				},
+				Interval:  cfg.Cloud.Interval,
+				BatchSize: cfg.Cloud.BatchSize,
+				OnSettingsChanged: func() {
+					items, err := store.Geofences()
+					if err != nil {
+						slog.Error("reload cloud geofences failed", "error", err)
+						return
+					}
+					geo.SetGeofences(items)
+				},
+			}
+			go sched.Start(ctx)
+			slog.Info("cloud sync enabled", "database_id", cfg.Cloud.DatabaseID, "interval", cfg.Cloud.Interval)
+		}
+	}
 
 	loop := &loopState{
 		cfg: cfg, client: client, store: store,
@@ -834,8 +872,8 @@ func pressurePtr(v float64) *float64 {
 	}
 	return &v
 }
-func intPtr(v int) *int      { return &v }
-func boolPtr(v bool) *bool   { return &v }
+func intPtr(v int) *int    { return &v }
+func boolPtr(v bool) *bool { return &v }
 
 // positionFromSnapshot maps a full vehicle_data-derived Snapshot onto a
 // storage.PositionSample, carrying every field TeslaMate's positions

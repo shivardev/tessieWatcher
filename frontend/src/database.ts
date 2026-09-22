@@ -9,11 +9,17 @@ import {
   type LoadedDatabase,
   type Metric,
   type QueryResult,
+  type QueryValue,
   type IncompleteRow,
   type SpeedBand,
 } from './domain'
 import type { PreferredRange, StatisticsPeriod, TimeRange } from './viewSettings'
-import { getRemoteBackend, runRemoteQueries } from './remoteBackend'
+import {
+  getRemoteBackend,
+  runRemoteQueries,
+  runRemoteQuery,
+  type RemoteConfig,
+} from './remoteBackend'
 const required = [
   'vehicles',
   'states',
@@ -107,9 +113,27 @@ const requiredColumns: Readonly<Record<string, readonly string[]>> = {
 class DatabaseError extends Error {
   override readonly name = 'DatabaseError'
 }
-const num = (v: SqlValue | undefined, n: string): number => {
-  if (typeof v !== 'number') throw new DatabaseError(`Invalid ${n}.`)
-  return v
+export const num = (v: SqlValue | undefined, n: string): number => {
+  if (typeof v === 'number') return v
+  // The remote (Layerbase) backend returns numerics as strings, and larger
+  // floats can arrive with a thousands separator or in exponent form that
+  // the generic coercion leaves as text. In a spot that explicitly expects
+  // a number, parse leniently (strip commas; Number() handles exponents).
+  if (typeof v === 'string') {
+    const parsed = Number(v.replace(/,/g, ''))
+    if (Number.isFinite(parsed)) return parsed
+
+    // Layerbase's SQLite adapter can serialize a numeric expression as an
+    // ISO timestamp, treating the number as days since the Unix epoch. This
+    // has been observed for MAX(max_charger_power_kw): 2 becomes
+    // 1970-01-03T00:00:00Z. Decode that representation only where the caller
+    // explicitly requires a number.
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(v)) {
+      const timestamp = Date.parse(v)
+      if (Number.isFinite(timestamp)) return timestamp / 86_400_000
+    }
+  }
+  throw new DatabaseError(`Invalid ${n}.`)
 }
 const nullableNum = (v: SqlValue | undefined, n: string): number | null =>
   v === null ? null : num(v, n)
@@ -117,24 +141,45 @@ const str = (v: SqlValue | undefined, n: string): string => {
   if (typeof v !== 'string') throw new DatabaseError(`Invalid ${n}.`)
   return v
 }
-const one = (db: Database, sql: string): Readonly<Record<string, SqlValue>> => {
-  const s = db.prepare(sql)
-  try {
-    if (!s.step()) throw new DatabaseError('No vehicle was found.')
-    return s.getAsObject()
-  } finally {
-    s.free()
-  }
+// A Runner executes one SQL statement and returns its result. The load
+// helpers below are written against this so the same queries run either
+// against an in-browser sql.js database (a downloaded file) or the remote
+// Layerbase HTTP API (querying in the cloud, no download).
+export type Runner = (sql: string) => Promise<QueryResult>
+
+// toRecords turns a QueryResult (columns + row arrays) into keyed objects,
+// the shape every mapping helper reads.
+const toRecords = (result: QueryResult): Record<string, QueryValue>[] =>
+  result.rows.map((row) =>
+    Object.fromEntries(result.columns.map((c, i) => [c, row[i] ?? null])),
+  )
+
+// sqlJsRunner backs a Runner with a local sql.js database. Synchronous work
+// wrapped in a resolved promise, so one code path serves both backends.
+const sqlJsRunner = (db: Database): Runner => (sql) => {
+  const result = db.exec(sql)[0]
+  return Promise.resolve(
+    result
+      ? {
+          columns: result.columns,
+          rows: result.values.map((row) => row.map((v: SqlValue) => queryValueSchema.parse(v))),
+        }
+      : { columns: [], rows: [] },
+  )
 }
-const rows = (db: Database, sql: string): readonly Readonly<Record<string, SqlValue>>[] => {
-  const s = db.prepare(sql)
-  const output: Readonly<Record<string, SqlValue>>[] = []
-  try {
-    while (s.step()) output.push(s.getAsObject())
-    return output
-  } finally {
-    s.free()
-  }
+
+const one = async (run: Runner, sql: string): Promise<Record<string, QueryValue>> => {
+  const result = await run(sql)
+  if (result.error) throw new DatabaseError(result.error)
+  const records = toRecords(result)
+  const first = records[0]
+  if (first === undefined) throw new DatabaseError('No vehicle was found.')
+  return first
+}
+const rows = async (run: Runner, sql: string): Promise<readonly Record<string, QueryValue>[]> => {
+  const result = await run(sql)
+  if (result.error) throw new DatabaseError(result.error)
+  return toRecords(result)
 }
 const validate = (db: Database): void => {
   const result = db.exec("SELECT name FROM sqlite_schema WHERE type='table'")
@@ -158,9 +203,9 @@ const validate = (db: Database): void => {
       `This teslalog database uses an older or incompatible schema. Missing columns: ${missingColumns.join(', ')}.`,
     )
 }
-const overview = (db: Database) => {
-  const r = one(
-    db,
+const overview = async (run: Runner) => {
+  const r = await one(
+    run,
     `SELECT COALESCE(NULLIF(v.display_name,''), 'Model ' || NULLIF(v.model,''), 'Vehicle') display_name,TRIM(COALESCE('Model ' || NULLIF(v.model,''),'') || ' ' || COALESCE(NULLIF(v.marketing_name,''),'')) model,COALESCE(v.firmware_version,'') firmware,COALESCE((SELECT state FROM states WHERE vehicle_id=v.id ORDER BY id DESC LIMIT 1),'unknown') state,(SELECT battery_level FROM battery_samples WHERE vehicle_id=v.id ORDER BY timestamp DESC LIMIT 1) battery,(SELECT battery_range_km FROM battery_samples WHERE vehicle_id=v.id ORDER BY timestamp DESC LIMIT 1) range_km,(SELECT end_odometer_km FROM drives WHERE vehicle_id=v.id AND status='closed' ORDER BY end_time DESC LIMIT 1) odometer,(SELECT COUNT(*) FROM drives WHERE vehicle_id=v.id AND status='closed') drives,COALESCE((SELECT SUM(distance_km) FROM drives WHERE vehicle_id=v.id AND status='closed'),0) distance,(SELECT COUNT(*) FROM charging_sessions WHERE vehicle_id=v.id AND status='closed') charges,COALESCE((SELECT SUM(charge_energy_added_kwh) FROM charging_sessions WHERE vehicle_id=v.id AND status='closed'),0) energy FROM vehicles v ORDER BY v.id LIMIT 1`,
   )
   return vehicleSchema.parse({
@@ -177,14 +222,29 @@ const overview = (db: Database) => {
     energyKwh: num(r.energy, 'energy'),
   })
 }
-const metric = (db: Database, label: string, sql: string, unit: string): Metric => ({
-  label,
-  value: num(one(db, sql).value, label),
-  unit,
-})
-const drives = (db: Database) =>
-  rows(
-    db,
+const metric = async (run: Runner, label: string, sql: string, unit: string): Promise<Metric> => {
+  const result = await rows(run, sql)
+  const value = result[0]?.value
+  return {
+    label,
+    value: value == null ? 0 : num(value, label),
+    unit,
+  }
+}
+// metrics runs a list of [label, sql, unit] specs in order. Sequential, not
+// parallel, so the remote backend fires one HTTP request at a time and
+// stays clear of the cloud rate limit.
+const metrics = async (
+  run: Runner,
+  specs: readonly (readonly [string, string, string])[],
+): Promise<Metric[]> => {
+  const out: Metric[] = []
+  for (const [label, sql, unit] of specs) out.push(await metric(run, label, sql, unit))
+  return out
+}
+const drives = async (run: Runner) =>
+  (await rows(
+    run,
     `SELECT d.id, d.start_time time, COALESCE(d.start_location, printf('%.4f, %.4f', d.start_lat, d.start_lng)) "from", COALESCE(d.end_location, printf('%.4f, %.4f', d.end_lat, d.end_lng)) "to", ROUND(d.distance_km,1) distance_km, ROUND(d.duration_min,0) duration_min, d.start_battery_level start_battery, d.end_battery_level end_battery, ROUND(d.max_speed_kmh,0) max_speed_kmh, ROUND(d.max_power_kw,0) max_power_kw, ROUND(d.ascent_m,0) ascent_m, ROUND(d.descent_m,0) descent_m, d.outside_temp_avg_c, d.distance_km/NULLIF(d.duration_min/60.0,0) average_speed_kmh, (d.start_range_km-d.end_range_km)*v.efficiency_wh_km/1000.0 energy_kwh, d.start_range_km-d.end_range_km range_diff_km, v.efficiency_wh_km car_efficiency, rr.has_reduced_range
      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id
      LEFT JOIN (
@@ -199,7 +259,7 @@ const drives = (db: Database) =>
        GROUP BY drive_id
      ) rr ON rr.drive_id = d.id
      WHERE d.status='closed' ORDER BY d.start_time DESC LIMIT 500`,
-  ).map((r) =>
+  )).map((r) =>
     driveRowSchema.parse({
       id: num(r.id, 'drive id'),
       time: str(r.time, 'drive time'),
@@ -221,9 +281,9 @@ const drives = (db: Database) =>
       hasReducedRange: nullableNum(r.has_reduced_range, 'reduced range'),
     }),
   )
-const charges = (db: Database) =>
-  rows(
-    db,
+const charges = async (run: Runner) =>
+  (await rows(
+    run,
     `WITH charge_data AS (
        SELECT *, CASE
          WHEN charge_energy_used_kwh IS NULL THEN charge_energy_added_kwh
@@ -245,7 +305,7 @@ const charges = (db: Database) =>
        end_ideal_range_km-start_ideal_range_km ideal_range_added_km,
        NULL odometer_km
      FROM charge_data ORDER BY start_time DESC LIMIT 500`,
-  ).map((r) =>
+  )).map((r) =>
     chargeRowSchema.parse({
       id: num(r.id, 'charge id'),
       time: str(r.time, 'charge time'),
@@ -273,44 +333,44 @@ const charges = (db: Database) =>
 // while charging. TeslaMate surfaces the same two tables (end_date IS
 // NULL) because these rows silently distort every total that sums over
 // them, and the only way to notice is to be shown them.
-const incompleteDrives = (db: Database): readonly IncompleteRow[] =>
-  rows(
-    db,
+const incompleteDrives = async (run: Runner): Promise<readonly IncompleteRow[]> =>
+  (await rows(
+    run,
     `SELECT id, start_time, end_time, ROUND(distance_km,2) AS a, ROUND(duration_min,1) AS b,
             start_battery_level AS c, end_battery_level AS d
      FROM drives WHERE status != 'closed' ORDER BY start_time DESC LIMIT 100`,
-  ).map((r) => ({
+  )).map((r) => ({
     id: num(r.id, 'drive id'),
     startTime: str(r.start_time, 'start time'),
     endTime: typeof r.end_time === 'string' ? r.end_time : null,
     values: [nullableNum(r.a, 'distance'), nullableNum(r.b, 'duration'), nullableNum(r.c, 'start battery'), nullableNum(r.d, 'end battery')],
   }))
 
-const incompleteCharges = (db: Database): readonly IncompleteRow[] =>
-  rows(
-    db,
+const incompleteCharges = async (run: Runner): Promise<readonly IncompleteRow[]> =>
+  (await rows(
+    run,
     `SELECT id, start_time, end_time, ROUND(charge_energy_added_kwh,2) AS a, ROUND(charge_energy_used_kwh,2) AS b,
             start_battery_level AS c, end_battery_level AS d
      FROM charging_sessions WHERE status != 'closed' ORDER BY start_time DESC LIMIT 100`,
-  ).map((r) => ({
+  )).map((r) => ({
     id: num(r.id, 'charge id'),
     startTime: str(r.start_time, 'start time'),
     endTime: typeof r.end_time === 'string' ? r.end_time : null,
     values: [nullableNum(r.a, 'energy added'), nullableNum(r.b, 'energy used'), nullableNum(r.c, 'start battery'), nullableNum(r.d, 'end battery')],
   }))
 
-const destinations = (db: Database): readonly Destination[] =>
-  rows(
-    db,
+const destinations = async (run: Runner): Promise<readonly Destination[]> =>
+  (await rows(
+    run,
     `SELECT end_location destination, COUNT(*) visits FROM drives WHERE status='closed' AND end_location IS NOT NULL AND end_location!='' GROUP BY end_location ORDER BY COUNT(*) DESC LIMIT 10`,
-  ).map((r) => ({ name: str(r.destination, 'destination'), visits: num(r.visits, 'visits') }))
+  )).map((r) => ({ name: str(r.destination, 'destination'), visits: num(r.visits, 'visits') }))
 // speedHistogram weights each 10 km/h band by the seconds the car spent
 // in it, taken as the gap to the next position sample within the same
 // drive. Counting samples instead would let a dense stretch of slow
 // city driving dominate a sparsely sampled motorway run.
-const speedHistogram = (db: Database): readonly SpeedBand[] =>
-  rows(
-    db,
+const speedHistogram = async (run: Runner): Promise<readonly SpeedBand[]> =>
+  (await rows(
+    run,
     `WITH d AS (
        SELECT ROUND(speed_kmh/10.0)*10 AS band,
               (julianday(LEAD(timestamp) OVER (PARTITION BY drive_id ORDER BY timestamp))
@@ -320,7 +380,7 @@ const speedHistogram = (db: Database): readonly SpeedBand[] =>
      SELECT band, SUM(seconds) seconds FROM d
      WHERE band > 0 AND seconds IS NOT NULL AND seconds < 600
      GROUP BY band ORDER BY band`,
-  ).map((r) => ({ speedKmh: num(r.band, 'speed band'), seconds: num(r.seconds, 'seconds') }))
+  )).map((r) => ({ speedKmh: num(r.band, 'speed band'), seconds: num(r.seconds, 'seconds') }))
 
 export type QueryVariables = Readonly<{
   driveId?: number
@@ -461,6 +521,52 @@ export const executeQuery = async (
 ): Promise<QueryResult> =>
   (await executeQueries(bytes, [sql], variables))[0] ?? { columns: [], rows: [] }
 
+// buildLoaded assembles the whole LoadedDatabase from a Runner, so the
+// exact same queries drive the local (sql.js) and remote (Layerbase HTTP)
+// paths. Awaited in order - fine for sql.js, and keeps the remote backend
+// to one request at a time (rate-limit safe).
+const buildLoaded = async (
+  run: Runner,
+  meta: Pick<LoadedDatabase, 'fileName' | 'fileSize' | 'databaseBytes'>,
+): Promise<LoadedDatabase> => ({
+  ...meta,
+  vehicle: await overview(run),
+  drives: await drives(run),
+  driveMetrics: await metrics(run, [
+    ['Total drives (90d)', `SELECT COUNT(*) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'drives'],
+    ['Total distance (90d)', `SELECT SUM(distance_km) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km'],
+    ['Average distance', `SELECT AVG(distance_km) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km'],
+    ['Max speed (90d)', `SELECT MAX(max_speed_kmh) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km/h'],
+  ]),
+  lifetimeDriveMetrics: await metrics(run, [
+    ['Total drives', `SELECT COUNT(*) value FROM drives WHERE status='closed'`, 'drives'],
+    ['Total distance', `SELECT SUM(distance_km) value FROM drives WHERE status='closed'`, 'km'],
+    ['Median distance', `SELECT (SELECT distance_km FROM drives WHERE status='closed' AND distance_km IS NOT NULL ORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status='closed' AND distance_km IS NOT NULL)/2) value`, 'km'],
+    ['Max speed ever', `SELECT MAX(max_speed_kmh) value FROM drives WHERE status='closed'`, 'km/h'],
+    // Net energy: range lost while driving, priced at the car's Wh/km; /1000
+    // because efficiency_wh_km is Wh per km and the card reads kWh.
+    ['Total energy consumed (net)', `SELECT SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0 value FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`, 'kWh'],
+    // Per-day averages divide by elapsed calendar days, not days-with-a-drive.
+    ['Ø distance per day', `SELECT SUM(distance_km)/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time))) value FROM drives WHERE status='closed'`, 'km'],
+    ['Ø energy per day', `SELECT SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0/MAX(1.0,julianday(MAX(d.end_time))-julianday(MIN(d.start_time))) value FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`, 'kWh'],
+    // Extrapolations use odometer delta, so driving missed while teslalog was
+    // down still counts - the odometer is the car's own record.
+    ['Extrapolated monthly mileage', `SELECT (MAX(end_odometer_km)-MIN(start_odometer_km))/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*(365.0/12) value FROM drives WHERE status='closed'`, 'km'],
+    ['Extrapolated annual mileage', `SELECT (MAX(end_odometer_km)-MIN(start_odometer_km))/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*365.0 value FROM drives WHERE status='closed'`, 'km'],
+  ]),
+  speedHistogram: await speedHistogram(run),
+  destinations: await destinations(run),
+  charges: await charges(run),
+  chargeMetrics: await metrics(run, [
+    ['Total charges (90d)', `SELECT COUNT(*) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'charges'],
+    ['Energy added (90d)', `SELECT SUM(charge_energy_added_kwh) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'kWh'],
+    ['Total cost (90d)', `SELECT SUM(cost) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'cost'],
+    ['Max charger power', `SELECT max_charger_power_kw value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days') AND max_charger_power_kw IS NOT NULL ORDER BY CAST(max_charger_power_kw AS REAL) DESC LIMIT 1`, 'kW'],
+  ]),
+  incompleteDrives: await incompleteDrives(run),
+  incompleteCharges: await incompleteCharges(run),
+})
+
 export const openDatabaseBytes = async (
   fileName: string,
   fileSize: number,
@@ -470,149 +576,29 @@ export const openDatabaseBytes = async (
   const db = new SQL.Database(databaseBytes)
   try {
     validate(db)
-    return {
-      fileName,
-      fileSize,
-      databaseBytes,
-      vehicle: overview(db),
-      drives: drives(db),
-      driveMetrics: [
-        metric(
-          db,
-          'Total drives (90d)',
-          `SELECT COUNT(*) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'drives',
-        ),
-        metric(
-          db,
-          'Total distance (90d)',
-          `SELECT COALESCE(SUM(distance_km),0) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'km',
-        ),
-        metric(
-          db,
-          'Average distance',
-          `SELECT COALESCE(AVG(distance_km),0) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'km',
-        ),
-        metric(
-          db,
-          'Max speed (90d)',
-          `SELECT COALESCE(MAX(max_speed_kmh),0) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'km/h',
-        ),
-      ],
-      lifetimeDriveMetrics: [
-        metric(
-          db,
-          'Total drives',
-          `SELECT COUNT(*) value FROM drives WHERE status='closed'`,
-          'drives',
-        ),
-        metric(
-          db,
-          'Total distance',
-          `SELECT COALESCE(SUM(distance_km),0) value FROM drives WHERE status='closed'`,
-          'km',
-        ),
-        metric(
-          db,
-          'Median distance',
-          `SELECT COALESCE((SELECT distance_km FROM drives WHERE status='closed' AND distance_km IS NOT NULL ORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status='closed' AND distance_km IS NOT NULL)/2),0) value`,
-          'km',
-        ),
-        metric(
-          db,
-          'Max speed ever',
-          `SELECT COALESCE(MAX(max_speed_kmh),0) value FROM drives WHERE status='closed'`,
-          'km/h',
-        ),
-        // Net energy: range lost while driving, priced at the car's Wh/km.
-        // Divided by 1000 because efficiency_wh_km is Wh per km, and the
-        // card says kWh.
-        metric(
-          db,
-          'Total energy consumed (net)',
-          `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0,0) value
-           FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`,
-          'kWh',
-        ),
-        // Per-day averages divide by elapsed calendar days, not by the
-        // number of days that happen to have a drive - a car parked all
-        // week did average less per day that week, and hiding the zeroes
-        // would say otherwise. TeslaMate builds the same denominator by
-        // generating a row per day and left-joining.
-        metric(
-          db,
-          'Ø distance per day',
-          `SELECT COALESCE(SUM(distance_km)/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time))),0) value
-           FROM drives WHERE status='closed'`,
-          'km',
-        ),
-        metric(
-          db,
-          'Ø energy per day',
-          `SELECT COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km)/1000.0
-                  /MAX(1.0,julianday(MAX(d.end_time))-julianday(MIN(d.start_time))),0) value
-           FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed'`,
-          'kWh',
-        ),
-        // Extrapolations use odometer delta rather than summed drive
-        // distance, so any driving teslalog missed while it was down still
-        // counts - the odometer is the car's own record.
-        metric(
-          db,
-          'Extrapolated monthly mileage',
-          `SELECT COALESCE((MAX(end_odometer_km)-MIN(start_odometer_km))
-                  /MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*(365.0/12),0) value
-           FROM drives WHERE status='closed'`,
-          'km',
-        ),
-        metric(
-          db,
-          'Extrapolated annual mileage',
-          `SELECT COALESCE((MAX(end_odometer_km)-MIN(start_odometer_km))
-                  /MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*365.0,0) value
-           FROM drives WHERE status='closed'`,
-          'km',
-        ),
-      ],
-      speedHistogram: speedHistogram(db),
-      destinations: destinations(db),
-      charges: charges(db),
-      chargeMetrics: [
-        metric(
-          db,
-          'Total charges (90d)',
-          `SELECT COUNT(*) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'charges',
-        ),
-        metric(
-          db,
-          'Energy added (90d)',
-          `SELECT COALESCE(SUM(charge_energy_added_kwh),0) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'kWh',
-        ),
-        metric(
-          db,
-          'Total cost (90d)',
-          `SELECT COALESCE(SUM(cost),0) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'cost',
-        ),
-        metric(
-          db,
-          'Max charger power',
-          `SELECT COALESCE(MAX(max_charger_power_kw),0) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`,
-          'kW',
-        ),
-      ],
-      incompleteDrives: incompleteDrives(db),
-      incompleteCharges: incompleteCharges(db),
-    }
+    return await buildLoaded(sqlJsRunner(db), { fileName, fileSize, databaseBytes })
   } catch (error: unknown) {
     throw new DatabaseError(error instanceof Error ? error.message : 'Could not read the database.')
   } finally {
     db.close()
+  }
+}
+
+// openDatabaseRemote builds the same LoadedDatabase by querying a Layerbase
+// cloud database over HTTP - no file downloaded. databaseBytes is empty
+// because nothing local is held; the dashboards read remotely too via the
+// active remote backend (see executeQueries), which the caller sets.
+export const openDatabaseRemote = async (config: RemoteConfig): Promise<LoadedDatabase> => {
+  try {
+    return await buildLoaded((sql) => runRemoteQuery(config, sql), {
+      fileName: 'cloud',
+      fileSize: 0,
+      databaseBytes: new Uint8Array(0),
+    })
+  } catch (error: unknown) {
+    throw new DatabaseError(
+      error instanceof Error ? error.message : 'Could not read the cloud database.',
+    )
   }
 }
 

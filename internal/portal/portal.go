@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"teslalog/internal/backup"
+	"teslalog/internal/cloudsync"
 	"teslalog/internal/storage"
 	"teslalog/internal/webui"
 )
@@ -96,6 +97,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/download", s.handleDownload)
 	mux.HandleFunc("/api/status", s.handleAPIStatus)
 	mux.HandleFunc("/api/meta", s.handleAPIMeta)
+	mux.HandleFunc("/api/cloud-sync", s.handleCloudSync)
+	mux.HandleFunc("/api/cloud-sync/request", s.handleCloudSyncRequest)
 
 	// The full browser viewer, embedded in the binary. Served from here
 	// rather than only from GitHub Pages because a page served over
@@ -120,7 +123,7 @@ func (s *Server) handler() http.Handler {
 func withCORS(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -557,6 +560,39 @@ func (s *Server) handleAPIMeta(w http.ResponseWriter, r *http.Request) {
 	out.LatestPositionID = maxPos.Int64
 
 	writeJSON(w, out)
+}
+
+func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status, err := cloudsync.ReadStatus(r.Context(), s.store.DB())
+	if err != nil {
+		http.Error(w, "cloud sync status unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+func (s *Server) handleCloudSyncRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := cloudsync.RequestSync(r.Context(), s.store.DB()); err != nil {
+		http.Error(w, "could not queue cloud sync", http.StatusInternalServerError)
+		return
+	}
+	status, err := cloudsync.ReadStatus(r.Context(), s.store.DB())
+	if err != nil {
+		http.Error(w, "cloud sync queued; status unavailable", http.StatusAccepted)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

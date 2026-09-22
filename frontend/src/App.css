@@ -405,7 +405,9 @@ main:not(.empty) {
   background: #17211f;
 }
 .table-heading { margin: 24px 2px 10px; font: 600 18px Manrope; }
-.charges-table table { table-layout: fixed; min-width: 1050px; font-size: 12px; }
+.charges-table { max-height: min(75vh, 850px); scrollbar-gutter: stable; }
+.charges-table table { table-layout: fixed; min-width: 1700px; font-size: 12px; }
+.charges-table thead { position: sticky; top: 0; z-index: 1; }
 .charges-table th, .charges-table td { padding: 10px 9px; }
 .charges-table th:nth-child(1) { width: 155px; }
 .charges-table th:nth-child(2) { width: 210px; }
@@ -415,6 +417,11 @@ main:not(.empty) {
 .charges-table th:nth-child(7), .charges-table th:nth-child(8) { width: 92px; }
 .charges-table th:nth-child(9) { width: 104px; }
 .charges-table th:nth-child(10) { width: 76px; }
+.charges-table th:nth-child(11) { width: 82px; }
+.charges-table th:nth-child(12) { width: 115px; }
+.charges-table th:nth-child(13) { width: 104px; }
+.charges-table th:nth-child(14), .charges-table th:nth-child(15) { width: 65px; }
+.charges-table th:nth-child(16) { width: 92px; }
 .charges-table td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
 .drives-table table { table-layout: fixed; min-width: 1500px; font-size: 12px; }
 .drives-table th, .drives-table td { padding: 10px 9px; }

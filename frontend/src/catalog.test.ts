@@ -5,8 +5,8 @@ import { groups } from './domain'
 import { isDashboardImplemented } from './dashboardRegistry'
 
 describe('dashboard inventory', () => {
-  it('matches the 19 live TeslaMate navigation dashboards', () => {
-    expect(groups.flatMap((group) => group.items)).toHaveLength(19)
+  it('matches the 19 live TeslaMate dashboards plus settings management', () => {
+    expect(groups.flatMap((group) => group.items)).toHaveLength(20)
     expect(groups.flatMap((group) => group.items).every(isDashboardImplemented)).toBe(true)
   })
 

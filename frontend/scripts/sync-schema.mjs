@@ -28,7 +28,11 @@ if (!block) throw new Error('Could not find `const schema = ` in internal/storag
 // Comments are stripped: they explain the daemon's behaviour and are long
 // enough to dominate the generated file, where they would be read as
 // documentation of the importer instead.
-const statements = block[1]
+const browserSchema = block[1].replace(
+  /-- BEGIN CLOUD SYNC INTERNAL[\s\S]*?-- END CLOUD SYNC INTERNAL/u,
+  '',
+)
+const statements = browserSchema
   .split('\n')
   .filter((line) => !line.trimStart().startsWith('--'))
   .join('\n')

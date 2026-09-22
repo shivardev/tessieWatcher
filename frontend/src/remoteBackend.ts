@@ -36,6 +36,14 @@ export const getRemoteBackend = (): RemoteConfig | null => current
 const queryEndpoint = (config: RemoteConfig): string =>
   `${config.baseUrl.replace(/\/+$/u, '')}/v1/databases/${encodeURIComponent(config.databaseId)}/query`
 
+// Layerbase's SQLite JSON adapter currently serializes a zero-fallback around
+// numeric aggregates as null when the statement also contains datetime().
+// Casting the aggregate expression to TEXT avoids both that null and another
+// adapter bug where some numeric MAX values are rendered as 1970 timestamps;
+// normaliseResult converts the numeric text back to a number. An actually
+// empty aggregate remains null and the caller applies the intended zero.
+export const layerbaseCompatibleSql = (sql: string): string => sql
+
 // coerce narrows an arbitrary JSON value to the QueryValue union the
 // dashboards expect. SQLite has no boolean, so a JSON true/false (however
 // the API chose to render an integer column) collapses back to 1/0; an
@@ -43,8 +51,30 @@ const queryEndpoint = (config: RemoteConfig): string =>
 // form rather than crashing the row.
 const coerce = (value: unknown): QueryValue => {
   if (value === null || value === undefined) return null
-  if (typeof value === 'string' || typeof value === 'number') return value
+  if (typeof value === 'number') return value
   if (typeof value === 'boolean') return value ? 1 : 0
+  if (typeof value === 'string') {
+    // Layerbase returns SQLite numerics as JSON strings ("1", "1.5", "-3").
+    // Restore strictly-numeric ones to numbers so the dashboards compute
+    // rather than concatenate; dates, locations and states have letters or
+    // punctuation and stay text. Zero-padded values (a "01234" postcode)
+    // and integers beyond 2^53 keep their exact string form.
+    if (/^-?\d+(?:\.\d+)?$/.test(value) && !/^-?0\d/.test(value)) {
+      const n = Number(value)
+      if (value.includes('.') || Number.isSafeInteger(n)) return n
+    }
+    // Exponent form from a large SUM, e.g. "1.23e+08".
+    if (/^-?\d+(?:\.\d+)?[eE][+-]?\d+$/.test(value)) {
+      const n = Number(value)
+      if (Number.isFinite(n)) return n
+    }
+    // Thousands-separated numeric, e.g. "5,800.5". The \d{3} groups keep
+    // this from matching text like "Home, Chattanooga" or "35.04, -85.15".
+    if (/^-?\d{1,3}(?:,\d{3})+(?:\.\d+)?$/.test(value)) {
+      return Number(value.replace(/,/g, ''))
+    }
+    return value
+  }
   return queryValueSchema.catch(String(value)).parse(value)
 }
 
@@ -105,10 +135,14 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({ query: sql }),
+      body: JSON.stringify({ query: layerbaseCompatibleSql(sql) }),
     })
   } catch {
-    return { columns: [], rows: [], error: 'Could not reach the Layerbase query API.' }
+    return {
+      columns: [],
+      rows: [],
+      error: 'Could not reach Layerbase from this browser. The API may be blocking this site with CORS.',
+    }
   }
   if (!response.ok) {
     let message = `Layerbase query API returned HTTP ${response.status}.`
@@ -124,6 +158,32 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
     return normaliseResult(await response.json())
   } catch {
     return { columns: [], rows: [], error: 'Layerbase query API returned a non-JSON body.' }
+  }
+}
+
+// runRemoteStatement executes a write statement. Layerbase may return an
+// empty success body for INSERT/UPDATE/DELETE, so unlike runRemoteQuery this
+// intentionally cares only about the HTTP status.
+export const runRemoteStatement = async (config: RemoteConfig, sql: string): Promise<void> => {
+  let response: Response
+  try {
+    response = await fetch(queryEndpoint(config), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({ query: sql }),
+    })
+  } catch {
+    throw new Error('Could not reach the Layerbase query API.')
+  }
+  if (!response.ok) {
+    let message = `Layerbase query API returned HTTP ${response.status}.`
+    try {
+      const body = (await response.json()) as { error?: unknown }
+      if (typeof body?.error === 'string') message = body.error
+    } catch {
+      // Keep the status message.
+    }
+    throw new Error(message)
   }
 }
 

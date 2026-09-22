@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normaliseResult, runRemoteQuery, type RemoteConfig } from './remoteBackend'
+import { layerbaseCompatibleSql, normaliseResult, runRemoteQuery, runRemoteStatement, type RemoteConfig } from './remoteBackend'
 
 const config: RemoteConfig = {
   baseUrl: 'https://cloud.layerbase.dev',
@@ -16,6 +16,20 @@ describe('normaliseResult', () => {
     expect(
       normaliseResult({ columns: ['band', 'seconds'], rows: [[10, 42.5], [20, 8]] }),
     ).toEqual({ columns: ['band', 'seconds'], rows: [[10, 42.5], [20, 8]] })
+  })
+
+  // The real shape Layerbase returns: a columns array plus rows of OBJECTS,
+  // with every value a string. Values must map by column and numerics must
+  // come back as numbers so the dashboards compute.
+  it('handles Layerbase\'s columns + rows-of-objects with stringified numbers', () => {
+    expect(
+      normaliseResult({ columns: ['n', 'loc'], rows: [{ n: '1', loc: 'Home' }], rowCount: 1 }),
+    ).toEqual({ columns: ['n', 'loc'], rows: [[1, 'Home']] })
+  })
+
+  it('coerces numeric strings but leaves dates, text and zero-padded values alone', () => {
+    const r = normaliseResult([{ a: '1.5', b: '-3', c: '2026-08-21T17:02:26.554Z', d: 'Home', e: '01234', f: '0' }])
+    expect(r.rows[0]).toEqual([1.5, -3, '2026-08-21T17:02:26.554Z', 'Home', '01234', 0])
   })
 
   it('accepts an array of row objects and preserves column order', () => {
@@ -48,6 +62,13 @@ describe('normaliseResult', () => {
 
   it('flags a shape it cannot read', () => {
     expect(normaliseResult(42).error).toBeDefined()
+  })
+})
+
+describe('layerbaseCompatibleSql', () => {
+  it('does not generically rewrite SQL expressions', () => {
+    const sql = "SELECT COALESCE(SUM(distance_km),0), COALESCE(name,'Vehicle') FROM drives"
+    expect(layerbaseCompatibleSql(sql)).toBe(sql)
   })
 })
 
@@ -87,5 +108,15 @@ describe('runRemoteQuery', () => {
     )
     const result = await runRemoteQuery(config, 'SELECT 1')
     expect(result.error).toMatch(/could not reach/iu)
+  })
+})
+
+describe('runRemoteStatement', () => {
+  it('accepts an empty successful response from a write', async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(runRemoteStatement(config, "DELETE FROM geofences WHERE id=1")).resolves.toBeUndefined()
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toEqual({ query: 'DELETE FROM geofences WHERE id=1' })
   })
 })

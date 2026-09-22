@@ -331,3 +331,28 @@ func TestBackupAtMustBeAWallClockTime(t *testing.T) {
 		}
 	}
 }
+
+func TestCloudSyncConfig(t *testing.T) {
+	path := writeTemp(t, `[cloud]
+enabled = true
+base_url = "https://sage.cloud.layerbase.dev/"
+database_id = "db-id"
+api_key_env = "TESLALOG_LAYERBASE_KEY"
+interval = "7m"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Cloud.Enabled || cfg.Cloud.BaseURL != "https://sage.cloud.layerbase.dev" ||
+		cfg.Cloud.DatabaseID != "db-id" || cfg.Cloud.APIKeyEnv != "TESLALOG_LAYERBASE_KEY" ||
+		cfg.Cloud.Interval != 7*time.Minute {
+		t.Fatalf("unexpected cloud config: %+v", cfg.Cloud)
+	}
+}
+
+func TestEnabledCloudSyncRequiresDatabaseID(t *testing.T) {
+	if _, err := Load(writeTemp(t, "[cloud]\nenabled = true\n")); err == nil {
+		t.Fatal("expected enabled cloud sync without a database id to fail validation")
+	}
+}

@@ -15,6 +15,16 @@ export const schemaStatements: readonly string[] = [
 key TEXT PRIMARY KEY,
 value TEXT NOT NULL
 )`,
+  `CREATE TABLE IF NOT EXISTS geofences (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL UNIQUE,
+latitude REAL NOT NULL,
+longitude REAL NOT NULL,
+radius_m REAL NOT NULL,
+billing_type TEXT NOT NULL DEFAULT 'per_kwh',
+cost_per_unit REAL,
+session_fee REAL NOT NULL DEFAULT 0
+)`,
   `CREATE TABLE IF NOT EXISTS vehicles (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 vin TEXT NOT NULL UNIQUE,
@@ -222,6 +232,7 @@ export const columnMigrations: readonly string[] = [
 /** Every table the schema defines. */
 export const schemaTables: readonly string[] = [
   'schema_meta',
+  'geofences',
   'vehicles',
   'states',
   'drives',

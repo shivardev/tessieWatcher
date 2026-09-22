@@ -115,6 +115,7 @@ type Place struct {
 // Geofences is valid and just always returns "".
 type Resolver struct {
 	geofences []Geofence
+	geoMu     sync.RWMutex
 	cache     Cache
 	enabled   bool
 	baseURL   string
@@ -123,6 +124,13 @@ type Resolver struct {
 
 	mu       sync.Mutex
 	lastCall time.Time
+}
+
+// SetGeofences replaces the editable zones without restarting the daemon.
+func (r *Resolver) SetGeofences(geofences []Geofence) {
+	r.geoMu.Lock()
+	r.geofences = append([]Geofence(nil), geofences...)
+	r.geoMu.Unlock()
 }
 
 // New constructs a Resolver. cache may be nil (no persistence - every
@@ -152,6 +160,8 @@ func New(geofences []Geofence, cache Cache, enabled bool, baseURL, userAgent str
 // one wins regardless of config order, instead of the answer depending
 // on how the file happens to be arranged.
 func (r *Resolver) FindGeofence(lat, lng float64) (Geofence, bool) {
+	r.geoMu.RLock()
+	defer r.geoMu.RUnlock()
 	var best Geofence
 	found := false
 	bestDist := math.Inf(1)

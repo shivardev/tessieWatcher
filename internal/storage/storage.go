@@ -215,6 +215,52 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// SeedGeofences imports config.toml geofences only when the database has no
+// editable geofences yet. Once present, database/UI values are authoritative.
+func (s *Store) SeedGeofences(items []geocode.Geofence) error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM geofences`).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return nil
+	}
+	for _, g := range items {
+		var cost any
+		if g.HasPricing {
+			cost = g.CostPerUnit
+		}
+		if _, err := s.db.Exec(`INSERT INTO geofences
+			(name, latitude, longitude, radius_m, billing_type, cost_per_unit, session_fee)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, g.Name, g.Lat, g.Lng, g.RadiusM,
+			g.BillingType, cost, g.SessionFee); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Geofences returns the current editable geofence/pricing configuration.
+func (s *Store) Geofences() ([]geocode.Geofence, error) {
+	rows, err := s.db.Query(`SELECT name, latitude, longitude, radius_m,
+		billing_type, cost_per_unit, session_fee FROM geofences ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []geocode.Geofence
+	for rows.Next() {
+		var g geocode.Geofence
+		var cost sql.NullFloat64
+		if err := rows.Scan(&g.Name, &g.Lat, &g.Lng, &g.RadiusM, &g.BillingType, &cost, &g.SessionFee); err != nil {
+			return nil, err
+		}
+		g.HasPricing, g.CostPerUnit = cost.Valid, cost.Float64
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 func fmtTime(t time.Time) string {
 	return t.UTC().Format(timeLayout)
 }

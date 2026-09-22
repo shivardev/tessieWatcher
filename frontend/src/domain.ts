@@ -52,6 +52,9 @@ export const chargeRowSchema = z.object({
   costPerKwh: z.number().nullable(),
   efficiencyPercent: z.number().nullable(),
   outsideTempC: z.number().nullable(),
+  ratedRangeAddedKm: z.number().nullable(),
+  idealRangeAddedKm: z.number().nullable(),
+  odometerKm: z.number().nullable(),
 })
 export type ChargeRow = z.infer<typeof chargeRowSchema>
 export type Metric = Readonly<{ label: string; value: number; unit: string }>
@@ -111,6 +114,6 @@ export const groups = [
   },
   { label: 'Places', items: ['Locations', 'Visited'] },
   { label: 'History', items: ['States', 'Timeline', 'Statistics', 'Mileage', 'Updates'] },
-  { label: 'System', items: ['Database information'] },
+  { label: 'System', items: ['Geofences & pricing', 'Database information'] },
 ] as const
 export type Dashboard = (typeof groups)[number]['items'][number]

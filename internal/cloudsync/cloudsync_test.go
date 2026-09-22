@@ -40,7 +40,11 @@ func (r *recorder) server(t *testing.T) *httptest.Server {
 		r.queries = append(r.queries, parsed.Query)
 		r.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
+		if strings.Contains(parsed.Query, "FROM geofences") {
+			_, _ = w.Write([]byte(`{"rows":[]}`))
+		} else {
+			_, _ = w.Write([]byte(`{}`))
+		}
 	})
 	return httptest.NewServer(mux)
 }
@@ -72,6 +76,9 @@ func makeSource(t *testing.T) string {
 		`CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, name TEXT, amount REAL, raw BLOB, note TEXT)`,
 	); err != nil {
 		t.Fatalf("create: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE geofences (id INTEGER PRIMARY KEY, name TEXT, latitude REAL, longitude REAL, radius_m REAL, billing_type TEXT, cost_per_unit REAL, session_fee REAL)`); err != nil {
+		t.Fatalf("create geofences: %v", err)
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_t_name ON t(name)`); err != nil {
 		t.Fatalf("index: %v", err)
@@ -172,5 +179,41 @@ func TestPushTableBatchesUnderTheBodyLimit(t *testing.T) {
 	}
 	if inserts < 2 {
 		t.Fatalf("expected the rows to be split across multiple batches, got %d", inserts)
+	}
+}
+
+func TestIncrementalSyncMarksConfirmedRowsAndNeverCreatesSnapshot(t *testing.T) {
+	rec := &recorder{}
+	server := rec.server(t)
+	defer server.Close()
+	path := filepath.Join(t.TempDir(), "incremental.db")
+	db, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`
+		CREATE TABLE vehicles(id INTEGER PRIMARY KEY, vin TEXT);
+		CREATE TABLE drives(id INTEGER PRIMARY KEY, status TEXT);
+		CREATE TABLE charging_sessions(id INTEGER PRIMARY KEY, status TEXT);
+		CREATE TABLE states(id INTEGER PRIMARY KEY, state TEXT);
+		CREATE TABLE cloud_sync_changes(sequence INTEGER PRIMARY KEY AUTOINCREMENT,table_name TEXT,row_id INTEGER,operation TEXT,state TEXT DEFAULT 'pending',created_at TEXT,synced_at TEXT);
+		CREATE TABLE cloud_sync_status(id INTEGER PRIMARY KEY,sync_state TEXT,last_sync_started TEXT,last_sync_completed TEXT,last_sync_error TEXT,manual_sync_requested INTEGER);
+		INSERT INTO cloud_sync_status VALUES(1,'idle',NULL,NULL,NULL,0);
+		INSERT INTO vehicles VALUES(1,'VIN');
+		INSERT INTO states VALUES(1,'idle');
+		INSERT INTO cloud_sync_changes(table_name,row_id,operation,state) VALUES('vehicles',1,'upsert','pending');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SyncIncremental(context.Background(), db, Config{BaseURL: server.URL, DatabaseID: "db1", APIKey: "sk_test"}, 100); err != nil {
+		t.Fatalf("SyncIncremental: %v", err)
+	}
+	if !anyContains(rec.all(), `INSERT INTO "vehicles"`) {
+		t.Fatal("expected only the pending vehicle row to be upserted")
+	}
+	var state string
+	if err := db.QueryRow(`SELECT state FROM cloud_sync_changes`).Scan(&state); err != nil || state != "synced" {
+		t.Fatalf("change state = %q, err=%v", state, err)
 	}
 }

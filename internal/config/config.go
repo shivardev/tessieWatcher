@@ -26,12 +26,26 @@ type Config struct {
 	Polling   PollingConfig
 	Streaming StreamingConfig
 	Backup    BackupConfig
+	Cloud     CloudConfig
 	Portal    PortalConfig
 	Geocoding GeocodingConfig
 	Geofences []GeofenceConfig
 	API       APIConfig
 	Vehicle   VehicleConfig
 	Charging  ChargingConfig
+}
+
+// CloudConfig controls the optional background mirror of the local SQLite
+// database to Layerbase. The API key itself is deliberately not stored in
+// this struct/config file; APIKeyEnv names the environment variable that
+// contains it.
+type CloudConfig struct {
+	Enabled    bool
+	BaseURL    string
+	DatabaseID string
+	APIKeyEnv  string
+	Interval   time.Duration
+	BatchSize  int
 }
 
 // GeofenceConfig is one user-named circular zone (a config.toml
@@ -303,6 +317,15 @@ type rawConfig struct {
 		} `toml:"upload"`
 	} `toml:"backup"`
 
+	Cloud struct {
+		Enabled    *bool  `toml:"enabled"`
+		BaseURL    string `toml:"base_url"`
+		DatabaseID string `toml:"database_id"`
+		APIKeyEnv  string `toml:"api_key_env"`
+		Interval   string `toml:"interval"`
+		BatchSize  int    `toml:"batch_size"`
+	} `toml:"cloud"`
+
 	Portal struct {
 		Enabled *bool  `toml:"enabled"`
 		Addr    string `toml:"addr"`
@@ -380,8 +403,8 @@ func Default() Config {
 			URL:     "wss://streaming.vn.teslamotors.com/streaming/",
 		},
 		Backup: BackupConfig{
-			Enabled:       true,
-			Dir:           "/var/lib/teslalog/backups",
+			Enabled: true,
+			Dir:     "/var/lib/teslalog/backups",
 			// Seven days locally: this is the scratch copy on a small SD
 			// card, and the copies that matter live offsite.
 			RetentionDays: 7,
@@ -391,6 +414,13 @@ func Default() Config {
 			At:           "03:00",
 			RclonePath:   "rclone",
 			RcloneConfig: "/etc/teslalog/rclone.conf",
+		},
+		Cloud: CloudConfig{
+			Enabled:   false,
+			BaseURL:   "https://cloud.layerbase.dev",
+			APIKeyEnv: "LAYERBASE_API_KEY",
+			Interval:  15 * time.Minute,
+			BatchSize: 500,
 		},
 		Portal: PortalConfig{
 			// On by default: it's the primary way to see the daemon is
@@ -541,6 +571,44 @@ func Load(path string) (Config, error) {
 		cfg.Backup.Uploads = append(cfg.Backup.Uploads, UploadConfig{
 			Name: name, Remote: u.Remote, RetentionDays: u.RetentionDays,
 		})
+	}
+
+	if raw.Cloud.Enabled != nil {
+		cfg.Cloud.Enabled = *raw.Cloud.Enabled
+	}
+	if raw.Cloud.BaseURL != "" {
+		cfg.Cloud.BaseURL = strings.TrimRight(raw.Cloud.BaseURL, "/")
+	}
+	if raw.Cloud.DatabaseID != "" {
+		cfg.Cloud.DatabaseID = raw.Cloud.DatabaseID
+	}
+	if raw.Cloud.APIKeyEnv != "" {
+		cfg.Cloud.APIKeyEnv = raw.Cloud.APIKeyEnv
+	}
+	if d, err := parseDurationOr(raw.Cloud.Interval, cfg.Cloud.Interval); err != nil {
+		return cfg, fmt.Errorf("cloud.interval: %w", err)
+	} else {
+		cfg.Cloud.Interval = d
+	}
+	if raw.Cloud.BatchSize != 0 {
+		cfg.Cloud.BatchSize = raw.Cloud.BatchSize
+	}
+	if cfg.Cloud.Enabled {
+		if cfg.Cloud.DatabaseID == "" {
+			return cfg, fmt.Errorf("cloud.database_id is required when cloud sync is enabled")
+		}
+		if cfg.Cloud.BaseURL == "" {
+			return cfg, fmt.Errorf("cloud.base_url is required when cloud sync is enabled")
+		}
+		if cfg.Cloud.APIKeyEnv == "" {
+			return cfg, fmt.Errorf("cloud.api_key_env is required when cloud sync is enabled")
+		}
+		if cfg.Cloud.Interval <= 0 {
+			return cfg, fmt.Errorf("cloud.interval must be greater than zero")
+		}
+		if cfg.Cloud.BatchSize < 1 || cfg.Cloud.BatchSize > 5000 {
+			return cfg, fmt.Errorf("cloud.batch_size must be between 1 and 5000")
+		}
 	}
 
 	if raw.Portal.Enabled != nil {

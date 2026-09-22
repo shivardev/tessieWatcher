@@ -1,11 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { CarFront, Database, Gauge, Menu, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric } from './domain'
-import { openDatabase, openDatabaseBytes } from './database'
+import { openDatabase, openDatabaseBytes, openDatabaseRemote } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
+import { getRemoteBackend, runRemoteQuery, setRemoteBackend, type RemoteConfig } from './remoteBackend'
+import { GeofenceSettings } from './GeofenceSettings'
 import {
   fetchMeta,
+  fetchCloudSyncStatus,
   fetchSnapshot,
   fetchStatus,
   hasNewData,
@@ -15,6 +18,8 @@ import {
   pollIntervalMs,
   rememberUrl,
   rememberedUrl,
+  requestCloudSync,
+  type CloudSyncStatus,
   type LiveMeta,
   type LiveStatus,
 } from './liveConnection'
@@ -563,6 +568,7 @@ function DashboardContent({
     return <VisitedDashboard bytes={data.databaseBytes} settings={settings} />
   if (active === 'Database information')
     return <DatabaseInformationDashboard bytes={data.databaseBytes} settings={settings} />
+  if (active === 'Geofences & pricing') return <GeofenceSettings />
   const catalogKey = catalogDashboardKeys[active]
   if (catalogKey)
     return (
@@ -599,6 +605,16 @@ export default function App() {
   const [live, setLive] = useState<LiveStatus | null>(null)
   const [liveMeta, setLiveMeta] = useState<LiveMeta | null>(null)
   const [liveCheckedAt, setLiveCheckedAt] = useState<Date | null>(null)
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus | null>(null)
+  const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
+    const fallback = { baseUrl: 'https://sage.cloud.layerbase.dev' }
+    try {
+      return { ...fallback, ...(JSON.parse(globalThis.localStorage?.getItem('teslalog.viewer.layerbase') ?? '{}') as Partial<RemoteConfig>) }
+    } catch {
+      return fallback
+    }
+  })
+  const [cloudRevision, setCloudRevision] = useState(0)
   const choose = (): void => input.current?.click()
 
   // Pull a snapshot from a running teslalog and open it. Kept separate
@@ -617,6 +633,7 @@ export default function App() {
   const connectTo = async (address: string, quiet = false): Promise<void> => {
     setBusy(true)
     if (!quiet) setError(null)
+    setRemoteBackend(null) // a local/portal connection runs queries against sql.js, not the cloud
     try {
       const baseUrl = normaliseBaseUrl(address)
       const [status, meta] = await Promise.all([fetchStatus(baseUrl), fetchMeta(baseUrl)])
@@ -637,6 +654,43 @@ export default function App() {
   }
   const connect = async (): Promise<void> => connectTo(liveUrl)
 
+  // Connect straight to a Layerbase cloud database: point every query at
+  // its HTTP API (setRemoteBackend) and build the whole viewer from it -
+  // no file downloaded. The key stays in this browser.
+  const connectCloud = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    const config: RemoteConfig = {
+      baseUrl: (cloud.baseUrl ?? '').trim(),
+      databaseId: (cloud.databaseId ?? '').trim(),
+      apiKey: (cloud.apiKey ?? '').trim(),
+    }
+    try {
+      setRemoteBackend(config)
+      const loaded = await openDatabaseRemote(config)
+      setData(loaded)
+      setLive({
+        vehicleName: loaded.vehicle.displayName,
+        state: loaded.vehicle.state,
+        version: 'cloud',
+        batteryLevel: loaded.vehicle.battery,
+      })
+      setActive('Overview')
+      setSelectedDriveId(null)
+      setSelectedChargeId(null)
+      try {
+        globalThis.localStorage?.setItem('teslalog.viewer.layerbase', JSON.stringify(config))
+      } catch {
+        /* remembering the connection is a convenience, not required */
+      }
+    } catch (reason: unknown) {
+      setRemoteBackend(null)
+      setError(reason instanceof Error ? reason.message : 'Could not connect to the cloud database.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   // The portal embeds this viewer at /app and serves the API from the
   // same origin, so a viewer opened that way should just be connected -
   // there is nothing for the user to configure and no address they could
@@ -647,11 +701,68 @@ export default function App() {
   useEffect(() => {
     if (probedHost.current) return
     probedHost.current = true
+
+    // A remembered cloud connection is the viewer's preferred/default
+    // source. Query Layerbase directly before considering the legacy portal
+    // snapshot path, so returning users never download the whole SQLite file.
+    if (
+      (cloud.baseUrl ?? '').trim() !== '' &&
+      (cloud.databaseId ?? '').trim() !== '' &&
+      (cloud.apiKey ?? '').trim() !== ''
+    ) {
+      void connectCloud()
+      return
+    }
     const origin = hostingOrigin()
     if (origin === null) return
     void connectTo(origin, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Probe one tiny aggregate every 500 ms while Layerbase is active. Full
+  // vehicle/dashboard queries run only when this marker changes, matching a
+  // live Grafana feel without blindly rerunning every panel twice a second.
+  useEffect(() => {
+    if (data?.fileName !== 'cloud') return
+    const backend = getRemoteBackend()
+    if (!backend) return
+    let stopped = false
+    let running = false
+    let marker: string | null = null
+    const tick = async (): Promise<void> => {
+      if (running || stopped) return
+      running = true
+      try {
+        const result = await runRemoteQuery(backend, `SELECT
+          (SELECT COALESCE(MAX(id),0) FROM positions) AS position_id,
+          (SELECT COALESCE(MAX(id),0) FROM charging_samples) AS charge_sample_id,
+          (SELECT COALESCE(MAX(id),0) FROM battery_samples) AS battery_sample_id,
+          (SELECT COALESCE(MAX(id),0) FROM states) AS state_id,
+          (SELECT COALESCE(MAX(end_time),'') FROM drives) AS drive_end,
+          (SELECT COALESCE(MAX(end_time),'') FROM charging_sessions) AS charge_end`)
+        if (result.error || result.rows.length === 0) return
+        const next = JSON.stringify(result.rows[0])
+        if (marker === null) marker = next
+        else if (next !== marker) {
+          marker = next
+          const loaded = await openDatabaseRemote(backend)
+          if (!stopped) {
+            setData(loaded)
+            setCloudRevision((value) => value + 1)
+            setLiveCheckedAt(new Date())
+          }
+        }
+      } catch {
+        // A transient cloud miss should not interrupt the currently rendered
+        // dashboard; the next 500 ms probe tries again.
+      } finally {
+        running = false
+      }
+    }
+    void tick()
+    const timer = setInterval(() => void tick(), 500)
+    return () => { stopped = true; clearInterval(timer) }
+  }, [data?.fileName])
 
   // While connected, ask /api/meta on a timer and re-download only when
   // it says something changed. /api/meta is ~100 bytes and ~54 ms on the
@@ -681,7 +792,37 @@ export default function App() {
     }
   }, [live, liveMeta, liveUrl])
 
+  // Cloud history can be the active data source while the remembered Pi
+  // portal supplies only lightweight sync health/control information.
+  useEffect(() => {
+    if (data === null || liveUrl.trim() === '') return
+    let active = true
+    let baseUrl: string
+    try { baseUrl = normaliseBaseUrl(liveUrl) } catch { return }
+    const tick = async (): Promise<void> => {
+      try {
+        const next = await fetchCloudSyncStatus(baseUrl)
+        if (active) setSyncStatus(next)
+      } catch {
+        if (active) setSyncStatus(null)
+      }
+    }
+    void tick()
+    const timer = setInterval(() => void tick(), 5_000)
+    return () => { active = false; clearInterval(timer) }
+  }, [data, liveUrl])
+
+  const queueCloudSync = async (): Promise<void> => {
+    try {
+      const baseUrl = normaliseBaseUrl(liveUrl)
+      setSyncStatus(await requestCloudSync(baseUrl))
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'Could not request cloud sync.')
+    }
+  }
+
   const disconnect = (): void => {
+    setRemoteBackend(null) // leave cloud mode too, so a later open uses sql.js
     setLive(null)
     setLiveMeta(null)
     setLiveCheckedAt(null)
@@ -694,6 +835,7 @@ export default function App() {
     setBusy(true)
     setImportProgress(null)
     setError(null)
+    setRemoteBackend(null) // an opened file is read locally via sql.js, not the cloud
     try {
       if (await isPostgresDump(file)) {
         const databaseBytes = await importTeslaMateDump(file, setImportProgress)
@@ -850,6 +992,20 @@ export default function App() {
               </button>
             </div>
           )}
+          {syncStatus !== null && (
+            <div className="live-badge" title={syncStatus.lastSyncError || 'Incremental cloud synchronization'}>
+              <Database />
+              <span>
+                Cloud: {syncStatus.syncState.replaceAll('_', ' ')} · {syncStatus.pendingRows} pending
+              </span>
+              <small>
+                {syncStatus.lastSyncCompleted === '' ? 'not yet synced' : `synced ${new Date(syncStatus.lastSyncCompleted).toLocaleTimeString()}`}
+              </small>
+              <button type="button" onClick={() => void queueCloudSync()} disabled={syncStatus.syncState === 'syncing'}>
+                Request sync
+              </button>
+            </div>
+          )}
           <button className="open" type="button" onClick={choose} disabled={busy}>
             <Upload />
             {busy ? 'Opening…' : data ? 'Change database' : 'Open database'}
@@ -915,6 +1071,7 @@ export default function App() {
       )}
       {data ? (
         <DashboardContent
+          key={cloudRevision}
           active={active}
           data={data}
           selectedDriveId={selectedDriveId}
@@ -967,6 +1124,46 @@ export default function App() {
                 {mixedContentBlocked('http://') &&
                   ' This page is served over HTTPS, so it cannot reach a plain-HTTP address on your LAN — open the viewer from the teslalog portal itself.'}
               </small>
+            </form>
+            <form
+              className="live-connect"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void connectCloud()
+              }}
+            >
+              <label htmlFor="cloud-id">…or connect to a cloud database (Layerbase)</label>
+              <div>
+                <input
+                  id="cloud-id"
+                  value={cloud.databaseId ?? ''}
+                  onChange={(event) => setCloud((c) => ({ ...c, databaseId: event.target.value }))}
+                  placeholder="database id (UUID)"
+                  spellCheck={false}
+                />
+              </div>
+              <div>
+                <input
+                  value={cloud.baseUrl ?? ''}
+                  onChange={(event) => setCloud((c) => ({ ...c, baseUrl: event.target.value }))}
+                  placeholder="https://sage.cloud.layerbase.dev"
+                  spellCheck={false}
+                />
+              </div>
+              <div>
+                <input
+                  type="password"
+                  value={cloud.apiKey ?? ''}
+                  onChange={(event) => setCloud((c) => ({ ...c, apiKey: event.target.value }))}
+                  placeholder="sk_… API key"
+                  spellCheck={false}
+                />
+                <button type="submit" disabled={busy}>
+                  <Wifi />
+                  {busy ? 'Connecting…' : 'Connect'}
+                </button>
+              </div>
+              <small>Reads directly from the cloud over HTTP — no download. Your key stays in this browser.</small>
             </form>
             <small>
               <Database />

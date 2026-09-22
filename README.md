@@ -646,6 +646,49 @@ found live, before v0.2.3) race for that recovery and the loser gets
 `SQLITE_BUSY_RECOVERY` ("database is locked"), even though nothing is
 actually writing to the file.
 
+## Layerbase cloud sync
+
+The daemon keeps Layerbase incrementally synchronized from its local SQLite
+database. SQLite is the crash-safe collection buffer: telemetry is committed
+locally first, and database triggers add the same change to a durable outbox.
+Only pending rows are sent, in small idempotent UPSERT batches, while the
+vehicle is idle/asleep/offline. Driving and charging always take priority.
+Cloud outages leave changes pending and never interrupt vehicle collection.
+
+```toml
+[cloud]
+enabled = true
+base_url = "https://sage.cloud.layerbase.dev"
+database_id = "your-database-uuid"
+interval = "15m"
+batch_size = 500
+api_key_env = "LAYERBASE_API_KEY"
+```
+
+Set the secret in the daemon's environment (or its systemd EnvironmentFile),
+not in `config.toml`:
+
+```sh
+LAYERBASE_API_KEY=sk_... teslalog run
+```
+
+Use `teslalog cloud-push` once when bootstrapping a brand-new cloud database.
+Normal daemon synchronization never uploads a full database snapshot. An
+uncertain or interrupted batch is returned to `pending` and safely resent.
+Acknowledged outbox records are retained for 24 hours; telemetry itself is not
+deleted. The WebUI remembers a successful Layerbase connection and uses it as
+its default historical source instead of downloading the SQLite file.
+
+The LAN portal exposes `GET /api/cloud-sync` for sync health and
+`POST /api/cloud-sync/request` to queue a safe manual sync. A request made
+while driving or charging remains queued until the logger is idle.
+
+Once connected through Layerbase, open **System → Geofences & pricing** to
+add, edit, or delete named zones and their per-kWh/per-minute charging rates.
+The daemon pulls those settings on the next cloud interval and applies them
+without a restart. Existing `[[geofence]]` TOML entries seed the editable
+table the first time only; after that, the database/UI values are authoritative.
+
 ## Portal (optional web page + database download)
 
 Set `[portal] enabled = true` (the default) in config.toml and teslalog
@@ -667,14 +710,16 @@ database is a complete log of everywhere the vehicle has been and when.
 
 ### JSON endpoints
 
-Alongside the page and the download button, the portal serves two small
+Alongside the page and the download button, the portal serves small
 JSON endpoints, meant for a frontend or a script that wants live status
 without re-downloading and re-parsing the whole database each time:
 
 | Endpoint | Returns |
 |---|---|
 | `GET /api/status` | current state, battery %, rated/ideal range, odometer, firmware, the running teslalog version, and the active drive/charge id if one is in progress |
-| `GET /api/meta` | `{"last_updated", "size_bytes"}` for the live database file, so a caller can tell whether re-downloading is even worth it |
+| `GET /api/meta` | Live database freshness and lightweight row counters |
+| `GET /api/cloud-sync` | Sync state, last success/error, pending rows, and queued-request state |
+| `POST /api/cloud-sync/request` | Queue an idle-only incremental synchronization |
 
 Fields that aren't known are omitted rather than sent as null, so check
 for the key rather than assuming it's present.

@@ -28,7 +28,7 @@ const loadSaved = (): Partial<RemoteConfig> => {
 
 export function CloudProbe() {
   const saved = loadSaved()
-  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'https://cloud.layerbase.dev')
+  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'https://sage.cloud.layerbase.dev')
   const [databaseId, setDatabaseId] = useState(saved.databaseId ?? '')
   const [apiKey, setApiKey] = useState(saved.apiKey ?? '')
   const [remember, setRemember] = useState(false)
@@ -41,7 +41,13 @@ export function CloudProbe() {
 
   const [catalogKey, setCatalogKey] = useState<string>(Object.values(catalogDashboardKeys)[0] ?? '')
 
-  const config = (): RemoteConfig => ({ baseUrl, databaseId, apiKey })
+  // Trim every field: a stray space or newline pasted with the key or id
+  // is the classic cause of a spurious "Invalid API key".
+  const config = (): RemoteConfig => ({
+    baseUrl: baseUrl.trim(),
+    databaseId: databaseId.trim(),
+    apiKey: apiKey.trim(),
+  })
 
   const connect = (): void => {
     setRemoteBackend(config())

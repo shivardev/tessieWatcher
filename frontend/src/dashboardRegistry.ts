@@ -23,6 +23,7 @@ export const customDashboardNames: readonly Dashboard[] = [
   'Trip',
   'Visited',
   'Database information',
+  'Geofences & pricing',
 ]
 
 export const isDashboardImplemented = (dashboard: Dashboard): boolean =>

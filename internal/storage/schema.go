@@ -17,15 +17,26 @@ package storage
 // TeslaMate's geofences/locations tables do: named zones (config.toml's
 // [[geofence]] entries) checked first, falling back to a cached
 // reverse-geocoding lookup (internal/geocode) if enabled - see the
-// README's Geofencing & locations section. Cost-by-geofence pricing is
-// still not ported; charging_sessions.cost is one flat rate for the
-// whole account (config.toml's [charging].price_per_kwh).
+// README's Geofencing & locations section. Charging cost uses the matched
+// geofence's per-kWh/per-minute price and session fee, falling back to the
+// account-wide [charging].price_per_kwh when the zone has no price.
 const schema = `
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS schema_meta (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS geofences (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	name          TEXT NOT NULL UNIQUE,
+	latitude      REAL NOT NULL,
+	longitude     REAL NOT NULL,
+	radius_m      REAL NOT NULL,
+	billing_type  TEXT NOT NULL DEFAULT 'per_kwh',
+	cost_per_unit REAL,
+	session_fee   REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS vehicles (
@@ -271,4 +282,57 @@ CREATE TABLE IF NOT EXISTS software_updates (
 	end_time   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_software_updates_vehicle ON software_updates(vehicle_id, start_time);
+
+-- BEGIN CLOUD SYNC INTERNAL (excluded from browser-side import schema)
+-- Durable outbox for incremental Layerbase replication. Trigger writes are
+-- part of the same transaction as telemetry writes, so a committed Tesla
+-- sample can never be missed by the cloud worker. The worker is deliberately
+-- the only code that changes state from pending -> syncing -> synced.
+CREATE TABLE IF NOT EXISTS cloud_sync_changes (
+	sequence   INTEGER PRIMARY KEY AUTOINCREMENT,
+	table_name TEXT NOT NULL,
+	row_id     INTEGER NOT NULL,
+	operation  TEXT NOT NULL CHECK (operation IN ('upsert','delete')),
+	state      TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','syncing','synced')),
+	created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+	synced_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_sync_changes_state_sequence
+	ON cloud_sync_changes(state, sequence);
+
+CREATE TABLE IF NOT EXISTS cloud_sync_status (
+	id                    INTEGER PRIMARY KEY CHECK (id = 1),
+	sync_state            TEXT NOT NULL DEFAULT 'idle',
+	last_sync_started     TEXT,
+	last_sync_completed   TEXT,
+	last_sync_error       TEXT,
+	manual_sync_requested INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO cloud_sync_status (id) VALUES (1);
+
+CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_insert AFTER INSERT ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_update AFTER UPDATE ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_delete AFTER DELETE ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_states_insert AFTER INSERT ON states BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('states',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_states_update AFTER UPDATE ON states BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('states',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_states_delete AFTER DELETE ON states BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('states',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_drives_insert AFTER INSERT ON drives BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('drives',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_drives_update AFTER UPDATE ON drives BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('drives',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_drives_delete AFTER DELETE ON drives BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('drives',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_positions_insert AFTER INSERT ON positions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('positions',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_positions_update AFTER UPDATE ON positions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('positions',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_positions_delete AFTER DELETE ON positions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('positions',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_sessions_insert AFTER INSERT ON charging_sessions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_sessions',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_sessions_update AFTER UPDATE ON charging_sessions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_sessions',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_sessions_delete AFTER DELETE ON charging_sessions BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_sessions',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_samples_insert AFTER INSERT ON charging_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_samples',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_samples_update AFTER UPDATE ON charging_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_samples',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_charging_samples_delete AFTER DELETE ON charging_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('charging_samples',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_battery_samples_insert AFTER INSERT ON battery_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('battery_samples',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_battery_samples_update AFTER UPDATE ON battery_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('battery_samples',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_battery_samples_delete AFTER DELETE ON battery_samples BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('battery_samples',OLD.id,'delete'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_software_updates_insert AFTER INSERT ON software_updates BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('software_updates',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_software_updates_update AFTER UPDATE ON software_updates BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('software_updates',NEW.id,'upsert'); END;
+CREATE TRIGGER IF NOT EXISTS cloud_sync_software_updates_delete AFTER DELETE ON software_updates BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('software_updates',OLD.id,'delete'); END;
+-- END CLOUD SYNC INTERNAL
 `

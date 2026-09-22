@@ -32,6 +32,15 @@ export type LiveStatus = Readonly<{
   batteryLevel: number | null
 }>
 
+export type CloudSyncStatus = Readonly<{
+  syncState: 'idle' | 'waiting_for_idle' | 'syncing' | 'failed'
+  lastSyncStarted: string
+  lastSyncCompleted: string
+  lastSyncError: string
+  pendingRows: number
+  manualSyncRequested: boolean
+}>
+
 export class LiveConnectionError extends Error {
   override readonly name = 'LiveConnectionError'
 }
@@ -62,14 +71,14 @@ export const normaliseBaseUrl = (input: string): string => {
 export const mixedContentBlocked = (baseUrl: string): boolean =>
   globalThis.location?.protocol === 'https:' && baseUrl.startsWith('http://')
 
-const request = async (baseUrl: string, path: string, signal?: AbortSignal): Promise<Response> => {
+const request = async (baseUrl: string, path: string, signal?: AbortSignal, method = 'GET'): Promise<Response> => {
   if (mixedContentBlocked(baseUrl))
     throw new LiveConnectionError(
       'This page is served over HTTPS and cannot reach a plain-HTTP address. Open the viewer from the teslalog portal itself, or run it locally.',
     )
   let response: Response
   try {
-    response = await fetch(`${baseUrl}${path}`, signal === undefined ? {} : { signal })
+    response = await fetch(`${baseUrl}${path}`, { method, ...(signal === undefined ? {} : { signal }) })
   } catch (reason: unknown) {
     if (reason instanceof DOMException && reason.name === 'AbortError') throw reason
     throw new LiveConnectionError(
@@ -80,6 +89,21 @@ const request = async (baseUrl: string, path: string, signal?: AbortSignal): Pro
     throw new LiveConnectionError(`${baseUrl}${path} returned HTTP ${response.status}.`)
   return response
 }
+
+const cloudSyncStatus = (record: Record<string, unknown>): CloudSyncStatus => ({
+  syncState: typeof record.sync_state === 'string' ? record.sync_state as CloudSyncStatus['syncState'] : 'failed',
+  lastSyncStarted: typeof record.last_sync_started === 'string' ? record.last_sync_started : '',
+  lastSyncCompleted: typeof record.last_sync_completed === 'string' ? record.last_sync_completed : '',
+  lastSyncError: typeof record.last_sync_error === 'string' ? record.last_sync_error : '',
+  pendingRows: typeof record.pending_rows === 'number' ? record.pending_rows : 0,
+  manualSyncRequested: record.manual_sync_requested === true,
+})
+
+export const fetchCloudSyncStatus = async (baseUrl: string, signal?: AbortSignal): Promise<CloudSyncStatus> =>
+  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/cloud-sync', signal), baseUrl))
+
+export const requestCloudSync = async (baseUrl: string): Promise<CloudSyncStatus> =>
+  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/cloud-sync/request', undefined, 'POST'), baseUrl))
 
 // parseJson rejects a non-JSON body as a connection failure rather than
 // letting a SyntaxError escape. A dev server (and many reverse proxies)
