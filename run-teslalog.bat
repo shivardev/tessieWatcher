@@ -25,5 +25,5 @@ echo ==============================================================
 echo Running. Leave this window open while you drive/charge.
 echo Press Ctrl+C to stop.
 echo ==============================================================
-.\teslalog-windows-amd64.exe run -config config.windows-test.toml
+.\teslalog-windows-amd64.exe start -config config.windows-test.toml
 pause

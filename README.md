@@ -88,7 +88,7 @@ internal/vehicle/      sleep-aware state machine (pure, unit-tested, no I/O)
 internal/storage/      SQLite schema + queries (ncruces/go-sqlite3, pure Go, no cgo)
 internal/backup/       online SQLite backup (safe under WAL) + gzip + rotation
 internal/portal/       optional read-only HTTP page + database download (see Portal below)
-internal/runner/       wires the above into the daemon loop `teslalog run` executes
+internal/runner/       wires the above into the all-in-one `teslalog start` loop
 systemd/teslalog.service
 deploy/cross-build.sh  cross-compile for the Pi (linux/arm64)
 deploy/install.sh       installs the binary + systemd unit + config on the Pi
@@ -573,7 +573,7 @@ See `config.example.toml` for every field with inline docs. Key ones:
 
 ```
 teslalog auth                        interactive Tesla login
-teslalog run                         run the daemon (systemd runs this)
+teslalog start                       run logger, SQLite, API, and WebUI (systemd runs this)
 teslalog status                      today's drives/distance + last charge
 teslalog wake                        explicit manual wake (never automatic)
 teslalog backup                      run one backup immediately
@@ -646,48 +646,94 @@ found live, before v0.2.3) race for that recovery and the loser gets
 `SQLITE_BUSY_RECOVERY` ("database is locked"), even though nothing is
 actually writing to the file.
 
-## Layerbase cloud sync
+## Pi to self-hosted SQLite synchronization
 
-The daemon keeps Layerbase incrementally synchronized from its local SQLite
-database. SQLite is the crash-safe collection buffer: telemetry is committed
-locally first, and database triggers add the same change to a durable outbox.
-Only pending rows are sent, in small idempotent UPSERT batches, while the
-vehicle is idle/asleep/offline. Driving and charging always take priority.
-Cloud outages leave changes pending and never interrupt vehicle collection.
+The normal installation is deliberately one command and one database:
+`teslalog start` collects the car, writes local SQLite, and serves the API and
+WebUI. Users who do not enable replication maintain only this one installation.
+
+Replication is optional. In that advanced setup, `teslalog start` remains the
+complete primary installation, while `teslalog replica` on another machine owns
+a second SQLite database and WebUI. SQLite is never placed on a network share.
+The Go receiver serializes writes and gives dashboards a read-only pool.
+
+The Pi database is the crash-safe collection buffer: telemetry is committed
+locally first, and database triggers add each insert, update, or delete to a
+durable outbox. Only pending rows are sent, in small idempotent batches, while
+the vehicle is idle/asleep/offline. Driving and charging always take priority.
+Laptop, VPN, or power outages leave changes pending and never interrupt vehicle
+collection. A retry can safely send the same row again.
+
+On the laptop, create a long random token and start the server (PowerShell):
+
+```powershell
+$env:TESLALOG_SERVER_TOKEN = '<long-random-secret>'
+.\teslalog.exe replica -database C:\teslalog\teslalog-replica.db -id teslalog -addr :8084 -backup-dir C:\teslalog\backups
+```
+
+Open `http://localhost:8084/app/` on that laptop. From another VPN device use
+`http://<laptop-tailscale-ip>:8084/app/`. The server creates a compressed,
+consistent SQLite backup every 24 hours and retains 30 days by default.
+
+Configure the Pi after the VPN address is known:
 
 ```toml
-[cloud]
+[sync]
 enabled = true
-base_url = "https://sage.cloud.layerbase.dev"
-database_id = "your-database-uuid"
+base_url = "http://<laptop-tailscale-ip>:8084"
+database_id = "teslalog"
 interval = "15m"
 batch_size = 500
-api_key_env = "LAYERBASE_API_KEY"
+api_key_env = "TESLALOG_SERVER_TOKEN"
 ```
 
 Set the secret in the daemon's environment (or its systemd EnvironmentFile),
 not in `config.toml`:
 
 ```sh
-LAYERBASE_API_KEY=sk_... teslalog run
+TESLALOG_SERVER_TOKEN='<same-long-random-secret>' teslalog start
 ```
 
-Use `teslalog cloud-push` once when bootstrapping a brand-new cloud database.
-Normal daemon synchronization never uploads a full database snapshot. An
+For the first bootstrap, stop neither logger nor server: use `teslalog backup`
+on the Pi and copy that consistent snapshot to the laptop database path before
+starting `teslalog replica`. After the one-time bootstrap, normal synchronization
+never uploads a full database. An
 uncertain or interrupted batch is returned to `pending` and safely resent.
 Acknowledged outbox records are retained for 24 hours; telemetry itself is not
-deleted. The WebUI remembers a successful Layerbase connection and uses it as
-its default historical source instead of downloading the SQLite file.
+deleted. The WebUI remembers a successful server connection and queries small
+results directly instead of downloading the SQLite file.
 
-The LAN portal exposes `GET /api/cloud-sync` for sync health and
-`POST /api/cloud-sync/request` to queue a safe manual sync. A request made
+An empty receiver can also bootstrap automatically: before its first incremental
+cycle, the primary copies every existing telemetry table and writes a completion
+marker only after the whole copy succeeds. Interrupted bootstraps are safely
+repeated. If a consistent database snapshot was copied manually, the receiver is
+recognized as non-empty and adopted. In both cases, queued changes are replayed
+afterward, so rows written during the bootstrap are not lost.
+
+Synchronization never deletes raw telemetry from the primary. It removes only
+acknowledged bookkeeping entries from the outbox after 24 hours. The viewer also
+does not destructively downsample storage: charts request bounded time windows and
+use minute/hour aggregates in SQL at query time. Therefore the same optimized
+queries apply to a standalone installation and to a replicated installation while
+the original samples remain available for detailed views and future calculations.
+
+The local WebUI exposes `GET /api/sync` for replication health and
+`POST /api/sync/request` to queue a safe manual sync. The older
+`/api/cloud-sync` routes remain compatible. A request made
 while driving or charging remains queued until the logger is idle.
 
-Once connected through Layerbase, open **System → Geofences & pricing** to
+Once connected to the server, open **System → Geofences & pricing** to
 add, edit, or delete named zones and their per-kWh/per-minute charging rates.
-The daemon pulls those settings on the next cloud interval and applies them
+Those changes are authoritative on the laptop; the Pi pulls them on its next
+sync interval and applies them
 without a restart. Existing `[[geofence]]` TOML entries seed the editable
 table the first time only; after that, the database/UI values are authoritative.
+
+The geofence model follows TeslaMate's practical behavior: a named circular
+zone resolves drive start/end locations and supplies charging pricing. Per-kWh,
+per-minute, flat session fees, edits, and deletion are synchronized. Existing
+historical charge totals remain historical records; a changed rule applies to
+newly finalized charging sessions rather than silently rewriting the past.
 
 ## Portal (optional web page + database download)
 
@@ -718,8 +764,8 @@ without re-downloading and re-parsing the whole database each time:
 |---|---|
 | `GET /api/status` | current state, battery %, rated/ideal range, odometer, firmware, the running teslalog version, and the active drive/charge id if one is in progress |
 | `GET /api/meta` | Live database freshness and lightweight row counters |
-| `GET /api/cloud-sync` | Sync state, last success/error, pending rows, and queued-request state |
-| `POST /api/cloud-sync/request` | Queue an idle-only incremental synchronization |
+| `GET /api/sync` | Sync state, last success/error, pending rows, and queued-request state |
+| `POST /api/sync/request` | Queue an idle-only incremental synchronization |
 
 Fields that aren't known are omitted rather than sent as null, so check
 for the key rather than assuming it's present.

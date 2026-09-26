@@ -1,4 +1,4 @@
-// Proof-of-concept harness for querying a Layerbase cloud database over
+// Proof-of-concept harness for querying a remote teslalog SQLite server over
 // its HTTP API instead of downloading the whole SQLite file. Reached at
 // ?cloud - deliberately separate from the main App so it changes nothing
 // about the normal viewer while we validate two things against a real
@@ -15,7 +15,7 @@ import { setRemoteBackend, runRemoteQuery, type RemoteConfig } from './remoteBac
 import { defaultViewSettings } from './viewSettings'
 import type { QueryResult } from './domain'
 
-const KEY_STORE = 'teslalog.viewer.layerbase'
+const KEY_STORE = 'teslalog.viewer.remote'
 const EMPTY = new Uint8Array(0)
 
 const loadSaved = (): Partial<RemoteConfig> => {
@@ -28,7 +28,7 @@ const loadSaved = (): Partial<RemoteConfig> => {
 
 export function CloudProbe() {
   const saved = loadSaved()
-  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'https://sage.cloud.layerbase.dev')
+  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'http://localhost:8084')
   const [databaseId, setDatabaseId] = useState(saved.databaseId ?? '')
   const [apiKey, setApiKey] = useState(saved.apiKey ?? '')
   const [remember, setRemember] = useState(false)
@@ -87,7 +87,7 @@ export function CloudProbe() {
       <div style={wrap}>
         <h1 style={{ fontWeight: 600 }}>teslalog · cloud query probe</h1>
         <p style={{ color: '#879491' }}>
-          Query a Layerbase database over HTTP — no file download. Your key stays in this browser.
+          Query your teslalog SQLite server over HTTP — no file download. Your token stays in this browser.
         </p>
 
         <div

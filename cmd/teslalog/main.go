@@ -14,12 +14,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"teslalog/internal/backup"
 	"teslalog/internal/cloudsync"
 	"teslalog/internal/config"
+	"teslalog/internal/dbserver"
 	"teslalog/internal/runner"
 	"teslalog/internal/storage"
 	"teslalog/internal/tesla"
@@ -46,7 +48,7 @@ func main() {
 	case "auth":
 		fs.Parse(args)
 		err = runAuth(configPath)
-	case "run":
+	case "start", "run":
 		fs.Parse(args)
 		err = runDaemon(configPath)
 	case "wake":
@@ -60,6 +62,8 @@ func main() {
 		err = runBackup(configPath)
 	case "cloud-push":
 		err = runCloudPush(configPath, args)
+	case "replica", "serve":
+		err = runServer(args)
 	case "export":
 		err = runExport(configPath, args)
 	case "auth-callback":
@@ -92,18 +96,74 @@ func usage() {
 
 Usage:
   teslalog auth [-config path]              interactive Tesla account login
-  teslalog run [-config path]                run the logging daemon (foreground; use systemd for real deployment)
+  teslalog start [-config path]              run the all-in-one logger, SQLite database, API, and WebUI
   teslalog status [-config path]             print today's drives/energy and last charge
   teslalog wake [-config path]               explicitly wake the vehicle (never done automatically)
   teslalog backup [-config path]             run one SQLite backup immediately
-  teslalog cloud-push -id UUID [-url base]    push the local DB to a Layerbase cloud database (key: LAYERBASE_API_KEY)
+  teslalog cloud-push -id UUID [-url base]    legacy one-time remote database bootstrap
+  teslalog replica -database path -id name    optional replication receiver and WebUI
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
   teslalog export charges [-year N] [-out f] export closed charging sessions to CSV
   teslalog update                            self-update to the latest GitHub release
   teslalog version                           print version
 
 Config file: TOML, defaults to /etc/teslalog/config.toml (see config.example.toml).
+Compatibility aliases: "run" = "start", "serve" = "replica".
 `)
+}
+
+func runServer(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	var databasePath, databaseID, addr, tokenEnv, backupDir string
+	var backupInterval time.Duration
+	var backupRetention int
+	fs.StringVar(&databasePath, "database", "teslalog-server.db", "server SQLite database path")
+	fs.StringVar(&databaseID, "id", "teslalog", "database id used in API URLs")
+	fs.StringVar(&addr, "addr", ":8084", "HTTP listen address")
+	fs.StringVar(&tokenEnv, "token-env", "TESLALOG_SERVER_TOKEN", "environment variable containing the bearer token")
+	fs.StringVar(&backupDir, "backup-dir", "backups", "directory for compressed server backups (empty disables)")
+	fs.DurationVar(&backupInterval, "backup-interval", 24*time.Hour, "automatic backup interval")
+	fs.IntVar(&backupRetention, "backup-retention-days", 30, "days of server backups to retain")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	token := strings.TrimSpace(os.Getenv(tokenEnv))
+	if token == "" {
+		return fmt.Errorf("serve: environment variable %s is empty", tokenEnv)
+	}
+	server, err := dbserver.New(dbserver.Config{DatabasePath: databasePath, DatabaseID: databaseID, Addr: addr, Token: token})
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	defer server.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if backupDir != "" {
+		if backupInterval <= 0 || backupRetention <= 0 {
+			return fmt.Errorf("serve: backup interval and retention must be positive")
+		}
+		go runServerBackups(ctx, databasePath, backupDir, backupInterval, backupRetention)
+	}
+	slog.Info("SQLite sync server starting", "addr", addr, "database", databasePath, "database_id", databaseID)
+	return server.Run(ctx)
+}
+
+func runServerBackups(ctx context.Context, databasePath, backupDir string, interval time.Duration, retentionDays int) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			path, err := backup.Run(ctx, databasePath, backupDir, retentionDays, now)
+			if err != nil {
+				slog.Error("server backup failed", "error", err)
+				continue
+			}
+			slog.Info("server backup complete", "path", path)
+		}
+	}
 }
 
 func defaultConfigPath() string {
@@ -183,7 +243,7 @@ func runAuth(configPath string) error {
 	}
 
 	fmt.Printf("\nSuccess. Tokens saved to %s (mode 0600).\n", cfg.TokenFile)
-	fmt.Println("Run `teslalog run` to start logging, or `teslalog status` once you have data.")
+	fmt.Println("Run `teslalog start` to start logging and the WebUI, or `teslalog status` once you have data.")
 	return nil
 }
 
@@ -324,7 +384,7 @@ func runStatus(configPath string) error {
 	var vehicleID int64
 	row := store.DB().QueryRow(`SELECT id FROM vehicles ORDER BY id LIMIT 1`)
 	if err := row.Scan(&vehicleID); err != nil {
-		fmt.Println("No vehicle recorded yet - has `teslalog run` completed at least one poll?")
+		fmt.Println("No vehicle recorded yet - has `teslalog start` completed at least one poll?")
 		return nil
 	}
 

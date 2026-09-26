@@ -1,12 +1,12 @@
-// Remote query backend: run the viewer's SQL against a Layerbase cloud
-// database over its HTTP query API, instead of loading a downloaded
-// SQLite file into sql.js. Layerbase is SQLite 3 under the hood, so the
+// Remote query backend: run the viewer's SQL against the teslalog server
+// over its HTTP query API, instead of loading a downloaded SQLite file
+// into sql.js. The server uses SQLite 3, so the
 // exact same dashboard SQL runs unchanged - only where it executes moves
 // from the browser to the cloud, which is what lets the viewer open
 // without downloading the whole database.
 //
-// The API (https://layerbase.com/docs): POST {baseUrl}/v1/databases/{id}/query
-// with `Authorization: Bearer sk_...` and a JSON body `{"query": "SELECT ..."}`.
+// API: POST {baseUrl}/v1/databases/{id}/query with an Authorization bearer
+// token and a JSON body `{"query": "SELECT ..."}`.
 // The success response's exact shape is not pinned down in the public
 // docs, so normaliseResult below accepts the shapes such an API plausibly
 // returns and coerces them into the viewer's QueryResult; the first real
@@ -14,12 +14,11 @@
 import { queryValueSchema, type QueryResult, type QueryValue } from './domain'
 
 export type RemoteConfig = Readonly<{
-  // Origin of the cloud API, e.g. "https://cloud.layerbase.dev".
+  // Origin of the teslalog server, e.g. "http://100.x.y.z:8084".
   baseUrl: string
-  // The database's id (the UUID from the API-key panel / connection URL),
-  // NOT the pooled hostname.
+  // The configured database id ("teslalog" by default).
   databaseId: string
-  // The HTTP API bearer token (sk_...). Supplied by the user at runtime and
+  // The HTTP API bearer token. Supplied by the user at runtime and
   // held only in their browser - never committed or baked into the bundle.
   apiKey: string
 }>
@@ -36,12 +35,7 @@ export const getRemoteBackend = (): RemoteConfig | null => current
 const queryEndpoint = (config: RemoteConfig): string =>
   `${config.baseUrl.replace(/\/+$/u, '')}/v1/databases/${encodeURIComponent(config.databaseId)}/query`
 
-// Layerbase's SQLite JSON adapter currently serializes a zero-fallback around
-// numeric aggregates as null when the statement also contains datetime().
-// Casting the aggregate expression to TEXT avoids both that null and another
-// adapter bug where some numeric MAX values are rendered as 1970 timestamps;
-// normaliseResult converts the numeric text back to a number. An actually
-// empty aggregate remains null and the caller applies the intended zero.
+// Retained as a compatibility hook for databases created by older versions.
 export const layerbaseCompatibleSql = (sql: string): string => sql
 
 // coerce narrows an arbitrary JSON value to the QueryValue union the
@@ -54,7 +48,7 @@ const coerce = (value: unknown): QueryValue => {
   if (typeof value === 'number') return value
   if (typeof value === 'boolean') return value ? 1 : 0
   if (typeof value === 'string') {
-    // Layerbase returns SQLite numerics as JSON strings ("1", "1.5", "-3").
+    // Compatible APIs may return SQLite numerics as JSON strings.
     // Restore strictly-numeric ones to numbers so the dashboards compute
     // rather than concatenate; dates, locations and states have letters or
     // punctuation and stay text. Zero-padded values (a "01234" postcode)
@@ -78,7 +72,7 @@ const coerce = (value: unknown): QueryValue => {
   return queryValueSchema.catch(String(value)).parse(value)
 }
 
-// normaliseResult turns Layerbase's JSON into a QueryResult, accepting the
+// normaliseResult turns the server's JSON into a QueryResult, accepting the
 // two shapes a SQLite-over-HTTP API realistically returns:
 //   1. { columns: ["a","b"], rows: [[1,2],[3,4]] }
 //   2. an array of row objects: [{ "a": 1, "b": 2 }, ...] - possibly
@@ -119,7 +113,7 @@ export const normaliseResult = (json: unknown): QueryResult => {
     }
     return { columns: [], rows: array.map((row) => (Array.isArray(row) ? row.map(coerce) : [coerce(row)])) }
   }
-  return { columns: [], rows: [], error: 'Unrecognised response shape from the Layerbase query API.' }
+  return { columns: [], rows: [], error: 'Unrecognised response shape from the SQLite server.' }
 }
 
 // runRemoteQuery posts one already-interpolated SQL string and returns its
@@ -141,11 +135,11 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
     return {
       columns: [],
       rows: [],
-      error: 'Could not reach Layerbase from this browser. The API may be blocking this site with CORS.',
+      error: 'Could not reach the SQLite server from this browser. Check the VPN address and that the server is running.',
     }
   }
   if (!response.ok) {
-    let message = `Layerbase query API returned HTTP ${response.status}.`
+    let message = `SQLite server returned HTTP ${response.status}.`
     try {
       const body = (await response.json()) as { error?: unknown }
       if (typeof body?.error === 'string') message = body.error
@@ -157,11 +151,11 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
   try {
     return normaliseResult(await response.json())
   } catch {
-    return { columns: [], rows: [], error: 'Layerbase query API returned a non-JSON body.' }
+    return { columns: [], rows: [], error: 'SQLite server returned a non-JSON body.' }
   }
 }
 
-// runRemoteStatement executes a write statement. Layerbase may return an
+// runRemoteStatement executes a write statement. The server may return an
 // empty success body for INSERT/UPDATE/DELETE, so unlike runRemoteQuery this
 // intentionally cares only about the HTTP status.
 export const runRemoteStatement = async (config: RemoteConfig, sql: string): Promise<void> => {
@@ -173,10 +167,10 @@ export const runRemoteStatement = async (config: RemoteConfig, sql: string): Pro
       body: JSON.stringify({ query: sql }),
     })
   } catch {
-    throw new Error('Could not reach the Layerbase query API.')
+    throw new Error('Could not reach the SQLite server.')
   }
   if (!response.ok) {
-    let message = `Layerbase query API returned HTTP ${response.status}.`
+    let message = `SQLite server returned HTTP ${response.status}.`
     try {
       const body = (await response.json()) as { error?: unknown }
       if (typeof body?.error === 'string') message = body.error

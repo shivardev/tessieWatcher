@@ -179,6 +179,7 @@ ideal_battery_range_km REAL,
 source TEXT NOT NULL
 )`,
   `CREATE INDEX IF NOT EXISTS idx_battery_samples_vehicle_ts ON battery_samples(vehicle_id, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS idx_battery_samples_timestamp ON battery_samples(timestamp)`,
   `CREATE TABLE IF NOT EXISTS geocode_cache (
 lat_key REAL NOT NULL,
 lng_key REAL NOT NULL,

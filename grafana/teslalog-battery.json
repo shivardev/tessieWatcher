@@ -59,8 +59,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, battery_level AS \"Battery %\"\nFROM battery_samples\nORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, battery_level AS \"Battery %\"\nFROM battery_samples\nORDER BY timestamp",
+          "queryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS time,\n       ROUND(AVG(battery_level), 1) AS \"Battery %\"\nFROM battery_samples\nWHERE timestamp >= datetime('now', '-90 days')\nGROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp)\nORDER BY time",
+          "rawQueryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS time,\n       ROUND(AVG(battery_level), 1) AS \"Battery %\"\nFROM battery_samples\nWHERE timestamp >= datetime('now', '-90 days')\nGROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp)\nORDER BY time",
           "queryType": "table",
           "timeColumns": [
             "time"
@@ -105,8 +105,8 @@
             "type": "frser-sqlite-datasource",
             "uid": "${DS_SQLITE}"
           },
-          "queryText": "SELECT timestamp AS time, battery_range_km AS \"Rated range (km)\", ideal_battery_range_km AS \"Ideal range (km)\"\nFROM battery_samples\nORDER BY timestamp",
-          "rawQueryText": "SELECT timestamp AS time, battery_range_km AS \"Rated range (km)\", ideal_battery_range_km AS \"Ideal range (km)\"\nFROM battery_samples\nORDER BY timestamp",
+          "queryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS time,\n       ROUND(AVG(battery_range_km), 1) AS \"Rated range (km)\",\n       ROUND(AVG(ideal_battery_range_km), 1) AS \"Ideal range (km)\"\nFROM battery_samples\nWHERE timestamp >= datetime('now', '-90 days')\nGROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp)\nORDER BY time",
+          "rawQueryText": "SELECT strftime('%Y-%m-%dT%H:00:00Z', timestamp) AS time,\n       ROUND(AVG(battery_range_km), 1) AS \"Rated range (km)\",\n       ROUND(AVG(ideal_battery_range_km), 1) AS \"Ideal range (km)\"\nFROM battery_samples\nWHERE timestamp >= datetime('now', '-90 days')\nGROUP BY strftime('%Y-%m-%dT%H:00:00Z', timestamp)\nORDER BY time",
           "queryType": "table",
           "timeColumns": [
             "time"

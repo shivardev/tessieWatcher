@@ -5,7 +5,7 @@
 # explicitly) and run:
 #
 #   .\teslalog-windows-amd64.exe auth  -config config.windows-test.toml
-#   .\teslalog-windows-amd64.exe run   -config config.windows-test.toml
+#   .\teslalog-windows-amd64.exe start -config config.windows-test.toml
 
 database   = "tesla.db"
 token_file = "tokens.json"

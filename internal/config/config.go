@@ -26,7 +26,10 @@ type Config struct {
 	Polling   PollingConfig
 	Streaming StreamingConfig
 	Backup    BackupConfig
-	Cloud     CloudConfig
+	Sync      SyncConfig
+	// Cloud is a deprecated compatibility alias for Sync. New code and
+	// configuration should use Sync/[sync].
+	Cloud     SyncConfig
 	Portal    PortalConfig
 	Geocoding GeocodingConfig
 	Geofences []GeofenceConfig
@@ -35,11 +38,11 @@ type Config struct {
 	Charging  ChargingConfig
 }
 
-// CloudConfig controls the optional background mirror of the local SQLite
-// database to Layerbase. The API key itself is deliberately not stored in
+// SyncConfig controls the optional background mirror of the local SQLite
+// database to a remote teslalog SQLite server. The token is not stored in
 // this struct/config file; APIKeyEnv names the environment variable that
 // contains it.
-type CloudConfig struct {
+type SyncConfig struct {
 	Enabled    bool
 	BaseURL    string
 	DatabaseID string
@@ -47,6 +50,10 @@ type CloudConfig struct {
 	Interval   time.Duration
 	BatchSize  int
 }
+
+// CloudConfig remains a source-compatible alias for integrations compiled
+// against versions that predate the [sync] name.
+type CloudConfig = SyncConfig
 
 // GeofenceConfig is one user-named circular zone (a config.toml
 // [[geofence]] entry) - checked before any reverse-geocoding lookup, so
@@ -277,6 +284,15 @@ type APIConfig struct {
 
 // rawConfig mirrors Config but with durations as human strings ("30s",
 // "3m", "15m") since TOML has no native duration type.
+type rawSyncConfig struct {
+	Enabled    *bool  `toml:"enabled"`
+	BaseURL    string `toml:"base_url"`
+	DatabaseID string `toml:"database_id"`
+	APIKeyEnv  string `toml:"api_key_env"`
+	Interval   string `toml:"interval"`
+	BatchSize  int    `toml:"batch_size"`
+}
+
 type rawConfig struct {
 	Database  string `toml:"database"`
 	TokenFile string `toml:"token_file"`
@@ -317,14 +333,8 @@ type rawConfig struct {
 		} `toml:"upload"`
 	} `toml:"backup"`
 
-	Cloud struct {
-		Enabled    *bool  `toml:"enabled"`
-		BaseURL    string `toml:"base_url"`
-		DatabaseID string `toml:"database_id"`
-		APIKeyEnv  string `toml:"api_key_env"`
-		Interval   string `toml:"interval"`
-		BatchSize  int    `toml:"batch_size"`
-	} `toml:"cloud"`
+	Sync  rawSyncConfig `toml:"sync"`
+	Cloud rawSyncConfig `toml:"cloud"` // deprecated compatibility name
 
 	Portal struct {
 		Enabled *bool  `toml:"enabled"`
@@ -374,7 +384,7 @@ type rawConfig struct {
 // TeslaMate-style behavior (3 minute idle timeout before suspending
 // polling, no aggressive wake-ups).
 func Default() Config {
-	return Config{
+	cfg := Config{
 		Database:  "/var/lib/teslalog/tesla.db",
 		TokenFile: "/var/lib/teslalog/tokens.json",
 		Polling: PollingConfig{
@@ -415,10 +425,10 @@ func Default() Config {
 			RclonePath:   "rclone",
 			RcloneConfig: "/etc/teslalog/rclone.conf",
 		},
-		Cloud: CloudConfig{
+		Sync: SyncConfig{
 			Enabled:   false,
-			BaseURL:   "https://cloud.layerbase.dev",
-			APIKeyEnv: "LAYERBASE_API_KEY",
+			BaseURL:   "http://127.0.0.1:8084",
+			APIKeyEnv: "TESLALOG_SERVER_TOKEN",
 			Interval:  15 * time.Minute,
 			BatchSize: 500,
 		},
@@ -451,14 +461,15 @@ func Default() Config {
 			UserAgent: "teslalog/0.2",
 		},
 	}
+	cfg.Cloud = cfg.Sync
+	return cfg
 }
 
 // Load reads a TOML config file at path, applying defaults for any
 // fields left unset or blank. If path does not exist, defaults are
-// returned as-is (not an error) so `teslalog run` works out of the box.
+// returned as-is (not an error) so `teslalog start` works out of the box.
 func Load(path string) (Config, error) {
 	cfg := Default()
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -573,43 +584,51 @@ func Load(path string) (Config, error) {
 		})
 	}
 
-	if raw.Cloud.Enabled != nil {
-		cfg.Cloud.Enabled = *raw.Cloud.Enabled
-	}
-	if raw.Cloud.BaseURL != "" {
-		cfg.Cloud.BaseURL = strings.TrimRight(raw.Cloud.BaseURL, "/")
-	}
-	if raw.Cloud.DatabaseID != "" {
-		cfg.Cloud.DatabaseID = raw.Cloud.DatabaseID
-	}
-	if raw.Cloud.APIKeyEnv != "" {
-		cfg.Cloud.APIKeyEnv = raw.Cloud.APIKeyEnv
-	}
-	if d, err := parseDurationOr(raw.Cloud.Interval, cfg.Cloud.Interval); err != nil {
-		return cfg, fmt.Errorf("cloud.interval: %w", err)
-	} else {
-		cfg.Cloud.Interval = d
-	}
-	if raw.Cloud.BatchSize != 0 {
-		cfg.Cloud.BatchSize = raw.Cloud.BatchSize
-	}
-	if cfg.Cloud.Enabled {
-		if cfg.Cloud.DatabaseID == "" {
-			return cfg, fmt.Errorf("cloud.database_id is required when cloud sync is enabled")
+	// Read the deprecated [cloud] block first, then let [sync] override it.
+	// That gives existing installations a zero-downtime migration path.
+	for _, item := range []struct {
+		name string
+		raw  rawSyncConfig
+	}{{"cloud", raw.Cloud}, {"sync", raw.Sync}} {
+		if item.raw.Enabled != nil {
+			cfg.Sync.Enabled = *item.raw.Enabled
 		}
-		if cfg.Cloud.BaseURL == "" {
-			return cfg, fmt.Errorf("cloud.base_url is required when cloud sync is enabled")
+		if item.raw.BaseURL != "" {
+			cfg.Sync.BaseURL = strings.TrimRight(item.raw.BaseURL, "/")
 		}
-		if cfg.Cloud.APIKeyEnv == "" {
-			return cfg, fmt.Errorf("cloud.api_key_env is required when cloud sync is enabled")
+		if item.raw.DatabaseID != "" {
+			cfg.Sync.DatabaseID = item.raw.DatabaseID
 		}
-		if cfg.Cloud.Interval <= 0 {
-			return cfg, fmt.Errorf("cloud.interval must be greater than zero")
+		if item.raw.APIKeyEnv != "" {
+			cfg.Sync.APIKeyEnv = item.raw.APIKeyEnv
 		}
-		if cfg.Cloud.BatchSize < 1 || cfg.Cloud.BatchSize > 5000 {
-			return cfg, fmt.Errorf("cloud.batch_size must be between 1 and 5000")
+		if d, err := parseDurationOr(item.raw.Interval, cfg.Sync.Interval); err != nil {
+			return cfg, fmt.Errorf("%s.interval: %w", item.name, err)
+		} else {
+			cfg.Sync.Interval = d
+		}
+		if item.raw.BatchSize != 0 {
+			cfg.Sync.BatchSize = item.raw.BatchSize
 		}
 	}
+	if cfg.Sync.Enabled {
+		if cfg.Sync.DatabaseID == "" {
+			return cfg, fmt.Errorf("sync.database_id is required when replication is enabled")
+		}
+		if cfg.Sync.BaseURL == "" {
+			return cfg, fmt.Errorf("sync.base_url is required when replication is enabled")
+		}
+		if cfg.Sync.APIKeyEnv == "" {
+			return cfg, fmt.Errorf("sync.api_key_env is required when replication is enabled")
+		}
+		if cfg.Sync.Interval <= 0 {
+			return cfg, fmt.Errorf("sync.interval must be greater than zero")
+		}
+		if cfg.Sync.BatchSize < 1 || cfg.Sync.BatchSize > 5000 {
+			return cfg, fmt.Errorf("sync.batch_size must be between 1 and 5000")
+		}
+	}
+	cfg.Cloud = cfg.Sync
 
 	if raw.Portal.Enabled != nil {
 		cfg.Portal.Enabled = *raw.Portal.Enabled

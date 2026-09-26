@@ -351,6 +351,28 @@ interval = "7m"
 	}
 }
 
+func TestSyncConfigPreferredName(t *testing.T) {
+	path := writeTemp(t, `[sync]
+enabled = true
+base_url = "http://100.64.0.10:8084/"
+database_id = "teslalog"
+api_key_env = "TESLALOG_SERVER_TOKEN"
+interval = "15m"
+batch_size = 250
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Sync.Enabled || cfg.Sync.BaseURL != "http://100.64.0.10:8084" ||
+		cfg.Sync.DatabaseID != "teslalog" || cfg.Sync.Interval != 15*time.Minute || cfg.Sync.BatchSize != 250 {
+		t.Fatalf("unexpected sync config: %+v", cfg.Sync)
+	}
+	if cfg.Cloud != cfg.Sync {
+		t.Fatalf("deprecated cloud alias differs: cloud=%+v sync=%+v", cfg.Cloud, cfg.Sync)
+	}
+}
+
 func TestEnabledCloudSyncRequiresDatabaseID(t *testing.T) {
 	if _, err := Load(writeTemp(t, "[cloud]\nenabled = true\n")); err == nil {
 		t.Fatal("expected enabled cloud sync without a database id to fail validation")

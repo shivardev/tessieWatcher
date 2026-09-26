@@ -48,7 +48,7 @@ export function GeofenceSettings() {
 
   useEffect(() => { void load().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Could not load geofences.')) }, [])
 
-  if (!backend) return <main><p className="no-data">Connect to Layerbase to modify geofences and charging prices.</p></main>
+  if (!backend) return <main><p className="no-data">Connect to the SQLite server to modify geofences and charging prices.</p></main>
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
@@ -85,7 +85,7 @@ export function GeofenceSettings() {
   const input = (key: keyof Form, label: string, type = 'text') => <label style={{ display: 'grid', gap: 5 }}>{label}<input type={type} value={String(form[key])} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>
   return <main style={{ maxWidth: 1100 }}>
     <h1>Geofences & charging prices</h1>
-    <p>Changes are saved to Layerbase. The logger downloads them on its next cloud-sync cycle.</p>
+    <p>Changes are saved to the server. The Pi downloads them on its next sync cycle.</p>
     {error && <div className="error" role="alert">{error}</div>}
     <form onSubmit={(e) => void save(e)} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14, padding: 18, border: '1px solid var(--line)', borderRadius: 12 }}>
       {input('name', 'Name')}{input('latitude', 'Latitude', 'number')}{input('longitude', 'Longitude', 'number')}{input('radiusM', 'Radius (metres)', 'number')}

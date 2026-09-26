@@ -25,12 +25,12 @@ func (s Scheduler) Start(ctx context.Context) {
 	}
 	db, err := OpenLocal(s.DBPath)
 	if err != nil {
-		slog.Error("cloud sync disabled: open local database", "error", err)
+		slog.Error("replication disabled: open local database", "error", err)
 		return
 	}
 	defer db.Close()
 	if err := Recover(ctx, db); err != nil {
-		slog.Error("cloud sync recovery failed", "error", err)
+		slog.Error("replication recovery failed", "error", err)
 		return
 	}
 
@@ -45,7 +45,7 @@ func (s Scheduler) Start(ctx context.Context) {
 		}
 		status, err := ReadStatus(ctx, db)
 		if err != nil {
-			slog.Error("cloud sync status failed", "error", err)
+			slog.Error("replication status failed", "error", err)
 			continue
 		}
 		if !status.ManualSyncRequested && time.Now().Before(nextScheduled) {
@@ -74,25 +74,28 @@ func (s Scheduler) Start(ctx context.Context) {
 			continue
 		}
 		if err := setStatus(ctx, db, "idle", nil); err != nil {
-			slog.Error("cloud sync status update failed", "error", err)
+			slog.Error("replication status update failed", "error", err)
 		}
 		_ = CleanupAcknowledged(ctx, db, 24*time.Hour)
 		nextScheduled = time.Now().Add(s.Interval)
-		slog.Info("incremental cloud sync complete", "database_id", s.Config.DatabaseID)
+		slog.Info("incremental replication complete", "database_id", s.Config.DatabaseID)
 	}
 }
 
 func (s Scheduler) fail(ctx context.Context, db *sql.DB, syncErr error) {
 	message := syncErr.Error()
 	if err := setStatus(ctx, db, "failed", &message); err != nil {
-		slog.Error("cloud sync status update failed", "error", err)
+		slog.Error("replication status update failed", "error", err)
 	}
-	slog.Error("cloud sync failed", "error", syncErr)
+	slog.Error("replication failed", "error", syncErr)
 }
 
 func (s Scheduler) syncOnce(ctx context.Context, db *sql.DB) error {
+	if err := EnsureBootstrap(ctx, db, s.Config); err != nil {
+		return fmt.Errorf("bootstrap receiver: %w", err)
+	}
 	if err := PullGeofencesDB(ctx, db, s.Config); err != nil {
-		return fmt.Errorf("pull cloud settings: %w", err)
+		return fmt.Errorf("pull replicated settings: %w", err)
 	}
 	if s.OnSettingsChanged != nil {
 		s.OnSettingsChanged()

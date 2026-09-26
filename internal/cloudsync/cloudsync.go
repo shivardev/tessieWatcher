@@ -1,8 +1,9 @@
-// Package cloudsync replicates teslalog's local SQLite data to Layerbase so a
-// browser viewer can query it without downloading the whole database.
+// Package cloudsync replicates teslalog's local SQLite data to a remote
+// teslalog SQLite server so a browser can query it without downloading the
+// whole database.
 //
-// Layerbase is SQLite 3 with an HTTP endpoint that runs one SQL statement
-// per request (POST {base}/v1/databases/{id}/query, Bearer key, body
+// The server has an HTTP endpoint that runs one SQL statement per request
+// (POST {base}/v1/databases/{id}/query, Bearer token, body
 // {"query": "..."}). Push remains available for a one-time bootstrap.
 // Normal daemon operation uses the durable trigger-backed outbox in
 // incremental.go, small UPSERT batches, cloud acknowledgement, and
@@ -31,7 +32,7 @@ import (
 	"time"
 )
 
-// Config identifies the target cloud database. APIKey is a secret (sk_...);
+// Config identifies the target remote database. APIKey is a bearer secret;
 // it is read from the environment/config on the Pi and never logged.
 type Config struct {
 	BaseURL    string
@@ -39,7 +40,7 @@ type Config struct {
 	APIKey     string
 }
 
-// Client runs statements against one Layerbase database.
+// Client runs statements against one remote SQLite database.
 type Client struct {
 	cfg      Config
 	http     *http.Client
@@ -48,8 +49,8 @@ type Client struct {
 	endpoint string
 }
 
-// New builds a Client. maxBody is held below Layerbase's HTTP query limit
-// (10 KB per request), with margin for the JSON envelope and escaping.
+// New builds a Client. maxBody keeps each request small, with margin for the
+// JSON envelope and escaping.
 // workers is how many batch inserts run concurrently, so a bulk load of
 // hundreds of thousands of tiny 10 KB batches finishes in minutes rather
 // than the ~half hour a strictly serial push would take.
@@ -111,7 +112,7 @@ func (c *Client) attempt(ctx context.Context, payload []byte) (retryable bool, w
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return true, 0, fmt.Errorf("layerbase request: %w", err) // network blip: retry
+		return true, 0, fmt.Errorf("remote database request: %w", err) // network blip: retry
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 == 2 {
@@ -125,7 +126,7 @@ func (c *Client) attempt(ctx context.Context, payload []byte) (retryable bool, w
 	retryable = resp.StatusCode == http.StatusTooManyRequests ||
 		resp.StatusCode/100 == 5 ||
 		strings.Contains(strings.ToLower(msg), "rate limit")
-	return retryable, wait, fmt.Errorf("layerbase query: %s", msg)
+	return retryable, wait, fmt.Errorf("remote database query: %s", msg)
 }
 
 // errorMessage extracts the API's {"error": ...} text, falling back to the
@@ -465,7 +466,7 @@ func quoteString(s string) string {
 	if !strings.Contains(escaped, ";") {
 		return "'" + escaped + "'"
 	}
-	// Layerbase's HTTP query API splits a batch on ';' WITHOUT respecting
+	// Some compatible HTTP query APIs split a batch on ';' without respecting
 	// string literals, so a semicolon inside a value (e.g. an OSM road name
 	// "I 75;US 11;US 64") truncates the statement and errors. Emit each ';'
 	// via char(59) concatenation so no literal ';' appears in the SQL text,

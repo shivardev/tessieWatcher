@@ -1,6 +1,6 @@
 // Package runner wires together storage, the Tesla Owner API client,
 // the streaming client, and the vehicle state machine into the daemon
-// loop that `teslalog run` executes. It is the only place that decides
+// loop that `teslalog start` executes. It is the only place that decides
 // *when* to call vehicle_data vs. the cheap vehicle-list check — the
 // rule enforced here, mechanically, is:
 //
@@ -169,29 +169,39 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	}
 	geo := geocode.New(geofences, store, cfg.Geocoding.Enabled, cfg.Geocoding.BaseURL, cfg.Geocoding.UserAgent)
 
-	if cfg.Cloud.Enabled {
-		apiKey := strings.TrimSpace(os.Getenv(cfg.Cloud.APIKeyEnv))
+	if cfg.Sync.Enabled {
+		apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
 		if apiKey == "" {
-			slog.Error("cloud sync disabled: API key environment variable is empty", "environment_variable", cfg.Cloud.APIKeyEnv)
+			slog.Error("replication disabled: token environment variable is empty", "environment_variable", cfg.Sync.APIKeyEnv)
 		} else {
 			sched := cloudsync.Scheduler{
 				DBPath: cfg.Database,
 				Config: cloudsync.Config{
-					BaseURL: cfg.Cloud.BaseURL, DatabaseID: cfg.Cloud.DatabaseID, APIKey: apiKey,
+					BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID, APIKey: apiKey,
 				},
-				Interval:  cfg.Cloud.Interval,
-				BatchSize: cfg.Cloud.BatchSize,
+				Interval:  cfg.Sync.Interval,
+				BatchSize: cfg.Sync.BatchSize,
 				OnSettingsChanged: func() {
 					items, err := store.Geofences()
 					if err != nil {
-						slog.Error("reload cloud geofences failed", "error", err)
+						slog.Error("reload replicated geofences failed", "error", err)
 						return
 					}
 					geo.SetGeofences(items)
 				},
 			}
 			go sched.Start(ctx)
-			slog.Info("cloud sync enabled", "database_id", cfg.Cloud.DatabaseID, "interval", cfg.Cloud.Interval)
+			slog.Info("replication enabled", "database_id", cfg.Sync.DatabaseID, "interval", cfg.Sync.Interval)
+		}
+	} else {
+		// A previous process may have stopped mid-batch. Keep those entries
+		// retryable and report the real disabled state instead of leaving the
+		// WebUI stuck on a stale "syncing" badge.
+		if _, err := store.DB().Exec(`UPDATE cloud_sync_changes SET state='pending',synced_at=NULL WHERE state='syncing'`); err != nil {
+			slog.Warn("reset interrupted replication queue", "error", err)
+		}
+		if _, err := store.DB().Exec(`UPDATE cloud_sync_status SET sync_state='disabled',manual_sync_requested=0 WHERE id=1`); err != nil {
+			slog.Warn("mark replication disabled", "error", err)
 		}
 	}
 

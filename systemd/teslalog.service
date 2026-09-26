@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=teslalog
 Group=teslalog
-ExecStart=/usr/local/bin/teslalog run -config /etc/teslalog/config.toml
+ExecStart=/usr/local/bin/teslalog start -config /etc/teslalog/config.toml
 Restart=always
 RestartSec=10
 # Give the daemon time to close SQLite cleanly (fsync WAL etc.) on stop/restart.

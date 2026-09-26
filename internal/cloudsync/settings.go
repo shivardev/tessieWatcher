@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// queryRows executes a read query and normalizes the common Layerbase result
+// queryRows executes a read query and normalizes the remote SQLite result
 // shapes into named rows.
 func (c *Client) queryRows(ctx context.Context, query string) ([]map[string]any, error) {
 	payload, err := json.Marshal(map[string]string{"query": query})
@@ -27,7 +27,7 @@ func (c *Client) queryRows(ctx context.Context, query string) ([]map[string]any,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("layerbase settings query: %w", err)
+		return nil, fmt.Errorf("remote settings query: %w", err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -35,13 +35,13 @@ func (c *Client) queryRows(ctx context.Context, query string) ([]map[string]any,
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("layerbase settings query: HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("remote settings query: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	var raw any
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode Layerbase settings: %w", err)
+		return nil, fmt.Errorf("decode remote settings: %w", err)
 	}
 	return namedRows(raw)
 }
@@ -52,9 +52,18 @@ func namedRows(raw any) ([]map[string]any, error) {
 			if rows, rok := object["rows"].([]any); rok {
 				out := make([]map[string]any, 0, len(rows))
 				for _, rawRow := range rows {
+					if objectRow, ok := rawRow.(map[string]any); ok {
+						row := make(map[string]any, len(columns))
+						for _, column := range columns {
+							name := fmt.Sprint(column)
+							row[name] = objectRow[name]
+						}
+						out = append(out, row)
+						continue
+					}
 					values, ok := rawRow.([]any)
 					if !ok {
-						continue
+						return nil, fmt.Errorf("unexpected remote settings row shape")
 					}
 					row := make(map[string]any, len(columns))
 					for i, column := range columns {
@@ -78,16 +87,16 @@ func namedRows(raw any) ([]map[string]any, error) {
 		for _, item := range array {
 			row, ok := item.(map[string]any)
 			if !ok {
-				return nil, fmt.Errorf("unexpected Layerbase settings row shape")
+				return nil, fmt.Errorf("unexpected remote settings row shape")
 			}
 			out = append(out, row)
 		}
 		return out, nil
 	}
-	return nil, fmt.Errorf("unexpected Layerbase settings result shape")
+	return nil, fmt.Errorf("unexpected remote settings result shape")
 }
 
-// PullGeofences copies WebUI-managed geofences/pricing from Layerbase into
+// PullGeofences copies WebUI-managed geofences/pricing from the server into
 // the local source-of-truth cache used by the running logger.
 func PullGeofences(ctx context.Context, dbPath string, cfg Config) error {
 	db, err := OpenLocal(dbPath)

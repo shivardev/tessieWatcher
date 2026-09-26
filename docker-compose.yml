@@ -15,7 +15,7 @@ services:
     volumes:
       - teslalog-data:/var/lib/teslalog
       - teslalog-config:/etc/teslalog
-    # `command` defaults to `run` (see Dockerfile CMD). Override for
+    # `command` defaults to `start` (see Dockerfile CMD). Override for
     # one-off commands, e.g.:
     #   docker compose run --rm teslalog status
     #   docker compose run --rm teslalog export drives -out /var/lib/teslalog/drives.csv

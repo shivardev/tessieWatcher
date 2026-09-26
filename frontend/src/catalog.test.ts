@@ -34,4 +34,15 @@ describe('dashboard inventory', () => {
     const unsupported = [...new Set(used)].filter((name) => !supported.has(name))
     expect(unsupported).toEqual([])
   })
+
+  it('never returns the complete battery sample history to a dashboard', () => {
+    const batteryQueries = dashboardCatalog
+      .flatMap((dashboard) => dashboard.panels)
+      .flatMap((panel) => panel.queries)
+      .filter((query) => /FROM\s+battery_samples/iu.test(query))
+    expect(batteryQueries.length).toBeGreaterThan(0)
+    for (const query of batteryQueries) {
+      expect(query).toMatch(/WHERE|GROUP\s+BY|LIMIT/iu)
+    }
+  })
 })

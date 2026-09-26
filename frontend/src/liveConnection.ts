@@ -33,7 +33,7 @@ export type LiveStatus = Readonly<{
 }>
 
 export type CloudSyncStatus = Readonly<{
-  syncState: 'idle' | 'waiting_for_idle' | 'syncing' | 'failed'
+  syncState: 'disabled' | 'idle' | 'waiting_for_idle' | 'syncing' | 'failed'
   lastSyncStarted: string
   lastSyncCompleted: string
   lastSyncError: string
@@ -100,10 +100,10 @@ const cloudSyncStatus = (record: Record<string, unknown>): CloudSyncStatus => ({
 })
 
 export const fetchCloudSyncStatus = async (baseUrl: string, signal?: AbortSignal): Promise<CloudSyncStatus> =>
-  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/cloud-sync', signal), baseUrl))
+  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/sync', signal), baseUrl))
 
 export const requestCloudSync = async (baseUrl: string): Promise<CloudSyncStatus> =>
-  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/cloud-sync/request', undefined, 'POST'), baseUrl))
+  cloudSyncStatus(await parseJson(await request(baseUrl, '/api/sync/request', undefined, 'POST'), baseUrl))
 
 // parseJson rejects a non-JSON body as a connection failure rather than
 // letting a SyntaxError escape. A dev server (and many reverse proxies)

@@ -99,6 +99,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/api/meta", s.handleAPIMeta)
 	mux.HandleFunc("/api/cloud-sync", s.handleCloudSync)
 	mux.HandleFunc("/api/cloud-sync/request", s.handleCloudSyncRequest)
+	// Preferred names; the cloud-prefixed routes remain for older viewers.
+	mux.HandleFunc("/api/sync", s.handleCloudSync)
+	mux.HandleFunc("/api/sync/request", s.handleCloudSyncRequest)
 
 	// The full browser viewer, embedded in the binary. Served from here
 	// rather than only from GitHub Pages because a page served over
@@ -569,7 +572,7 @@ func (s *Server) handleCloudSync(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := cloudsync.ReadStatus(r.Context(), s.store.DB())
 	if err != nil {
-		http.Error(w, "cloud sync status unavailable", http.StatusServiceUnavailable)
+		http.Error(w, "replication status unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -582,12 +585,12 @@ func (s *Server) handleCloudSyncRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := cloudsync.RequestSync(r.Context(), s.store.DB()); err != nil {
-		http.Error(w, "could not queue cloud sync", http.StatusInternalServerError)
+		http.Error(w, "could not queue replication", http.StatusInternalServerError)
 		return
 	}
 	status, err := cloudsync.ReadStatus(r.Context(), s.store.DB())
 	if err != nil {
-		http.Error(w, "cloud sync queued; status unavailable", http.StatusAccepted)
+		http.Error(w, "replication queued; status unavailable", http.StatusAccepted)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

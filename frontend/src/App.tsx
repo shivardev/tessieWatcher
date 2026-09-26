@@ -607,9 +607,12 @@ export default function App() {
   const [liveCheckedAt, setLiveCheckedAt] = useState<Date | null>(null)
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus | null>(null)
   const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
-    const fallback = { baseUrl: 'https://sage.cloud.layerbase.dev' }
+    const fallback = { baseUrl: 'http://localhost:8084', databaseId: 'teslalog' }
     try {
-      return { ...fallback, ...(JSON.parse(globalThis.localStorage?.getItem('teslalog.viewer.layerbase') ?? '{}') as Partial<RemoteConfig>) }
+      const saved = globalThis.localStorage?.getItem('teslalog.viewer.remote')
+        ?? globalThis.localStorage?.getItem('teslalog.viewer.layerbase')
+        ?? '{}'
+      return { ...fallback, ...(JSON.parse(saved) as Partial<RemoteConfig>) }
     } catch {
       return fallback
     }
@@ -654,7 +657,7 @@ export default function App() {
   }
   const connect = async (): Promise<void> => connectTo(liveUrl)
 
-  // Connect straight to a Layerbase cloud database: point every query at
+  // Connect straight to the self-hosted SQLite server: point every query at
   // its HTTP API (setRemoteBackend) and build the whole viewer from it -
   // no file downloaded. The key stays in this browser.
   const connectCloud = async (): Promise<void> => {
@@ -679,13 +682,13 @@ export default function App() {
       setSelectedDriveId(null)
       setSelectedChargeId(null)
       try {
-        globalThis.localStorage?.setItem('teslalog.viewer.layerbase', JSON.stringify(config))
+        globalThis.localStorage?.setItem('teslalog.viewer.remote', JSON.stringify(config))
       } catch {
         /* remembering the connection is a convenience, not required */
       }
     } catch (reason: unknown) {
       setRemoteBackend(null)
-      setError(reason instanceof Error ? reason.message : 'Could not connect to the cloud database.')
+      setError(reason instanceof Error ? reason.message : 'Could not connect to the SQLite server.')
     } finally {
       setBusy(false)
     }
@@ -703,7 +706,7 @@ export default function App() {
     probedHost.current = true
 
     // A remembered cloud connection is the viewer's preferred/default
-    // source. Query Layerbase directly before considering the legacy portal
+    // source. Query the server directly before considering the legacy portal
     // snapshot path, so returning users never download the whole SQLite file.
     if (
       (cloud.baseUrl ?? '').trim() !== '' &&
@@ -719,9 +722,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Probe one tiny aggregate every 500 ms while Layerbase is active. Full
-  // vehicle/dashboard queries run only when this marker changes, matching a
-  // live Grafana feel without blindly rerunning every panel twice a second.
+  // Probe one indexed freshness marker per minute while a remote SQLite
+  // backend is active. Tesla telemetry does not change quickly enough to
+  // justify sub-second polling, and dashboards rerun only when this changes.
   useEffect(() => {
     if (data?.fileName !== 'cloud') return
     const backend = getRemoteBackend()
@@ -754,13 +757,13 @@ export default function App() {
         }
       } catch {
         // A transient cloud miss should not interrupt the currently rendered
-        // dashboard; the next 500 ms probe tries again.
+        // dashboard; the next scheduled probe tries again.
       } finally {
         running = false
       }
     }
     void tick()
-    const timer = setInterval(() => void tick(), 500)
+    const timer = setInterval(() => void tick(), 60_000)
     return () => { stopped = true; clearInterval(timer) }
   }, [data?.fileName])
 
@@ -792,7 +795,7 @@ export default function App() {
     }
   }, [live, liveMeta, liveUrl])
 
-  // Cloud history can be the active data source while the remembered Pi
+  // Replicated history can be the active data source while the remembered
   // portal supplies only lightweight sync health/control information.
   useEffect(() => {
     if (data === null || liveUrl.trim() === '') return
@@ -808,7 +811,7 @@ export default function App() {
       }
     }
     void tick()
-    const timer = setInterval(() => void tick(), 5_000)
+    const timer = setInterval(() => void tick(), 30_000)
     return () => { active = false; clearInterval(timer) }
   }, [data, liveUrl])
 
@@ -817,7 +820,7 @@ export default function App() {
       const baseUrl = normaliseBaseUrl(liveUrl)
       setSyncStatus(await requestCloudSync(baseUrl))
     } catch (reason: unknown) {
-      setError(reason instanceof Error ? reason.message : 'Could not request cloud sync.')
+      setError(reason instanceof Error ? reason.message : 'Could not request replication.')
     }
   }
 
@@ -993,10 +996,10 @@ export default function App() {
             </div>
           )}
           {syncStatus !== null && (
-            <div className="live-badge" title={syncStatus.lastSyncError || 'Incremental cloud synchronization'}>
+            <div className="live-badge" title={syncStatus.lastSyncError || 'Incremental database replication'}>
               <Database />
               <span>
-                Cloud: {syncStatus.syncState.replaceAll('_', ' ')} · {syncStatus.pendingRows} pending
+                Sync: {syncStatus.syncState.replaceAll('_', ' ')} · {syncStatus.pendingRows} pending
               </span>
               <small>
                 {syncStatus.lastSyncCompleted === '' ? 'not yet synced' : `synced ${new Date(syncStatus.lastSyncCompleted).toLocaleTimeString()}`}
@@ -1132,13 +1135,13 @@ export default function App() {
                 void connectCloud()
               }}
             >
-              <label htmlFor="cloud-id">…or connect to a cloud database (Layerbase)</label>
+              <label htmlFor="cloud-id">…or connect to your SQLite server</label>
               <div>
                 <input
                   id="cloud-id"
                   value={cloud.databaseId ?? ''}
                   onChange={(event) => setCloud((c) => ({ ...c, databaseId: event.target.value }))}
-                  placeholder="database id (UUID)"
+                  placeholder="database id (teslalog)"
                   spellCheck={false}
                 />
               </div>
@@ -1146,7 +1149,7 @@ export default function App() {
                 <input
                   value={cloud.baseUrl ?? ''}
                   onChange={(event) => setCloud((c) => ({ ...c, baseUrl: event.target.value }))}
-                  placeholder="https://sage.cloud.layerbase.dev"
+                  placeholder="http://laptop-tailscale-ip:8084"
                   spellCheck={false}
                 />
               </div>
@@ -1155,7 +1158,7 @@ export default function App() {
                   type="password"
                   value={cloud.apiKey ?? ''}
                   onChange={(event) => setCloud((c) => ({ ...c, apiKey: event.target.value }))}
-                  placeholder="sk_… API key"
+                  placeholder="server access token"
                   spellCheck={false}
                 />
                 <button type="submit" disabled={busy}>
@@ -1163,7 +1166,7 @@ export default function App() {
                   {busy ? 'Connecting…' : 'Connect'}
                 </button>
               </div>
-              <small>Reads directly from the cloud over HTTP — no download. Your key stays in this browser.</small>
+              <small>Queries the server database directly — no database download. Your token stays in this browser.</small>
             </form>
             <small>
               <Database />

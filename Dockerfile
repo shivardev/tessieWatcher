@@ -40,4 +40,4 @@ VOLUME ["/var/lib/teslalog", "/etc/teslalog"]
 ENV TESLALOG_CONFIG=/etc/teslalog/config.toml
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/teslalog"]
-CMD ["run"]
+CMD ["start"]

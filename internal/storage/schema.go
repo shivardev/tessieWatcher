@@ -250,6 +250,7 @@ CREATE TABLE IF NOT EXISTS battery_samples (
 	source                 TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_battery_samples_vehicle_ts ON battery_samples(vehicle_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_battery_samples_timestamp ON battery_samples(timestamp);
 
 -- Persistent cache of resolved (lat,lng) -> place name lookups, so the
 -- same spot is never reverse-geocoded twice - both to respect the
@@ -284,7 +285,7 @@ CREATE TABLE IF NOT EXISTS software_updates (
 CREATE INDEX IF NOT EXISTS idx_software_updates_vehicle ON software_updates(vehicle_id, start_time);
 
 -- BEGIN CLOUD SYNC INTERNAL (excluded from browser-side import schema)
--- Durable outbox for incremental Layerbase replication. Trigger writes are
+-- Durable outbox for incremental remote-server replication. Trigger writes are
 -- part of the same transaction as telemetry writes, so a committed Tesla
 -- sample can never be missed by the cloud worker. The worker is deliberately
 -- the only code that changes state from pending -> syncing -> synced.
