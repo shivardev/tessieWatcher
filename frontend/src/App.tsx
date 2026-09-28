@@ -618,6 +618,7 @@ export default function App() {
   const [piVehicleState, setPiVehicleState] = useState('')
   const [piSyncMessage, setPiSyncMessage] = useState('')
   const [piSyncBusy, setPiSyncBusy] = useState(false)
+  const [piAdminUrl, setPiAdminUrl] = useState('')
   const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
     const servedByDataServer = globalThis.location?.pathname.startsWith('/app') ?? false
     const sameOrigin = servedByDataServer ? globalThis.location.origin : null
@@ -845,6 +846,7 @@ export default function App() {
     setPiSyncMessage('Checking the Pi and vehicle stateâ€¦')
     try {
       const baseUrl = normaliseBaseUrl(piSyncUrl)
+      setPiAdminUrl(`${baseUrl}/admin/sync`)
       const [vehicleStatus, currentSync] = await Promise.all([
         fetchStatus(baseUrl),
         fetchCloudSyncStatus(baseUrl),
@@ -1112,6 +1114,11 @@ export default function App() {
                 {piSyncStatus !== null && <span>Pi: {piSyncStatus.syncState.replaceAll('_', ' ')} Â· {piSyncStatus.pendingRows.toLocaleString()} pending</span>}
                 {piSyncMessage !== '' && <small>{piSyncMessage}</small>}
               </div>
+            )}
+            {piSyncStatus?.syncState === 'disabled' && piAdminUrl !== '' && (
+              <a className="admin-link" href={piAdminUrl} target="_blank" rel="noreferrer">
+                Open Pi Sync Admin
+              </a>
             )}
           </section>
         </div>

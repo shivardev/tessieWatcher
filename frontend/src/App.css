@@ -125,6 +125,17 @@
 }
 .sync-result span, .sync-result small { color: #a9b8b4; }
 .sync-result.failed { border-color: #80494e; background: #2b1719; }
+.admin-link {
+  display: block;
+  margin-top: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 9px;
+  color: var(--accent);
+  text-align: center;
+  text-decoration: none;
+  font-weight: 750;
+}
 .top-actions,
 .view-controls {
   display: flex;

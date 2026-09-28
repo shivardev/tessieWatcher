@@ -745,6 +745,14 @@ not in `config.toml`:
 TESLALOG_SERVER_TOKEN='<same-long-random-secret>' teslalog start
 ```
 
+After installing a build with browser-managed synchronization, the TOML edit is
+optional. Open `http://<pi-ip>:8083/admin/sync`, enter the data-server URL and
+press **Test, link, and sync now**. The setting is persisted in the Pi's SQLite
+database and the replication worker starts immediately without restarting the
+logger. The shared viewer also exposes **Sync from Pi** on both the Pi and
+PostgreSQL-server copies; when a Pi is not linked, its modal opens this admin
+page directly.
+
 Restart `teslalog`, or run `teslalog sync -config /etc/teslalog/config.toml`
 once to bootstrap immediately. The first link UPSERTs all existing history and
 records an outbox high-water mark only after PostgreSQL confirms the complete

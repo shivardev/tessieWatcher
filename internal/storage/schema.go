@@ -312,6 +312,15 @@ CREATE TABLE IF NOT EXISTS cloud_sync_status (
 );
 INSERT OR IGNORE INTO cloud_sync_status (id) VALUES (1);
 
+CREATE TABLE IF NOT EXISTS cloud_sync_settings (
+	id               INTEGER PRIMARY KEY CHECK (id = 1),
+	enabled          INTEGER NOT NULL DEFAULT 0,
+	base_url         TEXT NOT NULL DEFAULT '',
+	database_id      TEXT NOT NULL DEFAULT 'teslalog',
+	interval_seconds INTEGER NOT NULL DEFAULT 900,
+	batch_size       INTEGER NOT NULL DEFAULT 500
+);
+
 CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_insert AFTER INSERT ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',NEW.id,'upsert'); END;
 CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_update AFTER UPDATE ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',NEW.id,'upsert'); END;
 CREATE TRIGGER IF NOT EXISTS cloud_sync_vehicles_delete AFTER DELETE ON vehicles BEGIN INSERT INTO cloud_sync_changes(table_name,row_id,operation) VALUES('vehicles',OLD.id,'delete'); END;

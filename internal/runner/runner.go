@@ -35,6 +35,7 @@ import (
 // Run starts the teslalog daemon loop and blocks until ctx is canceled.
 func Run(ctx context.Context, cfg config.Config, version string) error {
 	var logBuf *portal.LogBuffer // wired up below only if cfg.Portal.Enabled
+	var portalServer *portal.Server
 
 	store, err := storage.Open(cfg.Database)
 	if err != nil {
@@ -99,13 +100,7 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 		logBuf = portal.NewLogBuffer(200)
 		slog.SetDefault(slog.New(teeHandler{slog.NewTextHandler(os.Stderr, nil), logBuf.Handler()}))
 
-		srv := portal.New(store, cfg.Database, logBuf, cfg.Portal.Units, version)
-		go func() {
-			if err := srv.Run(ctx, cfg.Portal.Addr); err != nil {
-				slog.Error("portal server failed", "error", err)
-			}
-		}()
-		slog.Info("portal enabled", "addr", cfg.Portal.Addr)
+		portalServer = portal.New(store, cfg.Database, logBuf, cfg.Portal.Units, version)
 	}
 
 	// Recover from a crash or a systemd Restart=always cycle that left a
@@ -169,36 +164,29 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 	}
 	geo := geocode.New(geofences, store, cfg.Geocoding.Enabled, cfg.Geocoding.BaseURL, cfg.Geocoding.UserAgent)
 
-	if cfg.Sync.Enabled {
-		apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
-		sched := cloudsync.Scheduler{
-			DBPath: cfg.Database,
-			Config: cloudsync.Config{
-				BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID, APIKey: apiKey,
-			},
-			Interval:  cfg.Sync.Interval,
-			BatchSize: cfg.Sync.BatchSize,
-			OnSettingsChanged: func() {
-				items, err := store.Geofences()
-				if err != nil {
-					slog.Error("reload replicated geofences failed", "error", err)
-					return
-				}
-				geo.SetGeofences(items)
-			},
+	apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
+	syncController, err := cloudsync.NewController(ctx, cfg.Database, apiKey, cloudsync.Settings{
+		Enabled: cfg.Sync.Enabled, BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID,
+		Interval: cfg.Sync.Interval, BatchSize: cfg.Sync.BatchSize,
+	}, func() {
+		items, err := store.Geofences()
+		if err != nil {
+			slog.Error("reload replicated geofences failed", "error", err)
+			return
 		}
-		go sched.Start(ctx)
-		slog.Info("replication enabled", "database_id", cfg.Sync.DatabaseID, "interval", cfg.Sync.Interval, "authenticated", apiKey != "")
-	} else {
-		// A previous process may have stopped mid-batch. Keep those entries
-		// retryable and report the real disabled state instead of leaving the
-		// WebUI stuck on a stale "syncing" badge.
-		if _, err := store.DB().Exec(`UPDATE cloud_sync_changes SET state='pending',synced_at=NULL WHERE state='syncing'`); err != nil {
-			slog.Warn("reset interrupted replication queue", "error", err)
-		}
-		if _, err := store.DB().Exec(`UPDATE cloud_sync_status SET sync_state='disabled',manual_sync_requested=0 WHERE id=1`); err != nil {
-			slog.Warn("mark replication disabled", "error", err)
-		}
+		geo.SetGeofences(items)
+	})
+	if err != nil {
+		return fmt.Errorf("initialize replication controller: %w", err)
+	}
+	if portalServer != nil {
+		portalServer.SetSyncController(syncController)
+		go func() {
+			if err := portalServer.Run(ctx, cfg.Portal.Addr); err != nil {
+				slog.Error("portal server failed", "error", err)
+			}
+		}()
+		slog.Info("portal enabled", "addr", cfg.Portal.Addr)
 	}
 
 	loop := &loopState{

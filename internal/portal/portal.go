@@ -45,12 +45,19 @@ import (
 // "/download" (a fresh database snapshot), "/api/status" (cheap live
 // status JSON), and "/api/meta" (cheap freshness-check JSON).
 type Server struct {
-	store     *storage.Store
-	dbPath    string
-	logs      *LogBuffer
-	version   string
-	imperial  bool
-	snapshots *snapshotCache
+	store          *storage.Store
+	dbPath         string
+	logs           *LogBuffer
+	version        string
+	imperial       bool
+	snapshots      *snapshotCache
+	syncController *cloudsync.Controller
+}
+
+// SetSyncController enables the browser-admin routes. It is called before the
+// HTTP server starts, so no synchronization is needed around the pointer.
+func (s *Server) SetSyncController(controller *cloudsync.Controller) {
+	s.syncController = controller
 }
 
 // New constructs a Server. store is used read-only, for the status line
@@ -102,6 +109,9 @@ func (s *Server) handler() http.Handler {
 	// Preferred names; the cloud-prefixed routes remain for older viewers.
 	mux.HandleFunc("/api/sync", s.handleCloudSync)
 	mux.HandleFunc("/api/sync/request", s.handleCloudSyncRequest)
+	mux.HandleFunc("/api/sync/config", s.handleSyncConfig)
+	mux.HandleFunc("/admin", s.handleSyncAdmin)
+	mux.HandleFunc("/admin/sync", s.handleSyncAdmin)
 
 	// The full browser viewer, embedded in the binary. Served from here
 	// rather than only from GitHub Pages because a page served over
@@ -597,6 +607,60 @@ func (s *Server) handleCloudSyncRequest(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(status)
 }
+
+func (s *Server) handleSyncConfig(w http.ResponseWriter, r *http.Request) {
+	if s.syncController == nil {
+		http.Error(w, "sync administration unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.syncController.Settings().JSON())
+	case http.MethodPost:
+		var input cloudsync.SettingsJSON
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&input); err != nil {
+			http.Error(w, "invalid synchronization settings", http.StatusBadRequest)
+			return
+		}
+		if err := s.syncController.Configure(r.Context(), cloudsync.SettingsFromJSON(input)); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if input.Enabled {
+			if err := cloudsync.RequestSync(r.Context(), s.store.DB()); err != nil {
+				http.Error(w, "settings saved but initial sync could not be queued", http.StatusInternalServerError)
+				return
+			}
+		}
+		writeJSON(w, s.syncController.Settings().JSON())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleSyncAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, syncAdminHTML)
+}
+
+const syncAdminHTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TeslaLog Sync Admin</title><style>
+:root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#091011;color:#edf4f1}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 75% 15%,#18302a,transparent 35%),#091011}.card{width:min(620px,calc(100% - 36px));box-sizing:border-box;padding:30px;border:1px solid #26322f;border-radius:18px;background:#101819;box-shadow:0 24px 80px #0008}.eyebrow{color:#c9ff43;text-transform:uppercase;letter-spacing:.15em;font-size:11px;font-weight:800}h1{margin:10px 0 8px;font-size:34px}p{color:#a4aeac;line-height:1.55}label{display:block;margin:16px 0 5px;color:#91a09c;font-size:12px;text-transform:uppercase;letter-spacing:.07em}input{box-sizing:border-box;width:100%;padding:12px;border:1px solid #2b3936;border-radius:9px;background:#0b1314;color:white}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.toggle{display:flex;align-items:center;gap:10px;margin:18px 0}.toggle input{width:auto}button{width:100%;padding:13px;border:0;border-radius:9px;background:#c9ff43;color:#101800;font-weight:800;cursor:pointer}.status{display:grid;gap:5px;margin-top:18px;padding:14px;border:1px solid #315142;border-radius:9px;background:#13241e}.status small{color:#a9b8b4}.error{border-color:#80494e;background:#2b1719}a{color:#c9ff43}</style></head>
+<body><main class="card"><span class="eyebrow">Pi administration</span><h1>Database synchronization</h1><p>Link this Pi to your TeslaLog data server. Telemetry always saves to local SQLite first; copying waits while the car is driving or charging.</p>
+<form id="form"><label for="url">Data server URL</label><input id="url" placeholder="http://10.0.0.213:8085" required><div class="row"><div><label for="database">Database ID</label><input id="database" value="teslalog" required></div><div><label for="interval">Interval (minutes)</label><input id="interval" type="number" min="1" value="15" required></div></div><label class="toggle"><input id="enabled" type="checkbox" checked> Enable automatic synchronization</label><button id="save" type="submit">Test, link, and sync now</button></form>
+<div id="status" class="status"><b>Loading current settingsâ€¦</b></div><p><a href="/app/">Return to TeslaLog viewer</a></p></main>
+<script>
+const $=id=>document.getElementById(id),status=$('status');
+function show(message,error=false){status.className='status'+(error?' error':'');status.innerHTML='<small>'+message.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</small>'}
+async function json(url,options){const response=await fetch(url,options);const text=await response.text();if(!response.ok)throw new Error(text||('HTTP '+response.status));return JSON.parse(text)}
+async function refresh(){try{const [config,sync]=await Promise.all([json('/api/sync/config'),json('/api/sync')]);$('url').value=config.base_url||'';$('database').value=config.database_id||'teslalog';$('interval').value=Math.max(1,Math.round((config.interval_seconds||900)/60));$('enabled').checked=config.enabled;show('Pi: '+sync.sync_state.replaceAll('_',' ')+' Â· '+sync.pending_rows.toLocaleString()+' pending'+(sync.last_sync_error?' Â· '+sync.last_sync_error:''),sync.sync_state==='failed')}catch(error){show(error.message,true)}}
+$('form').addEventListener('submit',async event=>{event.preventDefault();$('save').disabled=true;show('Testing the server connectionâ€¦');try{await json('/api/sync/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:$('enabled').checked,base_url:$('url').value.trim(),database_id:$('database').value.trim(),interval_seconds:Number($('interval').value)*60,batch_size:500})});show('Linked successfully. Initial synchronization has been queued safely.');setTimeout(refresh,1200)}catch(error){show(error.message,true)}finally{$('save').disabled=false}});refresh();setInterval(refresh,5000);
+</script></body></html>`
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
