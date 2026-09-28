@@ -177,6 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_positions_drive ON positions(drive_id, timestamp)
 CREATE TABLE IF NOT EXISTS charging_sessions (
 	id                       INTEGER PRIMARY KEY AUTOINCREMENT,
 	vehicle_id               INTEGER NOT NULL REFERENCES vehicles(id),
+	geofence_id              INTEGER REFERENCES geofences(id) ON DELETE SET NULL,
 	start_time               TEXT NOT NULL,
 	end_time                 TEXT,
 	start_battery_level      INTEGER,

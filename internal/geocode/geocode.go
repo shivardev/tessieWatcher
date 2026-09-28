@@ -27,6 +27,7 @@ import (
 // TeslaMate's own primary way of naming home/work/etc. without ever
 // touching a geocoding service.
 type Geofence struct {
+	ID      int64
 	Name    string
 	Lat     float64
 	Lng     float64

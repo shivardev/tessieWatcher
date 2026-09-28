@@ -21,6 +21,7 @@ import { epochMs, nearestTimeSync } from './chartSync'
 import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
+import { getRemoteBackend, runRemoteStatement } from './remoteBackend'
 
 type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string; speedKmh?: number }>
 
@@ -1234,13 +1235,16 @@ export function ChargeDetailsDashboard({
   ], [])
   const [results, setResults] = useState<readonly QueryResult[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [costInput, setCostInput] = useState('')
+  const [savingCost, setSavingCost] = useState(false)
+  const [revision, setRevision] = useState(0)
   useEffect(() => {
     let active = true
     executeQueries(bytes, queries, { chargingSessionId, lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
       .then((value) => { if (active) setResults(value) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : 'Charge details query failed.') })
     return () => { active = false }
-  }, [bytes, chargingSessionId, queries, settings])
+  }, [bytes, chargingSessionId, queries, settings, revision])
   const row = results[0]?.rows[0]
   const n = (index: number): number | null => number(row?.[index])
   const display = (index: number, digits = 1): string => {
@@ -1254,13 +1258,29 @@ export function ChargeDetailsDashboard({
   const point = n(12) === null || n(13) === null ? [] : [{ latitude: n(12) ?? 0, longitude: n(13) ?? 0 }]
   const powers = (results[1]?.rows ?? []).flatMap((sample) => typeof sample[2] === 'number' ? [sample[2]] : [])
   const averagePower = powers.length === 0 ? null : powers.reduce((sum, power) => sum + power, 0) / powers.length
+  const backend = getRemoteBackend()
+  const saveCost = async (): Promise<void> => {
+    if (!backend) return
+    const value = Number(costInput)
+    if (!Number.isFinite(value) || value < 0) {
+      setError('Enter a charging cost of zero or greater.')
+      return
+    }
+    setSavingCost(true); setError(null)
+    try {
+      await runRemoteStatement(backend, `UPDATE charging_sessions SET cost=${value} WHERE id=${chargingSessionId}`)
+      setCostInput(''); setRevision((current) => current + 1)
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'Could not update charging cost.')
+    } finally { setSavingCost(false) }
+  }
   return (
     <main>
       <button className="back-button" type="button" onClick={onBack}>← All charges</button>
       <Heading title={`Charge ${chargingSessionId}`} note={`${text(row?.[14])} charge details`} />
       {error && <p className="no-data">{error}</p>}
       <section className="charge-detail-summary">
-        <article><span>Cost</span><strong>{display(7, 2)}</strong></article>
+        <article><span>Cost</span><strong>{display(7, 2)}</strong>{backend && <div style={{ display: 'flex', gap: 6, marginTop: 8 }}><input aria-label="Actual charging cost" type="number" min="0" step="0.01" value={costInput} onChange={(event) => setCostInput(event.target.value)} placeholder="Actual cost" /><button type="button" disabled={savingCost || costInput === ''} onClick={() => void saveCost()}>Save</button></div>}</article>
         <article><span>Duration</span><strong>{duration === null ? '—' : `${Math.floor(duration / 60)}h ${Math.round(duration % 60)}m`}</strong></article>
         <article><span>Energy added / used</span><strong>{display(4, 2)} / {display(5, 2)} kWh</strong><small>{display(6, 1)}% efficiency</small></article>
         <article><span>Battery level</span><strong>{display(2, 0)}% → {display(3, 0)}%</strong></article>

@@ -42,12 +42,14 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE TABLE IF NOT EXISTS charging_sessions (
   id BIGINT PRIMARY KEY, vehicle_id BIGINT REFERENCES vehicles(id) ON DELETE CASCADE,
+  geofence_id BIGINT REFERENCES geofences(id) ON DELETE SET NULL,
   start_time TEXT, end_time TEXT, start_battery_level BIGINT, end_battery_level BIGINT,
   start_range_km REAL, end_range_km REAL, start_ideal_range_km REAL, end_ideal_range_km REAL,
   charge_energy_added_kwh REAL, charge_energy_used_kwh REAL, max_charger_power_kw REAL,
   outside_temp_avg_c REAL, cost REAL, latitude REAL, longitude REAL,
   status TEXT DEFAULT 'open', location TEXT, is_dc_fast_charge BIGINT
 );
+ALTER TABLE charging_sessions ADD COLUMN IF NOT EXISTS geofence_id BIGINT REFERENCES geofences(id) ON DELETE SET NULL;
 CREATE TABLE IF NOT EXISTS charging_samples (
   id BIGINT PRIMARY KEY, charging_session_id BIGINT REFERENCES charging_sessions(id) ON DELETE CASCADE,
   vehicle_id BIGINT REFERENCES vehicles(id) ON DELETE CASCADE, "timestamp" TEXT,

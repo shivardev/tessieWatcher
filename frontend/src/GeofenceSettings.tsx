@@ -24,6 +24,8 @@ export function GeofenceSettings() {
   const [form, setForm] = useState<Form>(empty)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [applyHistory, setApplyHistory] = useState(true)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const load = async (): Promise<void> => {
     if (!backend) return
@@ -49,7 +51,7 @@ export function GeofenceSettings() {
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault()
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); setNotice(null)
     try {
       const lat = Number(form.latitude), lng = Number(form.longitude), radius = Number(form.radiusM)
       const unit = Number(form.costPerUnit), fee = Number(form.sessionFee)
@@ -62,7 +64,33 @@ export function GeofenceSettings() {
         ? `INSERT INTO geofences (name,latitude,longitude,radius_m,billing_type,cost_per_unit,session_fee) VALUES (${values})`
         : `UPDATE geofences SET (name,latitude,longitude,radius_m,billing_type,cost_per_unit,session_fee)=(${values}) WHERE id=${editing}`
       await runRemoteStatement(backend, statement)
+      if (editing !== null) {
+        await runRemoteStatement(backend, `UPDATE charging_sessions SET geofence_id=NULL WHERE geofence_id=${editing}`)
+      }
+      const saved = await runRemoteQuery(backend, `SELECT id FROM geofences WHERE name=${sqlString(form.name.trim())} LIMIT 1`)
+      if (saved.error || saved.rows.length === 0) throw new Error(saved.error ?? 'Saved geofence could not be loaded.')
+      const geofenceID = Number(saved.rows[0]?.[0])
+      await runRemoteStatement(backend, `UPDATE charging_sessions SET geofence_id=${geofenceID},location=${sqlString(form.name.trim())}
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND
+        111320.0*SQRT((latitude-${lat})*(latitude-${lat})+
+        (COS(${lat}*0.0174532925199433)*(longitude-${lng}))*(COS(${lat}*0.0174532925199433)*(longitude-${lng})))<=${radius}`)
+      let priced = 0
+      if (applyHistory && form.priced) {
+        const missing = await runRemoteQuery(backend, `SELECT COUNT(*) FROM charging_sessions
+          WHERE geofence_id=${geofenceID} AND status='closed' AND cost IS NULL`)
+        if (missing.error) throw new Error(missing.error)
+        priced = Number(missing.rows[0]?.[0] ?? 0)
+        await runRemoteStatement(backend, `UPDATE charging_sessions SET cost=CASE
+          WHEN ${sqlString(form.billingType)}='per_minute' THEN ${fee}+${unit}*((julianday(end_time)-julianday(start_time))*1440.0)
+          ELSE ${fee}+${unit}*(CASE
+            WHEN charge_energy_used_kwh IS NULL THEN COALESCE(charge_energy_added_kwh,0)
+            WHEN charge_energy_added_kwh IS NULL THEN charge_energy_used_kwh
+            WHEN charge_energy_used_kwh>charge_energy_added_kwh THEN charge_energy_used_kwh
+            ELSE charge_energy_added_kwh END) END
+          WHERE geofence_id=${geofenceID} AND status='closed' AND cost IS NULL`)
+      }
       setEditing(null); setForm(empty); await load()
+      setNotice(priced > 0 ? `Saved. Calculated ${priced} previously unpriced charging session${priced === 1 ? '' : 's'}.` : 'Saved charging-price rule.')
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : 'Could not save geofence.') }
     finally { setBusy(false) }
   }
@@ -84,11 +112,13 @@ export function GeofenceSettings() {
     <h1>Geofences & charging prices</h1>
     <p>Changes are saved to the server. The Pi downloads them on its next sync cycle.</p>
     {error && <div className="error" role="alert">{error}</div>}
+    {notice && <p role="status">{notice}</p>}
     <form onSubmit={(e) => void save(e)} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 14, padding: 18, border: '1px solid var(--line)', borderRadius: 12 }}>
       {input('name', 'Name')}{input('latitude', 'Latitude', 'number')}{input('longitude', 'Longitude', 'number')}{input('radiusM', 'Radius (metres)', 'number')}
       <label style={{ display: 'grid', gap: 5 }}>Billing<select value={form.billingType} onChange={(e) => setForm({ ...form, billingType: e.target.value })}><option value="per_kwh">Per kWh</option><option value="per_minute">Per minute</option></select></label>
       <label><input type="checkbox" checked={form.priced} onChange={(e) => setForm({ ...form, priced: e.target.checked })} /> Set charging price</label>
       {form.priced && <>{input('costPerUnit', form.billingType === 'per_kwh' ? 'Cost per kWh' : 'Cost per minute', 'number')}{input('sessionFee', 'Session fee', 'number')}</>}
+      {form.priced && <label><input type="checkbox" checked={applyHistory} onChange={(e) => setApplyHistory(e.target.checked)} /> Calculate matching historical sessions without a cost</label>}
       <div><button type="submit" disabled={busy}>{editing === null ? 'Add geofence' : 'Save changes'}</button>{editing !== null && <button type="button" onClick={() => { setEditing(null); setForm(empty) }}>Cancel</button>}</div>
     </form>
     <table style={{ width: '100%', marginTop: 24 }}><thead><tr><th>Name</th><th>Coordinates</th><th>Radius</th><th>Charging price</th><th /></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.latitude}, {item.longitude}</td><td>{item.radiusM} m</td><td>{item.costPerUnit === null ? 'Not set' : `${item.costPerUnit} / ${item.billingType === 'per_kwh' ? 'kWh' : 'minute'}${item.sessionFee ? ` + ${item.sessionFee} fee` : ''}`}</td><td><button type="button" onClick={() => edit(item)}>Edit</button> <button type="button" disabled={busy} onClick={() => void remove(item)}>Delete</button></td></tr>)}</tbody></table>

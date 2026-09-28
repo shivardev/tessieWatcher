@@ -593,8 +593,15 @@ func (l *loopState) persist(events []vehicle.Event) error {
 
 		case vehicle.EvChargeStart:
 			s := ev.Snapshot
+			// Resolve the geofence before inserting the session so the stable
+			// relationship is stored just like TeslaMate's geofence_id.
+			l.chargeGeofence, l.haveChargeGeofence = l.geo.FindGeofence(s.Lat, s.Lng)
+			var geofenceID int64
+			if l.haveChargeGeofence {
+				geofenceID = l.chargeGeofence.ID
+			}
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
-				VehicleID: l.vehicleDBID, Time: ev.At, BatteryLevel: s.BatteryLevel,
+				VehicleID: l.vehicleDBID, GeofenceID: geofenceID, Time: ev.At, BatteryLevel: s.BatteryLevel,
 				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, Lat: s.Lat, Lng: s.Lng,
 				Location: l.geo.Resolve(context.Background(), s.Lat, s.Lng),
 			})
@@ -605,7 +612,6 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			// Capture where this charge is happening now, at the
 			// start - that's what determines its price, and it's the
 			// same point TeslaMate resolves the geofence at.
-			l.chargeGeofence, l.haveChargeGeofence = l.geo.FindGeofence(s.Lat, s.Lng)
 			// TeslaMate's own start_charging_process records a sample
 			// for this exact same first observation, in the same
 			// transaction as starting the session (verified directly
@@ -678,8 +684,13 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			// readings + complete_charging_process, all in one
 			// transaction - verified against its source).
 			before, after := ev.FromSnapshot, ev.Snapshot
+			offlineGeofence, haveOfflineGeofence := l.geo.FindGeofence(before.Lat, before.Lng)
+			var offlineGeofenceID int64
+			if haveOfflineGeofence {
+				offlineGeofenceID = offlineGeofence.ID
+			}
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
-				VehicleID: l.vehicleDBID, Time: before.Time, BatteryLevel: before.BatteryLevel,
+				VehicleID: l.vehicleDBID, GeofenceID: offlineGeofenceID, Time: before.Time, BatteryLevel: before.BatteryLevel,
 				RangeKm: before.RangeKm, IdealRangeKm: before.IdealRangeKm,
 				Lat: before.Lat, Lng: before.Lng,
 				Location: l.geo.Resolve(context.Background(), before.Lat, before.Lng),
@@ -727,7 +738,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			// the free-supercharging rule can't apply here - only the
 			// location's own pricing.
 			var offlineCost func(float64, float64, float64, string) (float64, bool)
-			if g, ok := l.geo.FindGeofence(before.Lat, before.Lng); ok && g.HasPricing {
+			if g := offlineGeofence; haveOfflineGeofence && g.HasPricing {
 				offlineCost = func(added, used, durationMin float64, _ string) (float64, bool) {
 					return g.Cost(added, used, durationMin)
 				}

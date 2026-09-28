@@ -170,6 +170,7 @@ var columnMigrations = []string{
 	`ALTER TABLE positions ADD COLUMN climate_keeper_mode TEXT`,
 	`ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER`,
 	`ALTER TABLE charging_sessions ADD COLUMN is_dc_fast_charge INTEGER`,
+	`ALTER TABLE charging_sessions ADD COLUMN geofence_id INTEGER REFERENCES geofences(id) ON DELETE SET NULL`,
 	`ALTER TABLE vehicles ADD COLUMN firmware_version TEXT`,
 	`ALTER TABLE positions ADD COLUMN battery_heater INTEGER`,
 	`ALTER TABLE positions ADD COLUMN battery_heater_no_power INTEGER`,
@@ -242,7 +243,7 @@ func (s *Store) SeedGeofences(items []geocode.Geofence) error {
 
 // Geofences returns the current editable geofence/pricing configuration.
 func (s *Store) Geofences() ([]geocode.Geofence, error) {
-	rows, err := s.db.Query(`SELECT name, latitude, longitude, radius_m,
+	rows, err := s.db.Query(`SELECT id, name, latitude, longitude, radius_m,
 		billing_type, cost_per_unit, session_fee FROM geofences ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -252,7 +253,7 @@ func (s *Store) Geofences() ([]geocode.Geofence, error) {
 	for rows.Next() {
 		var g geocode.Geofence
 		var cost sql.NullFloat64
-		if err := rows.Scan(&g.Name, &g.Lat, &g.Lng, &g.RadiusM, &g.BillingType, &cost, &g.SessionFee); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Lat, &g.Lng, &g.RadiusM, &g.BillingType, &cost, &g.SessionFee); err != nil {
 			return nil, err
 		}
 		g.HasPricing, g.CostPerUnit = cost.Valid, cost.Float64
@@ -938,6 +939,7 @@ func (s *Store) OpenDriveID(vehicleID int64) (int64, error) {
 
 type ChargeStart struct {
 	VehicleID    int64
+	GeofenceID   int64
 	Time         time.Time
 	BatteryLevel int
 	RangeKm      float64
@@ -952,10 +954,10 @@ type ChargeStart struct {
 func (s *Store) OpenChargingSession(c ChargeStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO charging_sessions (
-			vehicle_id, start_time, start_battery_level, start_range_km, start_ideal_range_km,
+			vehicle_id, geofence_id, start_time, start_battery_level, start_range_km, start_ideal_range_km,
 			latitude, longitude, location, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
-	`, c.VehicleID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng, nullIfEmpty(c.Location))
+		) VALUES (?, NULLIF(?,0), ?, ?, ?, ?, ?, ?, ?, 'open')
+	`, c.VehicleID, c.GeofenceID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng, nullIfEmpty(c.Location))
 	if err != nil {
 		return 0, fmt.Errorf("open charging session: %w", err)
 	}

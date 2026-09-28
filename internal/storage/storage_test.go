@@ -21,6 +21,30 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestChargingSessionStoresGeofenceRelationship(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, err := s.UpsertVehicle(VehicleMeta{VIN: "TEST-GEOFENCE", DisplayName: "Test car"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO geofences(id,name,latitude,longitude,radius_m) VALUES(42,'Home',35,-85,100)`); err != nil {
+		t.Fatal(err)
+	}
+	sessionID, err := s.OpenChargingSession(ChargeStart{
+		VehicleID: vehicleID, GeofenceID: 42, Time: time.Now().UTC(), Lat: 35, Lng: -85, Location: "Home",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var geofenceID int64
+	if err := s.db.QueryRow(`SELECT geofence_id FROM charging_sessions WHERE id=?`, sessionID).Scan(&geofenceID); err != nil {
+		t.Fatal(err)
+	}
+	if geofenceID != 42 {
+		t.Fatalf("expected geofence 42, got %d", geofenceID)
+	}
+}
+
 func TestUpsertVehicle(t *testing.T) {
 	s := openTestStore(t)
 

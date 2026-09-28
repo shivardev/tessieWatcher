@@ -124,17 +124,27 @@ func PullGeofencesDB(ctx context.Context, db *sql.DB, cfg Config) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM geofences`); err != nil {
-		return err
-	}
+	remoteIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
+		id := integer(row["id"])
+		remoteIDs = append(remoteIDs, strconv.FormatInt(id, 10))
 		if _, err := tx.ExecContext(ctx, `INSERT INTO geofences
 			(id, name, latitude, longitude, radius_m, billing_type, cost_per_unit, session_fee)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, integer(row["id"]), textValue(row["name"]),
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name=excluded.name,latitude=excluded.latitude,
+			longitude=excluded.longitude,radius_m=excluded.radius_m,billing_type=excluded.billing_type,
+			cost_per_unit=excluded.cost_per_unit,session_fee=excluded.session_fee`, id, textValue(row["name"]),
 			number(row["latitude"]), number(row["longitude"]), number(row["radius_m"]),
 			textValue(row["billing_type"]), nullableNumber(row["cost_per_unit"]), number(row["session_fee"])); err != nil {
 			return err
 		}
+	}
+	deleteSQL := `DELETE FROM geofences`
+	if len(remoteIDs) != 0 {
+		deleteSQL += ` WHERE id NOT IN (` + strings.Join(remoteIDs, ",") + `)`
+	}
+	if _, err := tx.ExecContext(ctx, deleteSQL); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

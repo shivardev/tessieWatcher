@@ -123,6 +123,7 @@ climate_keeper_mode TEXT
   `CREATE TABLE IF NOT EXISTS charging_sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
+geofence_id INTEGER REFERENCES geofences(id) ON DELETE SET NULL,
 start_time TEXT NOT NULL,
 end_time TEXT,
 start_battery_level INTEGER,
@@ -219,6 +220,7 @@ export const columnMigrations: readonly string[] = [
   'ALTER TABLE positions ADD COLUMN climate_keeper_mode TEXT',
   'ALTER TABLE charging_samples ADD COLUMN charge_limit_soc INTEGER',
   'ALTER TABLE charging_sessions ADD COLUMN is_dc_fast_charge INTEGER',
+  'ALTER TABLE charging_sessions ADD COLUMN geofence_id INTEGER REFERENCES geofences(id) ON DELETE SET NULL',
   'ALTER TABLE vehicles ADD COLUMN firmware_version TEXT',
   'ALTER TABLE positions ADD COLUMN battery_heater INTEGER',
   'ALTER TABLE positions ADD COLUMN battery_heater_no_power INTEGER',
