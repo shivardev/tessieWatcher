@@ -1,4 +1,4 @@
-// Proof-of-concept harness for querying a remote teslalog SQLite server over
+// Proof-of-concept harness for querying a remote teslalog data server over
 // its HTTP API instead of downloading the whole SQLite file. Reached at
 // ?cloud - deliberately separate from the main App so it changes nothing
 // about the normal viewer while we validate two things against a real
@@ -87,7 +87,7 @@ export function CloudProbe() {
       <div style={wrap}>
         <h1 style={{ fontWeight: 600 }}>teslalog · cloud query probe</h1>
         <p style={{ color: '#879491' }}>
-          Query your teslalog SQLite server over HTTP — no file download. Your token stays in this browser.
+          Query your teslalog PostgreSQL server over HTTP — no file download. Your token stays in this browser.
         </p>
 
         <div

@@ -1,0 +1,16 @@
+.git
+.gocache
+.gomodcache
+backups
+frontend
+grafana
+teslamate-import
+teslamate-sync
+.claude
+*.db
+*.db-*
+*.db.gz
+*.exe
+teslalog-linux-*
+tokens.json
+config.*-test.toml

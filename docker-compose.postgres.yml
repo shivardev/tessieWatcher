@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: teslalog
+      POSTGRES_USER: teslalog
+      POSTGRES_PASSWORD: ${TESLALOG_POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - teslalog-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teslalog -d teslalog"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build: .
+    image: teslalog:latest
+    restart: unless-stopped
+    command: ["postgres", "-addr", ":8085", "-id", "teslalog"]
+    environment:
+      TESLALOG_POSTGRES_DSN: postgres://teslalog:${TESLALOG_POSTGRES_PASSWORD}@postgres:5432/teslalog?sslmode=disable
+      TESLALOG_SERVER_TOKEN: ${TESLALOG_SERVER_TOKEN:?set in .env}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8085:8085"
+
+volumes:
+  teslalog-postgres-data:

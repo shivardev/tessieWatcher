@@ -607,12 +607,17 @@ export default function App() {
   const [liveCheckedAt, setLiveCheckedAt] = useState<Date | null>(null)
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus | null>(null)
   const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
-    const fallback = { baseUrl: 'http://localhost:8084', databaseId: 'teslalog' }
+    const servedByDataServer = globalThis.location?.pathname.startsWith('/app') ?? false
+    const sameOrigin = servedByDataServer ? globalThis.location.origin : null
+    const fallback = { baseUrl: sameOrigin ?? 'http://localhost:8084', databaseId: 'teslalog' }
     try {
       const saved = globalThis.localStorage?.getItem('teslalog.viewer.remote')
         ?? globalThis.localStorage?.getItem('teslalog.viewer.layerbase')
         ?? '{}'
-      return { ...fallback, ...(JSON.parse(saved) as Partial<RemoteConfig>) }
+      const remembered = JSON.parse(saved) as Partial<RemoteConfig>
+      // When the API itself serves /app, its own origin is authoritative.
+      // This also repairs old browser storage that still points at :8084.
+      return { ...fallback, ...remembered, ...(sameOrigin === null ? {} : { baseUrl: sameOrigin }) }
     } catch {
       return fallback
     }
@@ -657,7 +662,7 @@ export default function App() {
   }
   const connect = async (): Promise<void> => connectTo(liveUrl)
 
-  // Connect straight to the self-hosted SQLite server: point every query at
+  // Connect straight to the self-hosted data server: point every query at
   // its HTTP API (setRemoteBackend) and build the whole viewer from it -
   // no file downloaded. The key stays in this browser.
   const connectCloud = async (): Promise<void> => {
@@ -688,7 +693,7 @@ export default function App() {
       }
     } catch (reason: unknown) {
       setRemoteBackend(null)
-      setError(reason instanceof Error ? reason.message : 'Could not connect to the SQLite server.')
+      setError(reason instanceof Error ? reason.message : 'Could not connect to the teslalog data server.')
     } finally {
       setBusy(false)
     }
@@ -1135,7 +1140,7 @@ export default function App() {
                 void connectCloud()
               }}
             >
-              <label htmlFor="cloud-id">…or connect to your SQLite server</label>
+              <label htmlFor="cloud-id">…or connect to your teslalog data server</label>
               <div>
                 <input
                   id="cloud-id"

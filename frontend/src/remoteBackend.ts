@@ -113,7 +113,7 @@ export const normaliseResult = (json: unknown): QueryResult => {
     }
     return { columns: [], rows: array.map((row) => (Array.isArray(row) ? row.map(coerce) : [coerce(row)])) }
   }
-  return { columns: [], rows: [], error: 'Unrecognised response shape from the SQLite server.' }
+  return { columns: [], rows: [], error: 'Unrecognised response shape from the teslalog data server.' }
 }
 
 // runRemoteQuery posts one already-interpolated SQL string and returns its
@@ -135,11 +135,11 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
     return {
       columns: [],
       rows: [],
-      error: 'Could not reach the SQLite server from this browser. Check the VPN address and that the server is running.',
+      error: 'Could not reach the teslalog data server from this browser. Check the VPN address and that the server is running.',
     }
   }
   if (!response.ok) {
-    let message = `SQLite server returned HTTP ${response.status}.`
+    let message = `Data server returned HTTP ${response.status}.`
     try {
       const body = (await response.json()) as { error?: unknown }
       if (typeof body?.error === 'string') message = body.error
@@ -151,7 +151,7 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
   try {
     return normaliseResult(await response.json())
   } catch {
-    return { columns: [], rows: [], error: 'SQLite server returned a non-JSON body.' }
+    return { columns: [], rows: [], error: 'Data server returned a non-JSON body.' }
   }
 }
 
@@ -167,10 +167,10 @@ export const runRemoteStatement = async (config: RemoteConfig, sql: string): Pro
       body: JSON.stringify({ query: sql }),
     })
   } catch {
-    throw new Error('Could not reach the SQLite server.')
+    throw new Error('Could not reach the teslalog data server.')
   }
   if (!response.ok) {
-    let message = `SQLite server returned HTTP ${response.status}.`
+    let message = `Data server returned HTTP ${response.status}.`
     try {
       const body = (await response.json()) as { error?: unknown }
       if (typeof body?.error === 'string') message = body.error

@@ -113,8 +113,8 @@ func TestPushReplaysSchemaAndRowsFaithfully(t *testing.T) {
 	}
 	// The single-quote must be doubled, the blob hex-encoded, NULL kept as
 	// NULL - not '<nil>' or an empty string.
-	if !anyContains(queries, `INSERT OR REPLACE INTO "t"`) {
-		t.Fatalf("expected an INSERT OR REPLACE, got %v", queries)
+	if !anyContains(queries, `INSERT INTO "t"`) || !anyContains(queries, `ON CONFLICT ("id") DO UPDATE`) {
+		t.Fatalf("expected a portable UPSERT, got %v", queries)
 	}
 	if !anyContains(queries, `'O''Brien'`) {
 		t.Fatalf("expected the embedded quote to be escaped")
@@ -170,7 +170,7 @@ func TestPushTableBatchesUnderTheBodyLimit(t *testing.T) {
 
 	inserts := 0
 	for _, q := range rec.all() {
-		if strings.HasPrefix(q, "INSERT OR REPLACE INTO") {
+		if strings.HasPrefix(q, "INSERT INTO") {
 			inserts++
 			if len(q) > client.maxBody {
 				t.Fatalf("a batch exceeded the body limit: %d bytes", len(q))

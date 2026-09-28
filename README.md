@@ -646,16 +646,16 @@ found live, before v0.2.3) race for that recovery and the loser gets
 `SQLITE_BUSY_RECOVERY` ("database is locked"), even though nothing is
 actually writing to the file.
 
-## Pi to self-hosted SQLite synchronization
+## Optional PostgreSQL synchronization
 
 The normal installation is deliberately one command and one database:
 `teslalog start` collects the car, writes local SQLite, and serves the API and
 WebUI. Users who do not enable replication maintain only this one installation.
 
-Replication is optional. In that advanced setup, `teslalog start` remains the
-complete primary installation, while `teslalog replica` on another machine owns
-a second SQLite database and WebUI. SQLite is never placed on a network share.
-The Go receiver serializes writes and gives dashboards a read-only pool.
+Replication is optional. `teslalog start` does not change roles when it is
+linked: it keeps collecting into local SQLite and starts a background mirror to
+PostgreSQL. There is no collector/server profile to select on the Pi. PostgreSQL
+and the same teslalog binary run on the server PC and serve the SPA/API.
 
 The Pi database is the crash-safe collection buffer: telemetry is committed
 locally first, and database triggers add each insert, update, or delete to a
@@ -664,23 +664,23 @@ the vehicle is idle/asleep/offline. Driving and charging always take priority.
 Laptop, VPN, or power outages leave changes pending and never interrupt vehicle
 collection. A retry can safely send the same row again.
 
-On the laptop, create a long random token and start the server (PowerShell):
+On the server PC, copy `deploy/postgres.env.example` to `.env`, replace both
+secrets, then start PostgreSQL and the API/WebUI:
 
 ```powershell
-$env:TESLALOG_SERVER_TOKEN = '<long-random-secret>'
-.\teslalog.exe replica -database C:\teslalog\teslalog-replica.db -id teslalog -addr :8084 -backup-dir C:\teslalog\backups
+docker compose -f docker-compose.postgres.yml up -d --build
 ```
 
-Open `http://localhost:8084/app/` on that laptop. From another VPN device use
-`http://<laptop-tailscale-ip>:8084/app/`. The server creates a compressed,
-consistent SQLite backup every 24 hours and retains 30 days by default.
+Open `http://localhost:8085/app/` on that PC. From another VPN device use
+`http://<server-tailscale-ip>:8085/app/`. PostgreSQL is not published on a host
+port; only the authenticated teslalog HTTP API is exposed.
 
 Configure the Pi after the VPN address is known:
 
 ```toml
 [sync]
 enabled = true
-base_url = "http://<laptop-tailscale-ip>:8084"
+base_url = "http://<server-tailscale-ip>:8085"
 database_id = "teslalog"
 interval = "15m"
 batch_size = 500
@@ -694,24 +694,18 @@ not in `config.toml`:
 TESLALOG_SERVER_TOKEN='<same-long-random-secret>' teslalog start
 ```
 
-For the first bootstrap, stop neither logger nor server: use `teslalog backup`
-on the Pi and copy that consistent snapshot to the laptop database path before
-starting `teslalog replica`. After the one-time bootstrap, normal synchronization
-never uploads a full database. An
-uncertain or interrupted batch is returned to `pending` and safely resent.
-Acknowledged outbox records are retained for 24 hours; telemetry itself is not
-deleted. The WebUI remembers a successful server connection and queries small
-results directly instead of downloading the SQLite file.
+Restart `teslalog`, or run `teslalog sync -config /etc/teslalog/config.toml`
+once to bootstrap immediately. The first link UPSERTs all existing history and
+records an outbox high-water mark only after PostgreSQL confirms the complete
+copy. Rows recorded during that copy have newer sequence numbers and are sent in
+the following incremental pass. Interrupted bootstraps safely restart without
+duplicates. Afterward, only inserts, edits, and deletions from the durable outbox
+are sent. An uncertain batch returns to `pending` and is retried.
 
-An empty receiver can also bootstrap automatically: before its first incremental
-cycle, the primary copies every existing telemetry table and writes a completion
-marker only after the whole copy succeeds. Interrupted bootstraps are safely
-repeated. If a consistent database snapshot was copied manually, the receiver is
-recognized as non-empty and adopted. In both cases, queued changes are replayed
-afterward, so rows written during the bootstrap are not lost.
-
-Synchronization never deletes raw telemetry from the primary. It removes only
-acknowledged bookkeeping entries from the outbox after 24 hours. The viewer also
+Synchronization currently never deletes raw telemetry from SQLite. It removes
+only acknowledged bookkeeping entries from the outbox after 24 hours. This is
+intentional: automatic deletion is not enabled until restore/retention policy is
+explicitly configured and tested. The viewer also
 does not destructively downsample storage: charts request bounded time windows and
 use minute/hour aggregates in SQL at query time. Therefore the same optimized
 queries apply to a standalone installation and to a replicated installation while

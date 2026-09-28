@@ -22,6 +22,7 @@ import (
 	"teslalog/internal/cloudsync"
 	"teslalog/internal/config"
 	"teslalog/internal/dbserver"
+	"teslalog/internal/pgserver"
 	"teslalog/internal/runner"
 	"teslalog/internal/storage"
 	"teslalog/internal/tesla"
@@ -60,10 +61,15 @@ func main() {
 	case "backup":
 		fs.Parse(args)
 		err = runBackup(configPath)
+	case "sync":
+		fs.Parse(args)
+		err = runSync(configPath)
 	case "cloud-push":
 		err = runCloudPush(configPath, args)
 	case "replica", "serve":
 		err = runServer(args)
+	case "postgres":
+		err = runPostgresServer(args)
 	case "export":
 		err = runExport(configPath, args)
 	case "auth-callback":
@@ -100,8 +106,10 @@ Usage:
   teslalog status [-config path]             print today's drives/energy and last charge
   teslalog wake [-config path]               explicitly wake the vehicle (never done automatically)
   teslalog backup [-config path]             run one SQLite backup immediately
+  teslalog sync [-config path]               run configured replication immediately
   teslalog cloud-push -id UUID [-url base]    legacy one-time remote database bootstrap
   teslalog replica -database path -id name    optional replication receiver and WebUI
+  teslalog postgres -dsn-env NAME             serve the WebUI/API from PostgreSQL
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
   teslalog export charges [-year N] [-out f] export closed charging sessions to CSV
   teslalog update                            self-update to the latest GitHub release
@@ -110,6 +118,72 @@ Usage:
 Config file: TOML, defaults to /etc/teslalog/config.toml (see config.example.toml).
 Compatibility aliases: "run" = "start", "serve" = "replica".
 `)
+}
+
+func runSync(configPath string) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if !cfg.Sync.Enabled {
+		return fmt.Errorf("sync is not enabled in %s", configPath)
+	}
+	apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
+	if apiKey == "" {
+		return fmt.Errorf("sync: environment variable %s is empty", cfg.Sync.APIKeyEnv)
+	}
+	db, err := cloudsync.OpenLocal(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := cloudsync.Recover(ctx, db); err != nil {
+		return err
+	}
+	remote := cloudsync.Config{BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID, APIKey: apiKey}
+	if err := cloudsync.EnsureBootstrap(ctx, db, remote); err != nil {
+		return fmt.Errorf("bootstrap receiver: %w", err)
+	}
+	if err := cloudsync.PullGeofencesDB(ctx, db, remote); err != nil {
+		return fmt.Errorf("pull replicated settings: %w", err)
+	}
+	if err := cloudsync.SyncIncremental(ctx, db, remote, cfg.Sync.BatchSize); err != nil {
+		return err
+	}
+	status, err := cloudsync.ReadStatus(ctx, db)
+	if err == nil {
+		fmt.Printf("sync complete: %d pending changes\n", status.PendingRows)
+	}
+	return nil
+}
+
+func runPostgresServer(args []string) error {
+	fs := flag.NewFlagSet("postgres", flag.ContinueOnError)
+	var databaseID, addr, tokenEnv, dsnEnv string
+	fs.StringVar(&databaseID, "id", "teslalog", "database id used in API URLs")
+	fs.StringVar(&addr, "addr", ":8085", "HTTP listen address")
+	fs.StringVar(&tokenEnv, "token-env", "TESLALOG_SERVER_TOKEN", "environment variable containing the bearer token")
+	fs.StringVar(&dsnEnv, "dsn-env", "TESLALOG_POSTGRES_DSN", "environment variable containing the PostgreSQL DSN")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	token, dsn := strings.TrimSpace(os.Getenv(tokenEnv)), strings.TrimSpace(os.Getenv(dsnEnv))
+	if token == "" {
+		return fmt.Errorf("postgres: environment variable %s is empty", tokenEnv)
+	}
+	if dsn == "" {
+		return fmt.Errorf("postgres: environment variable %s is empty", dsnEnv)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	server, err := pgserver.New(ctx, pgserver.Config{DSN: dsn, DatabaseID: databaseID, Addr: addr, Token: token})
+	if err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	defer server.Close()
+	slog.Info("PostgreSQL WebUI server starting", "addr", addr, "database_id", databaseID)
+	return server.Run(ctx)
 }
 
 func runServer(args []string) error {

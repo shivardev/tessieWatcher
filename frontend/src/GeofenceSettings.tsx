@@ -15,10 +15,7 @@ type Geofence = Readonly<{
 const empty = { name: '', latitude: '', longitude: '', radiusM: '50', billingType: 'per_kwh', priced: false, costPerUnit: '0', sessionFee: '0' }
 type Form = typeof empty
 
-const sqlString = (value: string): string => {
-  const parts = value.replaceAll("'", "''").split(';').map((part) => `'${part}'`)
-  return parts.join('||char(59)||')
-}
+const sqlString = (value: string): string => `'${value.replaceAll("'", "''")}'`
 
 export function GeofenceSettings() {
   const backend = getRemoteBackend()
@@ -48,7 +45,7 @@ export function GeofenceSettings() {
 
   useEffect(() => { void load().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : 'Could not load geofences.')) }, [])
 
-  if (!backend) return <main><p className="no-data">Connect to the SQLite server to modify geofences and charging prices.</p></main>
+  if (!backend) return <main><p className="no-data">Connect to the teslalog data server to modify geofences and charging prices.</p></main>
 
   const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault()

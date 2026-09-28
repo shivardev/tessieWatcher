@@ -39,7 +39,7 @@ type Config struct {
 }
 
 // SyncConfig controls the optional background mirror of the local SQLite
-// database to a remote teslalog SQLite server. The token is not stored in
+// database to a remote teslalog data server. The token is not stored in
 // this struct/config file; APIKeyEnv names the environment variable that
 // contains it.
 type SyncConfig struct {

@@ -1,5 +1,5 @@
 // Package cloudsync replicates teslalog's local SQLite data to a remote
-// teslalog SQLite server so a browser can query it without downloading the
+// teslalog data server so a browser can query it without downloading the
 // whole database.
 //
 // The server has an HTTP endpoint that runs one SQL statement per request
@@ -321,7 +321,7 @@ func scanColumn(ctx context.Context, db *sql.DB, query, column string) ([]string
 	return out, rows.Err()
 }
 
-// pushTable streams one table to the cloud as batched INSERT OR REPLACE
+// pushTable streams one table to the receiver as portable batched UPSERTs.
 // statements. Because the HTTP query cap is only 10 KB per request, each
 // batch is tiny and there are many, so batches are fanned out to a pool of
 // workers: INSERT OR REPLACE is idempotent and order-independent, so
@@ -342,8 +342,25 @@ func (c *Client) pushTable(ctx context.Context, src *sql.DB, table string) error
 	for i, name := range columns {
 		quotedCols[i] = quoteIdent(name)
 	}
-	prefix := "INSERT OR REPLACE INTO " + quoteIdent(table) +
+	prefix := "INSERT INTO " + quoteIdent(table) +
 		" (" + strings.Join(quotedCols, ",") + ") VALUES "
+	conflictColumns := []string{"id"}
+	if table == "geocode_cache" {
+		conflictColumns = []string{"lat_key", "lng_key"}
+	}
+	conflictSet := make(map[string]bool, len(conflictColumns))
+	quotedConflict := make([]string, len(conflictColumns))
+	for i, column := range conflictColumns {
+		conflictSet[column] = true
+		quotedConflict[i] = quoteIdent(column)
+	}
+	updates := make([]string, 0, len(columns)-len(conflictColumns))
+	for i, column := range columns {
+		if !conflictSet[column] {
+			updates = append(updates, quotedCols[i]+"=excluded."+quotedCols[i])
+		}
+	}
+	suffix := " ON CONFLICT (" + strings.Join(quotedConflict, ",") + ") DO UPDATE SET " + strings.Join(updates, ",")
 
 	jobs := make(chan string, c.workers*2)
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -378,7 +395,7 @@ func (c *Client) pushTable(ctx context.Context, src *sql.DB, table string) error
 			return
 		}
 		select {
-		case jobs <- batch.String():
+		case jobs <- batch.String() + suffix:
 		case <-workerCtx.Done():
 		}
 		batch.Reset()
@@ -399,7 +416,7 @@ func (c *Client) pushTable(ctx context.Context, src *sql.DB, table string) error
 			break
 		}
 		tuple := encodeTuple(scan)
-		if rowsInBatch > 0 && batch.Len()+len(tuple)+1 > c.maxBody {
+		if rowsInBatch > 0 && batch.Len()+len(tuple)+len(suffix)+1 > c.maxBody {
 			send()
 		}
 		if rowsInBatch == 0 {
@@ -462,20 +479,7 @@ func literal(v any) string {
 }
 
 func quoteString(s string) string {
-	escaped := strings.ReplaceAll(s, "'", "''")
-	if !strings.Contains(escaped, ";") {
-		return "'" + escaped + "'"
-	}
-	// Some compatible HTTP query APIs split a batch on ';' without respecting
-	// string literals, so a semicolon inside a value (e.g. an OSM road name
-	// "I 75;US 11;US 64") truncates the statement and errors. Emit each ';'
-	// via char(59) concatenation so no literal ';' appears in the SQL text,
-	// while SQLite still reconstructs the exact original string.
-	parts := strings.Split(escaped, ";")
-	for i, p := range parts {
-		parts[i] = "'" + p + "'"
-	}
-	return strings.Join(parts, "||char(59)||")
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func quoteIdent(name string) string {
