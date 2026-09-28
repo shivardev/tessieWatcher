@@ -58,6 +58,73 @@
   padding: 11px 15px;
   font-weight: 700;
 }
+.pi-sync-button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #111819;
+  color: #e8efed;
+  font-weight: 650;
+  cursor: pointer;
+}
+.pi-sync-button svg { width: 16px; }
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(3, 8, 9, 0.78);
+  backdrop-filter: blur(5px);
+}
+.sync-modal {
+  position: relative;
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #101819;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+}
+.sync-modal h2 { margin: 10px 36px 8px 0; font: 600 28px/1.15 Manrope; }
+.sync-modal > p { margin: 0 0 20px; color: #a4aeac; line-height: 1.55; }
+.sync-modal form { display: grid; gap: 10px; }
+.sync-modal form label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+.sync-modal form input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0c1314;
+  color: white;
+}
+.sync-modal form .cta { justify-content: center; margin-top: 3px; }
+.modal-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.modal-close svg { width: 19px; }
+.sync-result {
+  display: grid;
+  gap: 5px;
+  margin-top: 18px;
+  padding: 13px;
+  border: 1px solid #315142;
+  border-radius: 9px;
+  background: #13241e;
+}
+.sync-result span, .sync-result small { color: #a9b8b4; }
+.sync-result.failed { border-color: #80494e; background: #2b1719; }
 .top-actions,
 .view-controls {
   display: flex;

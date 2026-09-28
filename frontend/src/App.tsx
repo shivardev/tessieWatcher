@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { CarFront, Database, Gauge, Menu, Upload, Wifi, X } from 'lucide-react'
+import { CarFront, Database, Gauge, Menu, RefreshCw, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric } from './domain'
 import { openDatabase, openDatabaseBytes, openDatabaseRemote } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
@@ -606,6 +606,18 @@ export default function App() {
   const [liveMeta, setLiveMeta] = useState<LiveMeta | null>(null)
   const [liveCheckedAt, setLiveCheckedAt] = useState<Date | null>(null)
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus | null>(null)
+  const [piSyncOpen, setPiSyncOpen] = useState(false)
+  const [piSyncUrl, setPiSyncUrl] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem('teslalog.viewer.piSyncUrl') ?? rememberedUrl()
+    } catch {
+      return rememberedUrl()
+    }
+  })
+  const [piSyncStatus, setPiSyncStatus] = useState<CloudSyncStatus | null>(null)
+  const [piVehicleState, setPiVehicleState] = useState('')
+  const [piSyncMessage, setPiSyncMessage] = useState('')
+  const [piSyncBusy, setPiSyncBusy] = useState(false)
   const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
     const servedByDataServer = globalThis.location?.pathname.startsWith('/app') ?? false
     const sameOrigin = servedByDataServer ? globalThis.location.origin : null
@@ -828,6 +840,62 @@ export default function App() {
     }
   }
 
+  const requestPiSync = async (): Promise<void> => {
+    setPiSyncBusy(true)
+    setPiSyncMessage('Checking the Pi and vehicle stateâ€¦')
+    try {
+      const baseUrl = normaliseBaseUrl(piSyncUrl)
+      const [vehicleStatus, currentSync] = await Promise.all([
+        fetchStatus(baseUrl),
+        fetchCloudSyncStatus(baseUrl),
+      ])
+      setPiVehicleState(vehicleStatus.state)
+      setPiSyncStatus(currentSync)
+      globalThis.localStorage?.setItem('teslalog.viewer.piSyncUrl', baseUrl)
+      setPiSyncUrl(baseUrl)
+      if (currentSync.syncState === 'disabled') {
+        setPiSyncMessage('Synchronization is not configured on this Pi yet. Link it to this data server once, then this button will handle every copy and incremental sync.')
+        return
+      }
+      const queued = await requestCloudSync(baseUrl)
+      setPiSyncStatus(queued)
+      const safeNow = ['idle', 'asleep', 'offline', 'suspended'].includes(vehicleStatus.state.toLowerCase())
+      setPiSyncMessage(
+        safeNow
+          ? 'Sync requested. The Pi will begin the copy now.'
+          : `Sync queued safely. The car is ${vehicleStatus.state}; copying will begin after it is parked and idle or asleep.`,
+      )
+    } catch (reason: unknown) {
+      setPiSyncMessage(reason instanceof Error ? reason.message : 'Could not reach the Pi.')
+    } finally {
+      setPiSyncBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!piSyncOpen || piSyncStatus === null || piSyncStatus.syncState === 'disabled') return
+    if (!piSyncStatus.manualSyncRequested && piSyncStatus.syncState === 'idle') return
+    const timer = globalThis.setInterval(() => {
+      let baseUrl: string
+      try {
+        baseUrl = normaliseBaseUrl(piSyncUrl)
+      } catch {
+        return
+      }
+      void fetchCloudSyncStatus(baseUrl).then((status) => {
+        setPiSyncStatus(status)
+        if (status.syncState === 'idle' && !status.manualSyncRequested) {
+          setPiSyncMessage(`Sync completed${status.lastSyncCompleted ? ` at ${new Date(status.lastSyncCompleted).toLocaleTimeString()}` : ''}.`)
+        } else if (status.syncState === 'failed') {
+          setPiSyncMessage(status.lastSyncError || 'Synchronization failed. Check the Pi service logs.')
+        }
+      }).catch(() => {
+        // Keep the last useful state visible; the next poll may recover.
+      })
+    }, 2500)
+    return () => globalThis.clearInterval(timer)
+  }, [piSyncOpen, piSyncStatus, piSyncUrl])
+
   const disconnect = (): void => {
     setRemoteBackend(null) // leave cloud mode too, so a later open uses sql.js
     setLive(null)
@@ -1013,12 +1081,41 @@ export default function App() {
               </button>
             </div>
           )}
+          <button className="pi-sync-button" type="button" onClick={() => setPiSyncOpen(true)}>
+            <RefreshCw />
+            Sync from Pi
+          </button>
           <button className="open" type="button" onClick={choose} disabled={busy}>
             <Upload />
             {busy ? 'Opening…' : data ? 'Change database' : 'Open database'}
           </button>
         </div>
       </header>
+      {piSyncOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setPiSyncOpen(false)}>
+          <section className="sync-modal" role="dialog" aria-modal="true" aria-labelledby="pi-sync-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" type="button" onClick={() => setPiSyncOpen(false)} aria-label="Close"><X /></button>
+            <span className="eyebrow">Safe database replication</span>
+            <h2 id="pi-sync-title">Sync history from your Pi</h2>
+            <p>Enter the Pi portal address. The request is queued when the car is driving or charging and runs only after it is idle, asleep, offline, or suspended.</p>
+            <form onSubmit={(event) => { event.preventDefault(); void requestPiSync() }}>
+              <label htmlFor="pi-sync-url">Pi address</label>
+              <input id="pi-sync-url" value={piSyncUrl} onChange={(event) => setPiSyncUrl(event.target.value)} placeholder="10.0.0.236:8083" spellCheck={false} autoFocus />
+              <button className="cta" type="submit" disabled={piSyncBusy || piSyncUrl.trim() === ''}>
+                <RefreshCw />
+                {piSyncBusy ? 'Checkingâ€¦' : 'Check and sync'}
+              </button>
+            </form>
+            {(piSyncMessage !== '' || piSyncStatus !== null) && (
+              <div className={`sync-result ${piSyncStatus?.syncState === 'failed' ? 'failed' : ''}`} role="status" aria-live="polite">
+                {piVehicleState !== '' && <b>Car: {piVehicleState}</b>}
+                {piSyncStatus !== null && <span>Pi: {piSyncStatus.syncState.replaceAll('_', ' ')} Â· {piSyncStatus.pendingRows.toLocaleString()} pending</span>}
+                {piSyncMessage !== '' && <small>{piSyncMessage}</small>}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
       {data && (
         <aside className={menu ? 'show' : ''}>
           {groups.map((group) => (
