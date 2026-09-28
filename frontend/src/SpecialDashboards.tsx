@@ -1210,7 +1210,7 @@ export function ChargeDetailsDashboard({
   settings: ViewSettings
 }>) {
   const queries = useMemo(() => [
-    `SELECT COALESCE(location, printf('%.4f, %.4f',latitude,longitude)) location,
+    `SELECT COALESCE(s.location, printf('%.4f, %.4f',s.latitude,s.longitude)) location,
       ROUND((julianday(end_time)-julianday(start_time))*24*60,0) duration,
       start_battery_level, end_battery_level, charge_energy_added_kwh,
       CASE WHEN charge_energy_used_kwh IS NULL THEN charge_energy_added_kwh
@@ -1221,8 +1221,10 @@ export function ChargeDetailsDashboard({
              WHEN charge_energy_added_kwh IS NULL THEN charge_energy_used_kwh
              ELSE MAX(charge_energy_added_kwh,charge_energy_used_kwh) END,0),1) efficiency,
       cost, max_charger_power_kw, outside_temp_avg_c, start_range_km, end_range_km,
-      latitude, longitude, CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type
-     FROM charging_sessions WHERE id=$charging_session_id`,
+      s.latitude, s.longitude, CASE WHEN s.is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type,
+      g.name geofence_name, g.billing_type, g.cost_per_unit, g.session_fee
+     FROM charging_sessions s LEFT JOIN geofences g ON g.id=s.geofence_id
+     WHERE s.id=$charging_session_id`,
     `SELECT timestamp time, battery_level "SOC (%)", charger_power_kw "Power (kW)",
       battery_heater_on "Battery heater",
       CASE WHEN '$length_unit'='mi' THEN range_km/1.60934 ELSE range_km END "Range ($length_unit)",
@@ -1236,6 +1238,7 @@ export function ChargeDetailsDashboard({
   const [results, setResults] = useState<readonly QueryResult[]>([])
   const [error, setError] = useState<string | null>(null)
   const [costInput, setCostInput] = useState('')
+  const [pricePerKwhInput, setPricePerKwhInput] = useState('')
   const [savingCost, setSavingCost] = useState(false)
   const [revision, setRevision] = useState(0)
   useEffect(() => {
@@ -1259,6 +1262,23 @@ export function ChargeDetailsDashboard({
   const powers = (results[1]?.rows ?? []).flatMap((sample) => typeof sample[2] === 'number' ? [sample[2]] : [])
   const averagePower = powers.length === 0 ? null : powers.reduce((sum, power) => sum + power, 0) / powers.length
   const backend = getRemoteBackend()
+  const billingEnergy = n(5)
+  const savedCost = n(7)
+  const effectivePricePerKwh = savedCost === null || billingEnergy === null || billingEnergy <= 0 ? null : savedCost / billingEnergy
+  useEffect(() => {
+    setCostInput(savedCost === null ? '' : savedCost.toFixed(2))
+    setPricePerKwhInput(effectivePricePerKwh === null ? '' : effectivePricePerKwh.toFixed(4))
+  }, [chargingSessionId, savedCost, effectivePricePerKwh])
+  const changeTotalCost = (value: string): void => {
+    setCostInput(value)
+    const total = Number(value)
+    setPricePerKwhInput(value !== '' && Number.isFinite(total) && billingEnergy !== null && billingEnergy > 0 ? (total / billingEnergy).toFixed(4) : '')
+  }
+  const changePricePerKwh = (value: string): void => {
+    setPricePerKwhInput(value)
+    const rate = Number(value)
+    setCostInput(value !== '' && Number.isFinite(rate) && billingEnergy !== null && billingEnergy > 0 ? (rate * billingEnergy).toFixed(2) : '')
+  }
   const saveCost = async (): Promise<void> => {
     if (!backend) return
     const value = Number(costInput)
@@ -1269,7 +1289,7 @@ export function ChargeDetailsDashboard({
     setSavingCost(true); setError(null)
     try {
       await runRemoteStatement(backend, `UPDATE charging_sessions SET cost=${value} WHERE id=${chargingSessionId}`)
-      setCostInput(''); setRevision((current) => current + 1)
+      setRevision((current) => current + 1)
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : 'Could not update charging cost.')
     } finally { setSavingCost(false) }
@@ -1280,7 +1300,9 @@ export function ChargeDetailsDashboard({
       <Heading title={`Charge ${chargingSessionId}`} note={`${text(row?.[14])} charge details`} />
       {error && <p className="no-data">{error}</p>}
       <section className="charge-detail-summary">
-        <article><span>Cost</span><strong>{display(7, 2)}</strong>{backend && <div style={{ display: 'flex', gap: 6, marginTop: 8 }}><input aria-label="Actual charging cost" type="number" min="0" step="0.01" value={costInput} onChange={(event) => setCostInput(event.target.value)} placeholder="Actual cost" /><button type="button" disabled={savingCost || costInput === ''} onClick={() => void saveCost()}>Save</button></div>}</article>
+        <article><span>Total cost</span><strong>{savedCost === null ? '—' : `$${savedCost.toFixed(2)}`}</strong><small>{text(row?.[15]) === '—' ? 'No pricing geofence' : text(row?.[15])}</small></article>
+        <article><span>Price per kWh</span><strong>{effectivePricePerKwh === null ? '—' : `$${effectivePricePerKwh.toFixed(4)}`}</strong><small>{billingEnergy === null ? 'No billing energy' : `${billingEnergy.toFixed(2)} kWh billed`}</small></article>
+        <article><span>Configured rate</span><strong>{n(17) === null ? '—' : `$${n(17)!.toFixed(4)} / ${text(row?.[16]) === 'per_minute' ? 'min' : 'kWh'}`}</strong><small>{n(18) === null || n(18) === 0 ? 'No session fee' : `$${n(18)!.toFixed(2)} session fee`}</small></article>
         <article><span>Duration</span><strong>{duration === null ? '—' : `${Math.floor(duration / 60)}h ${Math.round(duration % 60)}m`}</strong></article>
         <article><span>Energy added / used</span><strong>{display(4, 2)} / {display(5, 2)} kWh</strong><small>{display(6, 1)}% efficiency</small></article>
         <article><span>Battery level</span><strong>{display(2, 0)}% → {display(3, 0)}%</strong></article>
@@ -1288,6 +1310,12 @@ export function ChargeDetailsDashboard({
         <article><span>Ø outdoor temperature</span><strong>{temperatureText}</strong></article>
         <article><span>Range ({settings.lengthUnit})</span><strong>{n(10) === null ? '—' : (n(10)! * rangeFactor).toFixed(1)} → {n(11) === null ? '—' : (n(11)! * rangeFactor).toFixed(1)}</strong></article>
       </section>
+      {backend && <section className="charge-cost-editor" aria-label="Edit charging cost">
+        <div><label htmlFor="charge-total-cost">Total cost ($)</label><input id="charge-total-cost" aria-label="Total charging cost" type="number" min="0" step="0.01" value={costInput} onChange={(event) => changeTotalCost(event.target.value)} placeholder="0.00" /></div>
+        <div><label htmlFor="charge-price-kwh">Price per kWh ($/kWh)</label><input id="charge-price-kwh" aria-label="Charging price per kWh" type="number" min="0" step="0.0001" value={pricePerKwhInput} onChange={(event) => changePricePerKwh(event.target.value)} placeholder="0.0000" disabled={billingEnergy === null || billingEnergy <= 0} /></div>
+        <button type="button" disabled={savingCost || costInput === ''} onClick={() => void saveCost()}>{savingCost ? 'Saving…' : 'Save charging cost'}</button>
+        <small>Price per kWh uses the greater of energy added and energy used, matching TeslaMate billing.</small>
+      </section>}
       <section className="charge-detail-grid">
         <TelemetryChart result={results[1]} title="Charge details" emptyMessage="No charging telemetry recorded." />
         <article className="catalog-panel drive-route-panel"><h2>{text(row?.[0])}</h2><RouteMap points={point} /></article>

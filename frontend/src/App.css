@@ -607,9 +607,26 @@ main:not(.empty) {
 .charge-detail-summary article { display: flex; flex-direction: column; gap: 8px; min-height: 105px; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
 .charge-detail-summary span, .charge-detail-summary small { color: var(--muted); font-size: 12px; }
 .charge-detail-summary strong { font: 600 24px Manrope; }
+.charge-cost-editor {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(180px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.charge-cost-editor div { display: grid; gap: 6px; }
+.charge-cost-editor label, .charge-cost-editor small { color: var(--muted); font-size: 12px; }
+.charge-cost-editor input { box-sizing: border-box; width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: #0b1314; color: white; }
+.charge-cost-editor button { padding: 11px 15px; border: 0; border-radius: 8px; background: var(--accent); color: #111900; font-weight: 750; cursor: pointer; }
+.charge-cost-editor button:disabled { opacity: .5; cursor: default; }
+.charge-cost-editor > small { grid-column: 1 / -1; }
 .charge-detail-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 14px; margin-top: 14px; }
 .charge-detail-grid > :last-child { grid-column: 1 / -1; }
-@media (max-width: 900px) { .charge-detail-grid { grid-template-columns: 1fr; } .charge-detail-grid > :last-child { grid-column: auto; } }
+@media (max-width: 900px) { .charge-detail-grid, .charge-cost-editor { grid-template-columns: 1fr; } .charge-detail-grid > :last-child { grid-column: auto; } }
 .no-data {
   color: var(--muted);
   padding: 22px;
