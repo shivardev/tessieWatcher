@@ -117,12 +117,12 @@ export function CloudProbe() {
             />
           </label>
           <label style={label}>
-            API key (sk_…)
+            API key (optional)
             <input
               style={field}
               type="password"
               value={apiKey}
-              placeholder="sk_…"
+              placeholder="leave empty when authentication is disabled"
               onChange={(e) => setApiKey(e.target.value)}
             />
           </label>
@@ -134,7 +134,7 @@ export function CloudProbe() {
             <button
               type="button"
               onClick={connect}
-              disabled={databaseId === '' || apiKey === ''}
+              disabled={databaseId === ''}
               style={{
                 background: '#c9ff43',
                 color: '#111900',

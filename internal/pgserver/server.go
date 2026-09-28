@@ -25,6 +25,7 @@ var schemaSQL string
 
 type Config struct {
 	DSN, DatabaseID, Addr, Token string
+	AuthDisabled                 bool
 }
 
 type Server struct {
@@ -44,8 +45,8 @@ func postgresCompatibleSQL(query string) string {
 }
 
 func New(ctx context.Context, cfg Config) (*Server, error) {
-	if cfg.DSN == "" || cfg.DatabaseID == "" || cfg.Token == "" {
-		return nil, fmt.Errorf("PostgreSQL DSN, database id, and token are required")
+	if cfg.DSN == "" || cfg.DatabaseID == "" || (!cfg.AuthDisabled && cfg.Token == "") {
+		return nil, fmt.Errorf("PostgreSQL DSN, database id, and a token (unless authentication is explicitly disabled) are required")
 	}
 	db, err := sql.Open("pgx", cfg.DSN)
 	if err != nil {
@@ -99,6 +100,9 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
+	if s.cfg.AuthDisabled {
+		return true
+	}
 	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return len(got) == len(s.cfg.Token) && subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
 }

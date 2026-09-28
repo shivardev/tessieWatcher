@@ -125,10 +125,7 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
   try {
     response = await fetch(queryEndpoint(config), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`,
-      },
+      headers: remoteHeaders(config),
       body: JSON.stringify({ query: layerbaseCompatibleSql(sql) }),
     })
   } catch {
@@ -163,7 +160,7 @@ export const runRemoteStatement = async (config: RemoteConfig, sql: string): Pro
   try {
     response = await fetch(queryEndpoint(config), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+      headers: remoteHeaders(config),
       body: JSON.stringify({ query: sql }),
     })
   } catch {
@@ -179,6 +176,12 @@ export const runRemoteStatement = async (config: RemoteConfig, sql: string): Pro
     }
     throw new Error(message)
   }
+}
+
+const remoteHeaders = (config: RemoteConfig): Record<string, string> => {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.apiKey.trim() !== '') headers.Authorization = `Bearer ${config.apiKey}`
+  return headers
 }
 
 // runRemoteQueries runs a dashboard's queries concurrently - the whole

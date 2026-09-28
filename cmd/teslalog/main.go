@@ -133,7 +133,11 @@ func runHealthcheck(args []string) error {
 		return err
 	}
 	token := strings.TrimSpace(os.Getenv(tokenEnv))
-	if token == "" {
+	authDisabled, err := envBool("TESLALOG_AUTH_DISABLED")
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	if token == "" && !authDisabled {
 		return fmt.Errorf("healthcheck: environment variable %s is empty", tokenEnv)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -142,7 +146,9 @@ func runHealthcheck(args []string) error {
 	if err != nil {
 		return fmt.Errorf("healthcheck: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("healthcheck: %w", err)
@@ -163,9 +169,6 @@ func runSync(configPath string) error {
 		return fmt.Errorf("sync is not enabled in %s", configPath)
 	}
 	apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
-	if apiKey == "" {
-		return fmt.Errorf("sync: environment variable %s is empty", cfg.Sync.APIKeyEnv)
-	}
 	db, err := cloudsync.OpenLocal(cfg.Database)
 	if err != nil {
 		return err
@@ -203,7 +206,11 @@ func runPostgresServer(args []string) error {
 		return err
 	}
 	token, dsn := strings.TrimSpace(os.Getenv(tokenEnv)), strings.TrimSpace(os.Getenv(dsnEnv))
-	if token == "" {
+	authDisabled, err := envBool("TESLALOG_AUTH_DISABLED")
+	if err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	if token == "" && !authDisabled {
 		return fmt.Errorf("postgres: environment variable %s is empty", tokenEnv)
 	}
 	if dsn == "" {
@@ -211,13 +218,25 @@ func runPostgresServer(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	server, err := pgserver.New(ctx, pgserver.Config{DSN: dsn, DatabaseID: databaseID, Addr: addr, Token: token})
+	server, err := pgserver.New(ctx, pgserver.Config{DSN: dsn, DatabaseID: databaseID, Addr: addr, Token: token, AuthDisabled: authDisabled})
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
 	defer server.Close()
 	slog.Info("PostgreSQL WebUI server starting", "addr", addr, "database_id", databaseID)
 	return server.Run(ctx)
+}
+
+func envBool(name string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("environment variable %s must be true or false", name)
+	}
+	return value, nil
 }
 
 func runServer(args []string) error {

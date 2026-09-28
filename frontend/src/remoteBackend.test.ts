@@ -89,6 +89,16 @@ describe('runRemoteQuery', () => {
     expect(result).toEqual({ columns: ['n'], rows: [[1]] })
   })
 
+  it('omits authorization when the optional token is empty', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([{ n: 1 }]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await runRemoteQuery({ ...config, apiKey: '' }, 'SELECT 1 AS n')
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined()
+  })
+
   it('captures an API error body instead of throwing', async () => {
     vi.stubGlobal(
       'fetch',

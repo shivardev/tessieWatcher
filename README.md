@@ -671,6 +671,20 @@ secrets, then start PostgreSQL and the API/WebUI:
 docker compose -f docker-compose.postgres.yml up -d --build
 ```
 
+For a trusted LAN or Tailscale-only installation, authentication can be
+explicitly disabled in `.env`:
+
+```env
+TESLALOG_SERVER_TOKEN=
+TESLALOG_AUTH_DISABLED=true
+```
+
+The WebUI and Pi sync configuration may then leave their token/API-key value
+empty. Authentication remains enabled by default. Do not use tokenless mode on
+a directly public address; when publishing through Cloudflare, protect the
+hostname with Cloudflare Access or set `TESLALOG_AUTH_DISABLED=false` and use a
+long random server token.
+
 Docker builds the application inside the container; Go does not need to be
 installed on the server PC. The stack contains:
 

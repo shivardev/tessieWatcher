@@ -40,6 +40,22 @@ func TestRunHealthcheckRejectsUnhealthyServer(t *testing.T) {
 	}
 }
 
+func TestRunHealthcheckWithoutTokenWhenAuthenticationDisabled(t *testing.T) {
+	t.Setenv("TESLALOG_AUTH_DISABLED", "true")
+	t.Setenv("TEST_HEALTH_TOKEN", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("unexpected Authorization header %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := runHealthcheck([]string{"-url", server.URL, "-token-env", "TEST_HEALTH_TOKEN"}); err != nil {
+		t.Fatalf("tokenless healthcheck failed: %v", err)
+	}
+}
+
 // withPipeStdin temporarily replaces os.Stdin with a pipe teasts can write
 // to (or not), restoring the original on cleanup.
 func withPipeStdin(t *testing.T) (w *os.File) {

@@ -715,8 +715,7 @@ export default function App() {
     // snapshot path, so returning users never download the whole SQLite file.
     if (
       (cloud.baseUrl ?? '').trim() !== '' &&
-      (cloud.databaseId ?? '').trim() !== '' &&
-      (cloud.apiKey ?? '').trim() !== ''
+      (cloud.databaseId ?? '').trim() !== ''
     ) {
       void connectCloud()
       return
@@ -1163,7 +1162,7 @@ export default function App() {
                   type="password"
                   value={cloud.apiKey ?? ''}
                   onChange={(event) => setCloud((c) => ({ ...c, apiKey: event.target.value }))}
-                  placeholder="server access token"
+                  placeholder="server access token (optional)"
                   spellCheck={false}
                 />
                 <button type="submit" disabled={busy}>
@@ -1171,7 +1170,7 @@ export default function App() {
                   {busy ? 'Connecting…' : 'Connect'}
                 </button>
               </div>
-              <small>Queries the server database directly — no database download. Your token stays in this browser.</small>
+              <small>Queries the server database directly — no database download. Leave the token empty when server authentication is disabled.</small>
             </form>
             <small>
               <Database />

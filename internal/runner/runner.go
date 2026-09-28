@@ -171,28 +171,24 @@ func Run(ctx context.Context, cfg config.Config, version string) error {
 
 	if cfg.Sync.Enabled {
 		apiKey := strings.TrimSpace(os.Getenv(cfg.Sync.APIKeyEnv))
-		if apiKey == "" {
-			slog.Error("replication disabled: token environment variable is empty", "environment_variable", cfg.Sync.APIKeyEnv)
-		} else {
-			sched := cloudsync.Scheduler{
-				DBPath: cfg.Database,
-				Config: cloudsync.Config{
-					BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID, APIKey: apiKey,
-				},
-				Interval:  cfg.Sync.Interval,
-				BatchSize: cfg.Sync.BatchSize,
-				OnSettingsChanged: func() {
-					items, err := store.Geofences()
-					if err != nil {
-						slog.Error("reload replicated geofences failed", "error", err)
-						return
-					}
-					geo.SetGeofences(items)
-				},
-			}
-			go sched.Start(ctx)
-			slog.Info("replication enabled", "database_id", cfg.Sync.DatabaseID, "interval", cfg.Sync.Interval)
+		sched := cloudsync.Scheduler{
+			DBPath: cfg.Database,
+			Config: cloudsync.Config{
+				BaseURL: cfg.Sync.BaseURL, DatabaseID: cfg.Sync.DatabaseID, APIKey: apiKey,
+			},
+			Interval:  cfg.Sync.Interval,
+			BatchSize: cfg.Sync.BatchSize,
+			OnSettingsChanged: func() {
+				items, err := store.Geofences()
+				if err != nil {
+					slog.Error("reload replicated geofences failed", "error", err)
+					return
+				}
+				geo.SetGeofences(items)
+			},
 		}
+		go sched.Start(ctx)
+		slog.Info("replication enabled", "database_id", cfg.Sync.DatabaseID, "interval", cfg.Sync.Interval, "authenticated", apiKey != "")
 	} else {
 		// A previous process may have stopped mid-batch. Keep those entries
 		// retryable and report the real disabled state instead of leaving the

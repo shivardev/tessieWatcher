@@ -21,7 +21,8 @@ services:
     command: ["postgres", "-addr", ":8085", "-id", "teslalog"]
     environment:
       TESLALOG_POSTGRES_DSN: postgres://teslalog:${TESLALOG_POSTGRES_PASSWORD}@postgres:5432/teslalog?sslmode=disable
-      TESLALOG_SERVER_TOKEN: ${TESLALOG_SERVER_TOKEN:?set in .env}
+      TESLALOG_SERVER_TOKEN: ${TESLALOG_SERVER_TOKEN:-}
+      TESLALOG_AUTH_DISABLED: ${TESLALOG_AUTH_DISABLED:-false}
     depends_on:
       postgres:
         condition: service_healthy
