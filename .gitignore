@@ -19,6 +19,7 @@
 # snapshots downloaded by refresh-data.sh/.ps1) - already covered by
 # *.db above, kept explicit here for clarity.
 /grafana/data/
+/backups/
 
 # Local configuration and credentials
 tokens.json

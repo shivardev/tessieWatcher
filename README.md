@@ -671,6 +671,43 @@ secrets, then start PostgreSQL and the API/WebUI:
 docker compose -f docker-compose.postgres.yml up -d --build
 ```
 
+Docker builds the application inside the container; Go does not need to be
+installed on the server PC. The stack contains:
+
+- PostgreSQL with a persistent named volume;
+- the authenticated teslalog API and bundled SPA on port `8085`;
+- a daily custom-format PostgreSQL dump in `backups/postgres`, retained for 30
+  days by default.
+
+Confirm all three services are healthy and that a backup was created:
+
+```powershell
+docker compose -f docker-compose.postgres.yml ps
+docker compose -f docker-compose.postgres.yml logs postgres-backup
+Get-ChildItem backups/postgres
+```
+
+Test a restore without replacing production data:
+
+```powershell
+docker compose -f docker-compose.postgres.yml exec postgres-backup createdb teslalog_restore_test
+docker compose -f docker-compose.postgres.yml exec postgres-backup pg_restore -d teslalog_restore_test /backups/<backup-file>.dump
+docker compose -f docker-compose.postgres.yml exec postgres-backup psql -d teslalog_restore_test -c "SELECT COUNT(*) FROM vehicles;"
+docker compose -f docker-compose.postgres.yml exec postgres-backup dropdb teslalog_restore_test
+```
+
+To publish the same SPA through Cloudflare Tunnel, create a remotely managed
+tunnel in Cloudflare, map its public hostname to `http://server:8085`, put its
+token in `.env`, and start the optional profile:
+
+```powershell
+docker compose -f docker-compose.postgres.yml --profile public up -d --build
+```
+
+The browser still needs the teslalog API token. Protect the hostname with
+Cloudflare Access as a second authentication layer. Do not publish PostgreSQL
+itself; the compose file exposes only the HTTP application port.
+
 Open `http://localhost:8085/app/` on that PC. From another VPN device use
 `http://<server-tailscale-ip>:8085/app/`. PostgreSQL is not published on a host
 port; only the authenticated teslalog HTTP API is exposed.

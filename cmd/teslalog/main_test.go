@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,34 @@ import (
 
 	"teslalog/internal/storage"
 )
+
+func TestRunHealthcheckUsesConfiguredToken(t *testing.T) {
+	t.Setenv("TEST_HEALTH_TOKEN", "correct-secret")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer correct-secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if err := runHealthcheck([]string{"-url", server.URL, "-token-env", "TEST_HEALTH_TOKEN"}); err != nil {
+		t.Fatalf("healthcheck failed: %v", err)
+	}
+}
+
+func TestRunHealthcheckRejectsUnhealthyServer(t *testing.T) {
+	t.Setenv("TEST_HEALTH_TOKEN", "secret")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	if err := runHealthcheck([]string{"-url", server.URL, "-token-env", "TEST_HEALTH_TOKEN"}); err == nil {
+		t.Fatal("expected an unhealthy server to fail the healthcheck")
+	}
+}
 
 // withPipeStdin temporarily replaces os.Stdin with a pipe teasts can write
 // to (or not), restoring the original on cleanup.

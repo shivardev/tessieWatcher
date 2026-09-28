@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -70,6 +71,8 @@ func main() {
 		err = runServer(args)
 	case "postgres":
 		err = runPostgresServer(args)
+	case "healthcheck":
+		err = runHealthcheck(args)
 	case "export":
 		err = runExport(configPath, args)
 	case "auth-callback":
@@ -110,6 +113,7 @@ Usage:
   teslalog cloud-push -id UUID [-url base]    legacy one-time remote database bootstrap
   teslalog replica -database path -id name    optional replication receiver and WebUI
   teslalog postgres -dsn-env NAME             serve the WebUI/API from PostgreSQL
+  teslalog healthcheck [-url URL]              verify an authenticated teslalog server
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
   teslalog export charges [-year N] [-out f] export closed charging sessions to CSV
   teslalog update                            self-update to the latest GitHub release
@@ -118,6 +122,36 @@ Usage:
 Config file: TOML, defaults to /etc/teslalog/config.toml (see config.example.toml).
 Compatibility aliases: "run" = "start", "serve" = "replica".
 `)
+}
+
+func runHealthcheck(args []string) error {
+	fs := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	var endpoint, tokenEnv string
+	fs.StringVar(&endpoint, "url", "http://127.0.0.1:8085/health", "health endpoint URL")
+	fs.StringVar(&tokenEnv, "token-env", "TESLALOG_SERVER_TOKEN", "environment variable containing the bearer token")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	token := strings.TrimSpace(os.Getenv(tokenEnv))
+	if token == "" {
+		return fmt.Errorf("healthcheck: environment variable %s is empty", tokenEnv)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: server returned %s", resp.Status)
+	}
+	return nil
 }
 
 func runSync(configPath string) error {
