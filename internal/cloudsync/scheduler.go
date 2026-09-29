@@ -19,6 +19,8 @@ type Scheduler struct {
 	OnSettingsChanged func()
 }
 
+const localBufferRetention = 7 * 24 * time.Hour
+
 func (s Scheduler) Start(ctx context.Context) {
 	if s.Interval <= 0 {
 		s.Interval = 15 * time.Minute
@@ -76,7 +78,15 @@ func (s Scheduler) Start(ctx context.Context) {
 		if err := setStatus(ctx, db, "idle", nil); err != nil {
 			slog.Error("replication status update failed", "error", err)
 		}
-		_ = CleanupAcknowledged(ctx, db, 24*time.Hour)
+		if deleted, err := PruneAcknowledged(ctx, db, localBufferRetention); err != nil {
+			slog.Error("local buffer pruning failed", "error", err)
+		} else if deleted > 0 {
+			slog.Info("pruned acknowledged rows from local buffer", "rows", deleted, "retention", localBufferRetention)
+		}
+		// Keep acknowledgement evidence until it has had time to authorize
+		// retention pruning. Removing it after only 24 hours would make an
+		// older row impossible to prove safe to delete locally.
+		_ = CleanupAcknowledged(ctx, db, localBufferRetention+24*time.Hour)
 		nextScheduled = time.Now().Add(s.Interval)
 		slog.Info("incremental replication complete", "database_id", s.Config.DatabaseID)
 	}
@@ -93,6 +103,13 @@ func (s Scheduler) fail(ctx context.Context, db *sql.DB, syncErr error) {
 func (s Scheduler) syncOnce(ctx context.Context, db *sql.DB) error {
 	if err := EnsureBootstrap(ctx, db, s.Config); err != nil {
 		return fmt.Errorf("bootstrap receiver: %w", err)
+	}
+	// EnsureBootstrap returns only after the receiver confirms its durable
+	// initial-bootstrap marker. Record that proof locally so pre-outbox rows
+	// can later age out of the Pi buffer without weakening pending-row safety.
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_meta(key,value) VALUES('cloud_sync_bootstrap_confirmed',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record bootstrap confirmation: %w", err)
 	}
 	if err := PullGeofencesDB(ctx, db, s.Config); err != nil {
 		return fmt.Errorf("pull replicated settings: %w", err)

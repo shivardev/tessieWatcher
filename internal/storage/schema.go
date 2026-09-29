@@ -301,6 +301,8 @@ CREATE TABLE IF NOT EXISTS cloud_sync_changes (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_sync_changes_state_sequence
 	ON cloud_sync_changes(state, sequence);
+CREATE INDEX IF NOT EXISTS idx_cloud_sync_changes_row_state
+	ON cloud_sync_changes(table_name, row_id, state);
 
 CREATE TABLE IF NOT EXISTS cloud_sync_status (
 	id                    INTEGER PRIMARY KEY CHECK (id = 1),
