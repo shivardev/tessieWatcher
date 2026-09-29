@@ -843,7 +843,7 @@ export default function App() {
 
   const requestPiSync = async (): Promise<void> => {
     setPiSyncBusy(true)
-    setPiSyncMessage('Checking the Pi and vehicle stateâ€¦')
+    setPiSyncMessage('Checking the Pi and vehicle state…')
     try {
       const baseUrl = normaliseBaseUrl(piSyncUrl)
       setPiAdminUrl(`${baseUrl}/admin/sync`)
@@ -1105,13 +1105,13 @@ export default function App() {
               <input id="pi-sync-url" value={piSyncUrl} onChange={(event) => setPiSyncUrl(event.target.value)} placeholder="10.0.0.236:8083" spellCheck={false} autoFocus />
               <button className="cta" type="submit" disabled={piSyncBusy || piSyncUrl.trim() === ''}>
                 <RefreshCw />
-                {piSyncBusy ? 'Checkingâ€¦' : 'Check and sync'}
+                {piSyncBusy ? 'Checking…' : 'Check and sync'}
               </button>
             </form>
             {(piSyncMessage !== '' || piSyncStatus !== null) && (
               <div className={`sync-result ${piSyncStatus?.syncState === 'failed' ? 'failed' : ''}`} role="status" aria-live="polite">
                 {piVehicleState !== '' && <b>Car: {piVehicleState}</b>}
-                {piSyncStatus !== null && <span>Pi: {piSyncStatus.syncState.replaceAll('_', ' ')} Â· {piSyncStatus.pendingRows.toLocaleString()} pending</span>}
+                {piSyncStatus !== null && <span>Pi: {piSyncStatus.syncState.replaceAll('_', ' ')} · {piSyncStatus.pendingRows.toLocaleString()} pending</span>}
                 {piSyncMessage !== '' && <small>{piSyncMessage}</small>}
               </div>
             )}
