@@ -423,7 +423,7 @@ func Default() Config {
 			// teslalog does is competing for the Pi at that hour.
 			At:           "03:00",
 			RclonePath:   "rclone",
-			RcloneConfig: "/etc/teslalog/rclone.conf",
+			RcloneConfig: "/var/lib/teslalog/rclone.conf",
 		},
 		Sync: SyncConfig{
 			Enabled:   false,

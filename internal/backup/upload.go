@@ -44,8 +44,8 @@ type Uploader struct {
 	Destinations []Destination
 
 	// Timeout bounds a single upload. A stalled transfer must not hold
-	// the next day's backup, and on a Pi Zero over wifi a few MB can
-	// legitimately take minutes.
+	// the next day's backup, and on a Pi Zero over wifi a compressed
+	// database can legitimately take tens of minutes.
 	Timeout time.Duration
 }
 
@@ -72,7 +72,7 @@ func (u Uploader) Upload(ctx context.Context, path string) error {
 
 	timeout := u.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Minute
+		timeout = 60 * time.Minute
 	}
 
 	var firstErr error

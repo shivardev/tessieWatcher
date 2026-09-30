@@ -88,17 +88,18 @@ interval = "24h"
 # browser dance, to reach a service rclone already reaches.
 #
 # Set one up with `rclone config` (once, as yourself), then make the
-# result readable by the service user teslalog runs as - it cannot read
-# your home directory:
+# result readable and writable by the service user teslalog runs as. OAuth
+# refresh can update this file, and the hardened service deliberately mounts
+# /etc read-only, so keep it in teslalog's writable data directory:
 #
-#   sudo install -d -o teslalog -g teslalog -m 750 /etc/teslalog
+#   sudo install -d -o teslalog -g teslalog -m 750 /var/lib/teslalog
 #   sudo install -o teslalog -g teslalog -m 600 \
-#       ~/.config/rclone/rclone.conf /etc/teslalog/rclone.conf
+#       ~/.config/rclone/rclone.conf /var/lib/teslalog/rclone.conf
 #
 # Verify before trusting it:
-#   sudo -u teslalog rclone --config /etc/teslalog/rclone.conf listremotes
+#   sudo -u teslalog rclone --config /var/lib/teslalog/rclone.conf listremotes
 rclone_path   = "rclone"
-rclone_config = "/etc/teslalog/rclone.conf"
+rclone_config = "/var/lib/teslalog/rclone.conf"
 
 # Remote retention is generous: these are the copies you would actually
 # restore from, and a 2 MB gzip a day is nothing. 0 means keep forever.
