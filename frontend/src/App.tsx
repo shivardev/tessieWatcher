@@ -4,7 +4,13 @@ import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedD
 import { openDatabase, openDatabaseBytes, openDatabaseRemote } from './database'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
-import { getRemoteBackend, runRemoteQuery, setRemoteBackend, type RemoteConfig } from './remoteBackend'
+import {
+  getRemoteBackend,
+  runRemoteQuery,
+  setRemoteBackend,
+  subscribeRemoteMutations,
+  type RemoteConfig,
+} from './remoteBackend'
 import { GeofenceSettings } from './GeofenceSettings'
 import {
   fetchMeta,
@@ -779,6 +785,37 @@ export default function App() {
     void tick()
     const timer = setInterval(() => void tick(), 60_000)
     return () => { stopped = true; clearInterval(timer) }
+  }, [data?.fileName])
+
+  // Writes made by editable dashboards must invalidate the loaded summary
+  // immediately. Coalesce multi-statement operations (such as saving and
+  // repricing a geofence) into one reload rather than waiting for the normal
+  // telemetry poll, whose marker intentionally ignores administrative edits.
+  useEffect(() => {
+    if (data?.fileName !== 'cloud') return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const unsubscribe = subscribeRemoteMutations(() => {
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const backend = getRemoteBackend()
+        if (!backend || stopped) return
+        void openDatabaseRemote(backend).then((loaded) => {
+          if (stopped) return
+          setData(loaded)
+          setCloudRevision((value) => value + 1)
+          setLiveCheckedAt(new Date())
+        }).catch(() => {
+          // The editor already displays write errors. A transient refresh
+          // failure is retried by the regular remote freshness poll.
+        })
+      }, 150)
+    })
+    return () => {
+      stopped = true
+      if (timer !== null) clearTimeout(timer)
+      unsubscribe()
+    }
   }, [data?.fileName])
 
   // While connected, ask /api/meta on a timer and re-download only when

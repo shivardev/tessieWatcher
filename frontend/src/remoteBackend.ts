@@ -26,10 +26,25 @@ export type RemoteConfig = Readonly<{
 // the UI when the user connects to a cloud database; read by
 // database.executeQueries to decide where a query runs.
 let current: RemoteConfig | null = null
+const mutationListeners = new Set<() => void>()
+
 export const setRemoteBackend = (config: RemoteConfig | null): void => {
   current = config
 }
 export const getRemoteBackend = (): RemoteConfig | null => current
+
+// Dashboard data is derived from several server queries and therefore lives
+// in React state after the initial load. Notify the app after every successful
+// write so charge costs, geofences, and future editable fields are reflected
+// immediately without requiring a browser refresh.
+export const subscribeRemoteMutations = (listener: () => void): (() => void) => {
+  mutationListeners.add(listener)
+  return () => mutationListeners.delete(listener)
+}
+
+const notifyRemoteMutation = (): void => {
+  for (const listener of mutationListeners) listener()
+}
 
 const queryEndpoint = (config: RemoteConfig): string =>
   `${config.baseUrl.replace(/\/+$/u, '')}/v1/databases/${encodeURIComponent(config.databaseId)}/query`
@@ -172,6 +187,7 @@ export const runRemoteStatement = async (config: RemoteConfig, sql: string): Pro
     }
     throw new Error(message)
   }
+  notifyRemoteMutation()
 }
 
 const remoteHeaders = (config: RemoteConfig): Record<string, string> => {

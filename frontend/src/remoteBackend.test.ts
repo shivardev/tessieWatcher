@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { normaliseResult, runRemoteQuery, runRemoteStatement, type RemoteConfig } from './remoteBackend'
+import {
+  normaliseResult,
+  runRemoteQuery,
+  runRemoteStatement,
+  subscribeRemoteMutations,
+  type RemoteConfig,
+} from './remoteBackend'
 
 const config: RemoteConfig = {
   baseUrl: 'https://teslalog.example.com',
@@ -121,5 +127,14 @@ describe('runRemoteStatement', () => {
     await expect(runRemoteStatement(config, "DELETE FROM geofences WHERE id=1")).resolves.toBeUndefined()
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(JSON.parse(init.body as string)).toEqual({ query: 'DELETE FROM geofences WHERE id=1' })
+  })
+
+  it('notifies dashboard subscribers after a successful write', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })))
+    const listener = vi.fn()
+    const unsubscribe = subscribeRemoteMutations(listener)
+    await runRemoteStatement(config, 'UPDATE charging_sessions SET cost=4.25 WHERE id=1')
+    expect(listener).toHaveBeenCalledOnce()
+    unsubscribe()
   })
 })
