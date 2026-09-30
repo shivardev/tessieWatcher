@@ -4,6 +4,8 @@
 /teslalog-linux-armv7
 /teslalog
 /teslalog-windows-amd64.exe
+/teslalog.exe
+/teslalog-linux-armv7-*
 
 # Local Go caches
 /.gocache/

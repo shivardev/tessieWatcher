@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { layerbaseCompatibleSql, normaliseResult, runRemoteQuery, runRemoteStatement, type RemoteConfig } from './remoteBackend'
+import { normaliseResult, runRemoteQuery, runRemoteStatement, type RemoteConfig } from './remoteBackend'
 
 const config: RemoteConfig = {
-  baseUrl: 'https://cloud.layerbase.dev',
+  baseUrl: 'https://teslalog.example.com',
   databaseId: '8bf46fc7-a47c-4b6d-89c6-8814989a6990',
   apiKey: 'sk_test_123',
 }
@@ -18,10 +18,10 @@ describe('normaliseResult', () => {
     ).toEqual({ columns: ['band', 'seconds'], rows: [[10, 42.5], [20, 8]] })
   })
 
-  // The real shape Layerbase returns: a columns array plus rows of OBJECTS,
+  // Some compatible data servers return a columns array plus rows of objects,
   // with every value a string. Values must map by column and numerics must
   // come back as numbers so the dashboards compute.
-  it('handles Layerbase\'s columns + rows-of-objects with stringified numbers', () => {
+  it('handles columns plus rows-of-objects with stringified numbers', () => {
     expect(
       normaliseResult({ columns: ['n', 'loc'], rows: [{ n: '1', loc: 'Home' }], rowCount: 1 }),
     ).toEqual({ columns: ['n', 'loc'], rows: [[1, 'Home']] })
@@ -65,13 +65,6 @@ describe('normaliseResult', () => {
   })
 })
 
-describe('layerbaseCompatibleSql', () => {
-  it('does not generically rewrite SQL expressions', () => {
-    const sql = "SELECT COALESCE(SUM(distance_km),0), COALESCE(name,'Vehicle') FROM drives"
-    expect(layerbaseCompatibleSql(sql)).toBe(sql)
-  })
-})
-
 describe('runRemoteQuery', () => {
   it('posts the SQL with the bearer token to the database query endpoint', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify([{ n: 1 }]), { status: 200 }))
@@ -82,7 +75,7 @@ describe('runRemoteQuery', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe(
-      'https://cloud.layerbase.dev/v1/databases/8bf46fc7-a47c-4b6d-89c6-8814989a6990/query',
+      'https://teslalog.example.com/v1/databases/8bf46fc7-a47c-4b6d-89c6-8814989a6990/query',
     )
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk_test_123')
     expect(JSON.parse(init.body as string)).toEqual({ query: 'SELECT 1 AS n' })

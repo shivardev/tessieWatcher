@@ -118,16 +118,17 @@ rclone_config = "/var/lib/teslalog/rclone.conf"
 # retention_days = 90
 
 [sync]
-# Optional replication to another teslalog installation. The local SQLite
-# remains authoritative and logging continues if the receiver is unreachable.
+# Optional replication to the PostgreSQL data server. Local SQLite remains the
+# crash-safe collection buffer and logging continues if the server is unreachable.
 enabled = false
-base_url = "http://replica-vpn-address:8084"
+base_url = "http://server-vpn-address:8085"
 database_id = "teslalog"
 interval = "15m"
 batch_size = 500
 
 # The secret is read from this environment variable, never stored in TOML.
-# Use the same long random token configured on `teslalog replica`.
+# Use the same token configured on the PostgreSQL server. It may be empty only
+# when both machines are on a trusted private network and auth is disabled.
 api_key_env = "TESLALOG_SERVER_TOKEN"
 
 [portal]

@@ -20,7 +20,7 @@ const fileFromDatabase = (database: Database): File => {
 }
 
 describe('database compatibility boundary', () => {
-  it('decodes Layerbase numeric values serialized as epoch-day timestamps', () => {
+  it('decodes remote numeric values serialized as epoch-day timestamps', () => {
     expect(num('1970-01-03T00:00:00Z', 'Max charger power')).toBe(2)
   })
 

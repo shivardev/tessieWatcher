@@ -330,9 +330,8 @@ bash deploy/cross-build.sh
 #   teslalog-linux-amd64      - regular PC/server/VM, e.g. wherever your
 #                               existing TeslaMate/Docker host runs, for
 #                               testing side-by-side before touching the Pi
-#   teslalog-linux-arm64      - the Raspberry Pi Zero 2 W (actual target)
-#   teslalog-windows-amd64.exe - for run-teslalog.bat/status-teslalog.bat,
-#                               to try it directly on a Windows dev machine
+#   teslalog-linux-arm64      - the Raspberry Pi Zero 2 W (64-bit OS)
+#   teslalog-linux-armv7      - the Raspberry Pi Zero 2 W (32-bit OS)
 ```
 
 Either Linux binary is a single static file — no install step, no
@@ -343,21 +342,6 @@ cp config.example.toml config.toml   # edit database/token_file paths as you lik
 ./teslalog-linux-amd64 auth   -config config.toml   # one-time interactive login
 ./teslalog-linux-amd64 run    -config config.toml   # foreground; Ctrl-C to stop
 ./teslalog-linux-amd64 status -config config.toml
-```
-
-### Trying it directly on Windows
-
-No Linux box, Pi, or Docker needed just to see it work: after
-`bash deploy/cross-build.sh` produces `teslalog-windows-amd64.exe`, put it
-at the repo root (`config.windows-test.toml` is already there, with
-relative `database`/`token_file` paths so nothing needs admin rights) and
-double-click, or run from a terminal:
-
-```
-run-teslalog.bat      # first run: prompts for the one-time Tesla login,
-                       # then starts the daemon in the foreground
-status-teslalog.bat    # today's drives/last charge, and exports
-                       # drives.csv/charges.csv next to the .bat files
 ```
 
 This is the same daemon and database format as the Linux/Pi path — useful
@@ -489,9 +473,8 @@ SSO PKCE login flow as the official Tesla mobile app:
      value) into the waiting `teslalog auth` prompt.
 4. `teslalog auth` exchanges that code for an access + refresh token pair,
    saved to `/var/lib/teslalog/tokens.json` (mode 0600 — a real
-   permission restriction on Linux; on Windows, e.g. via
-   `run-teslalog.bat`, the file gets default OS permissions instead, since
-   Windows doesn't have a POSIX mode bit for Go's `os.WriteFile` to set).
+   permission restriction on Linux; other operating systems use their
+   native file-permission model).
 5. The daemon refreshes the access token automatically using the refresh
    token; if the refresh token itself ever expires/is revoked (e.g. Tesla
    password changed), re-run `teslalog auth`.
@@ -633,7 +616,7 @@ writing to it under WAL. Backups are gzipped and written to
 `backup.interval` (default 24h); `teslalog backup` runs one on demand.
 Consider periodically copying that directory off the Pi's SD card
 (rsync/rclone to another machine or cloud storage) — this project
-doesn't do off-box replication itself.
+can also copy each completed backup off-box through configured rclone destinations.
 
 The resulting snapshot/backup file is explicitly switched to
 non-WAL (`PRAGMA journal_mode = DELETE`) after the copy — it's a static,
@@ -761,14 +744,12 @@ the following incremental pass. Interrupted bootstraps safely restart without
 duplicates. Afterward, only inserts, edits, and deletions from the durable outbox
 are sent. An uncertain batch returns to `pending` and is retried.
 
-Synchronization currently never deletes raw telemetry from SQLite. It removes
-only acknowledged bookkeeping entries from the outbox after 24 hours. This is
-intentional: automatic deletion is not enabled until restore/retention policy is
-explicitly configured and tested. The viewer also
-does not destructively downsample storage: charts request bounded time windows and
-use minute/hour aggregates in SQL at query time. Therefore the same optimized
-queries apply to a standalone installation and to a replicated installation while
-the original samples remain available for detailed views and future calculations.
+After a confirmed bootstrap and a successful pass with zero pending changes,
+the Pi retains seven days of recent telemetry and removes older acknowledged
+rows locally. PostgreSQL remains the complete archive; retention deletes are
+not propagated to it. The newest readings are always preserved. Charts request
+bounded windows and aggregate in SQL at query time rather than destructively
+downsampling the server archive.
 
 The local WebUI exposes `GET /api/sync` for replication health and
 `POST /api/sync/request` to queue a safe manual sync. The older

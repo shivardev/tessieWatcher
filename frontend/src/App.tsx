@@ -622,14 +622,11 @@ export default function App() {
   const [cloud, setCloud] = useState<Partial<RemoteConfig>>(() => {
     const servedByDataServer = globalThis.location?.pathname.startsWith('/app') ?? false
     const sameOrigin = servedByDataServer ? globalThis.location.origin : null
-    const fallback = { baseUrl: sameOrigin ?? 'http://localhost:8084', databaseId: 'teslalog' }
+    const fallback = { baseUrl: sameOrigin ?? 'http://localhost:8085', databaseId: 'teslalog' }
     try {
-      const saved = globalThis.localStorage?.getItem('teslalog.viewer.remote')
-        ?? globalThis.localStorage?.getItem('teslalog.viewer.layerbase')
-        ?? '{}'
+      const saved = globalThis.localStorage?.getItem('teslalog.viewer.remote') ?? '{}'
       const remembered = JSON.parse(saved) as Partial<RemoteConfig>
       // When the API itself serves /app, its own origin is authoritative.
-      // This also repairs old browser storage that still points at :8084.
       return { ...fallback, ...remembered, ...(sameOrigin === null ? {} : { baseUrl: sameOrigin }) }
     } catch {
       return fallback
@@ -1257,7 +1254,7 @@ export default function App() {
                 <input
                   value={cloud.baseUrl ?? ''}
                   onChange={(event) => setCloud((c) => ({ ...c, baseUrl: event.target.value }))}
-                  placeholder="http://laptop-tailscale-ip:8084"
+                  placeholder="http://server-tailscale-ip:8085"
                   spellCheck={false}
                 />
               </div>

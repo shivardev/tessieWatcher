@@ -28,7 +28,7 @@ const loadSaved = (): Partial<RemoteConfig> => {
 
 export function CloudProbe() {
   const saved = loadSaved()
-  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'http://localhost:8084')
+  const [baseUrl, setBaseUrl] = useState(saved.baseUrl ?? 'http://localhost:8085')
   const [databaseId, setDatabaseId] = useState(saved.databaseId ?? '')
   const [apiKey, setApiKey] = useState(saved.apiKey ?? '')
   const [remember, setRemember] = useState(false)

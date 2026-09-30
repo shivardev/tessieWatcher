@@ -27,9 +27,6 @@ type Config struct {
 	Streaming StreamingConfig
 	Backup    BackupConfig
 	Sync      SyncConfig
-	// Cloud is a deprecated compatibility alias for Sync. New code and
-	// configuration should use Sync/[sync].
-	Cloud     SyncConfig
 	Portal    PortalConfig
 	Geocoding GeocodingConfig
 	Geofences []GeofenceConfig
@@ -50,10 +47,6 @@ type SyncConfig struct {
 	Interval   time.Duration
 	BatchSize  int
 }
-
-// CloudConfig remains a source-compatible alias for integrations compiled
-// against versions that predate the [sync] name.
-type CloudConfig = SyncConfig
 
 // GeofenceConfig is one user-named circular zone (a config.toml
 // [[geofence]] entry) - checked before any reverse-geocoding lookup, so
@@ -333,8 +326,7 @@ type rawConfig struct {
 		} `toml:"upload"`
 	} `toml:"backup"`
 
-	Sync  rawSyncConfig `toml:"sync"`
-	Cloud rawSyncConfig `toml:"cloud"` // deprecated compatibility name
+	Sync rawSyncConfig `toml:"sync"`
 
 	Portal struct {
 		Enabled *bool  `toml:"enabled"`
@@ -427,7 +419,7 @@ func Default() Config {
 		},
 		Sync: SyncConfig{
 			Enabled:   false,
-			BaseURL:   "http://127.0.0.1:8084",
+			BaseURL:   "http://127.0.0.1:8085",
 			APIKeyEnv: "TESLALOG_SERVER_TOKEN",
 			Interval:  15 * time.Minute,
 			BatchSize: 500,
@@ -461,7 +453,6 @@ func Default() Config {
 			UserAgent: "teslalog/0.2",
 		},
 	}
-	cfg.Cloud = cfg.Sync
 	return cfg
 }
 
@@ -584,32 +575,25 @@ func Load(path string) (Config, error) {
 		})
 	}
 
-	// Read the deprecated [cloud] block first, then let [sync] override it.
-	// That gives existing installations a zero-downtime migration path.
-	for _, item := range []struct {
-		name string
-		raw  rawSyncConfig
-	}{{"cloud", raw.Cloud}, {"sync", raw.Sync}} {
-		if item.raw.Enabled != nil {
-			cfg.Sync.Enabled = *item.raw.Enabled
-		}
-		if item.raw.BaseURL != "" {
-			cfg.Sync.BaseURL = strings.TrimRight(item.raw.BaseURL, "/")
-		}
-		if item.raw.DatabaseID != "" {
-			cfg.Sync.DatabaseID = item.raw.DatabaseID
-		}
-		if item.raw.APIKeyEnv != "" {
-			cfg.Sync.APIKeyEnv = item.raw.APIKeyEnv
-		}
-		if d, err := parseDurationOr(item.raw.Interval, cfg.Sync.Interval); err != nil {
-			return cfg, fmt.Errorf("%s.interval: %w", item.name, err)
-		} else {
-			cfg.Sync.Interval = d
-		}
-		if item.raw.BatchSize != 0 {
-			cfg.Sync.BatchSize = item.raw.BatchSize
-		}
+	if raw.Sync.Enabled != nil {
+		cfg.Sync.Enabled = *raw.Sync.Enabled
+	}
+	if raw.Sync.BaseURL != "" {
+		cfg.Sync.BaseURL = strings.TrimRight(raw.Sync.BaseURL, "/")
+	}
+	if raw.Sync.DatabaseID != "" {
+		cfg.Sync.DatabaseID = raw.Sync.DatabaseID
+	}
+	if raw.Sync.APIKeyEnv != "" {
+		cfg.Sync.APIKeyEnv = raw.Sync.APIKeyEnv
+	}
+	if d, err := parseDurationOr(raw.Sync.Interval, cfg.Sync.Interval); err != nil {
+		return cfg, fmt.Errorf("sync.interval: %w", err)
+	} else {
+		cfg.Sync.Interval = d
+	}
+	if raw.Sync.BatchSize != 0 {
+		cfg.Sync.BatchSize = raw.Sync.BatchSize
 	}
 	if cfg.Sync.Enabled {
 		if cfg.Sync.DatabaseID == "" {
@@ -628,8 +612,6 @@ func Load(path string) (Config, error) {
 			return cfg, fmt.Errorf("sync.batch_size must be between 1 and 5000")
 		}
 	}
-	cfg.Cloud = cfg.Sync
-
 	if raw.Portal.Enabled != nil {
 		cfg.Portal.Enabled = *raw.Portal.Enabled
 	}

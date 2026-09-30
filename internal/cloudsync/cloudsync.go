@@ -4,8 +4,8 @@
 //
 // The server has an HTTP endpoint that runs one SQL statement per request
 // (POST {base}/v1/databases/{id}/query, Bearer token, body
-// {"query": "..."}). Push remains available for a one-time bootstrap.
-// Normal daemon operation uses the durable trigger-backed outbox in
+// {"query": "..."}). Normal daemon operation uses the durable
+// trigger-backed outbox in
 // incremental.go, small UPSERT batches, cloud acknowledgement, and
 // crash-safe retries.
 //

@@ -1,8 +1,7 @@
 // Remote query backend: run the viewer's SQL against the teslalog server
 // over its HTTP query API, instead of loading a downloaded SQLite file
-// into sql.js. The server uses SQLite 3, so the
-// exact same dashboard SQL runs unchanged - only where it executes moves
-// from the browser to the cloud, which is what lets the viewer open
+// into sql.js. The server translates the viewer's portable SQL for
+// PostgreSQL, so the same dashboard definitions run unchanged and the viewer opens
 // without downloading the whole database.
 //
 // API: POST {baseUrl}/v1/databases/{id}/query with an Authorization bearer
@@ -14,7 +13,7 @@
 import { queryValueSchema, type QueryResult, type QueryValue } from './domain'
 
 export type RemoteConfig = Readonly<{
-  // Origin of the teslalog server, e.g. "http://100.x.y.z:8084".
+  // Origin of the teslalog server, e.g. "http://100.x.y.z:8085".
   baseUrl: string
   // The configured database id ("teslalog" by default).
   databaseId: string
@@ -34,9 +33,6 @@ export const getRemoteBackend = (): RemoteConfig | null => current
 
 const queryEndpoint = (config: RemoteConfig): string =>
   `${config.baseUrl.replace(/\/+$/u, '')}/v1/databases/${encodeURIComponent(config.databaseId)}/query`
-
-// Retained as a compatibility hook for databases created by older versions.
-export const layerbaseCompatibleSql = (sql: string): string => sql
 
 // coerce narrows an arbitrary JSON value to the QueryValue union the
 // dashboards expect. SQLite has no boolean, so a JSON true/false (however
@@ -126,7 +122,7 @@ export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise
     response = await fetch(queryEndpoint(config), {
       method: 'POST',
       headers: remoteHeaders(config),
-      body: JSON.stringify({ query: layerbaseCompatibleSql(sql) }),
+      body: JSON.stringify({ query: sql }),
     })
   } catch {
     return {

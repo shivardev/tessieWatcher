@@ -15,7 +15,7 @@ import (
 	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-// recorder is a fake Layerbase query endpoint that captures every SQL
+// recorder is a fake data-server query endpoint that captures every SQL
 // statement posted to it.
 type recorder struct {
 	mu      sync.Mutex

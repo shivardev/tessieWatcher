@@ -22,7 +22,6 @@ import (
 	"teslalog/internal/backup"
 	"teslalog/internal/cloudsync"
 	"teslalog/internal/config"
-	"teslalog/internal/dbserver"
 	"teslalog/internal/pgserver"
 	"teslalog/internal/runner"
 	"teslalog/internal/storage"
@@ -65,10 +64,6 @@ func main() {
 	case "sync":
 		fs.Parse(args)
 		err = runSync(configPath)
-	case "cloud-push":
-		err = runCloudPush(configPath, args)
-	case "replica", "serve":
-		err = runServer(args)
 	case "postgres":
 		err = runPostgresServer(args)
 	case "healthcheck":
@@ -110,8 +105,6 @@ Usage:
   teslalog wake [-config path]               explicitly wake the vehicle (never done automatically)
   teslalog backup [-config path]             run one SQLite backup immediately
   teslalog sync [-config path]               run configured replication immediately
-  teslalog cloud-push -id UUID [-url base]    legacy one-time remote database bootstrap
-  teslalog replica -database path -id name    optional replication receiver and WebUI
   teslalog postgres -dsn-env NAME             serve the WebUI/API from PostgreSQL
   teslalog healthcheck [-url URL]              verify an authenticated teslalog server
   teslalog export drives [-year N] [-out f]  export closed drives to CSV
@@ -120,7 +113,7 @@ Usage:
   teslalog version                           print version
 
 Config file: TOML, defaults to /etc/teslalog/config.toml (see config.example.toml).
-Compatibility aliases: "run" = "start", "serve" = "replica".
+Compatibility alias: "run" = "start".
 `)
 }
 
@@ -237,60 +230,6 @@ func envBool(name string) (bool, error) {
 		return false, fmt.Errorf("environment variable %s must be true or false", name)
 	}
 	return value, nil
-}
-
-func runServer(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	var databasePath, databaseID, addr, tokenEnv, backupDir string
-	var backupInterval time.Duration
-	var backupRetention int
-	fs.StringVar(&databasePath, "database", "teslalog-server.db", "server SQLite database path")
-	fs.StringVar(&databaseID, "id", "teslalog", "database id used in API URLs")
-	fs.StringVar(&addr, "addr", ":8084", "HTTP listen address")
-	fs.StringVar(&tokenEnv, "token-env", "TESLALOG_SERVER_TOKEN", "environment variable containing the bearer token")
-	fs.StringVar(&backupDir, "backup-dir", "backups", "directory for compressed server backups (empty disables)")
-	fs.DurationVar(&backupInterval, "backup-interval", 24*time.Hour, "automatic backup interval")
-	fs.IntVar(&backupRetention, "backup-retention-days", 30, "days of server backups to retain")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	token := strings.TrimSpace(os.Getenv(tokenEnv))
-	if token == "" {
-		return fmt.Errorf("serve: environment variable %s is empty", tokenEnv)
-	}
-	server, err := dbserver.New(dbserver.Config{DatabasePath: databasePath, DatabaseID: databaseID, Addr: addr, Token: token})
-	if err != nil {
-		return fmt.Errorf("serve: %w", err)
-	}
-	defer server.Close()
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if backupDir != "" {
-		if backupInterval <= 0 || backupRetention <= 0 {
-			return fmt.Errorf("serve: backup interval and retention must be positive")
-		}
-		go runServerBackups(ctx, databasePath, backupDir, backupInterval, backupRetention)
-	}
-	slog.Info("SQLite sync server starting", "addr", addr, "database", databasePath, "database_id", databaseID)
-	return server.Run(ctx)
-}
-
-func runServerBackups(ctx context.Context, databasePath, backupDir string, interval time.Duration, retentionDays int) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-ticker.C:
-			path, err := backup.Run(ctx, databasePath, backupDir, retentionDays, now)
-			if err != nil {
-				slog.Error("server backup failed", "error", err)
-				continue
-			}
-			slog.Info("server backup complete", "path", path)
-		}
-	}
 }
 
 func defaultConfigPath() string {
@@ -573,56 +512,6 @@ func runBackup(configPath string) error {
 		return err
 	}
 	fmt.Println("backup written:", path)
-	return nil
-}
-
-// ---- cloud-push ----
-
-// runCloudPush copies the local database up to a Layerbase cloud database
-// over its HTTP query API, so a browser viewer can query it in place
-// instead of downloading the whole file. The API key is read from the
-// LAYERBASE_API_KEY environment variable, never a flag, so it never lands
-// in shell history or the process list.
-func runCloudPush(configPath string, args []string) error {
-	fs := flag.NewFlagSet("cloud-push", flag.ExitOnError)
-	var cfgPath, baseURL, databaseID, dbPath string
-	fs.StringVar(&cfgPath, "config", defaultConfigPath(), "path to config.toml (for the database path; ignored if -db is given)")
-	fs.StringVar(&dbPath, "db", "", "path to the SQLite file to push (overrides config's database path)")
-	fs.StringVar(&baseURL, "url", "https://cloud.layerbase.dev", "Layerbase API base URL")
-	fs.StringVar(&databaseID, "id", "", "Layerbase database id (the UUID, not the hostname)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if databaseID == "" {
-		return fmt.Errorf("cloud-push: -id (the Layerbase database UUID) is required")
-	}
-	apiKey := os.Getenv("LAYERBASE_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("cloud-push: set LAYERBASE_API_KEY to your sk_... key (kept out of flags on purpose)")
-	}
-
-	// -db lets this run standalone against any SQLite file (e.g. a copy
-	// downloaded from the portal) without needing a config.toml.
-	if dbPath == "" {
-		cfg, err := loadConfig(cfgPath)
-		if err != nil {
-			return err
-		}
-		dbPath = cfg.Database
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	fmt.Printf("pushing %s to Layerbase database %s ...\n", dbPath, databaseID)
-	if err := cloudsync.Push(ctx, dbPath, cloudsync.Config{
-		BaseURL:    baseURL,
-		DatabaseID: databaseID,
-		APIKey:     apiKey,
-	}); err != nil {
-		return fmt.Errorf("cloud-push: %w", err)
-	}
-	fmt.Println("cloud push complete.")
 	return nil
 }
 

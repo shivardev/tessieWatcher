@@ -115,7 +115,7 @@ class DatabaseError extends Error {
 }
 export const num = (v: SqlValue | undefined, n: string): number => {
   if (typeof v === 'number') return v
-  // The remote (Layerbase) backend returns numerics as strings, and larger
+  // Compatible remote backends may return numerics as strings, and larger
   // floats can arrive with a thousands separator or in exponent form that
   // the generic coercion leaves as text. In a spot that explicitly expects
   // a number, parse leniently (strip commas; Number() handles exponents).
@@ -123,7 +123,7 @@ export const num = (v: SqlValue | undefined, n: string): number => {
     const parsed = Number(v.replace(/,/g, ''))
     if (Number.isFinite(parsed)) return parsed
 
-    // Layerbase's SQLite adapter can serialize a numeric expression as an
+    // Some SQLite adapters can serialize a numeric expression as an
     // ISO timestamp, treating the number as days since the Unix epoch. This
     // has been observed for MAX(max_charger_power_kw): 2 becomes
     // 1970-01-03T00:00:00Z. Decode that representation only where the caller
@@ -144,7 +144,7 @@ const str = (v: SqlValue | undefined, n: string): string => {
 // A Runner executes one SQL statement and returns its result. The load
 // helpers below are written against this so the same queries run either
 // against an in-browser sql.js database (a downloaded file) or the remote
-// Layerbase HTTP API (querying in the cloud, no download).
+// Remote HTTP query API (no database download).
 export type Runner = (sql: string) => Promise<QueryResult>
 
 // toRecords turns a QueryResult (columns + row arrays) into keyed objects,
@@ -474,7 +474,7 @@ export const executeQueries = async (
   variables: QueryVariables = {},
 ): Promise<readonly QueryResult[]> => {
   // When a cloud backend is connected, the same interpolated SQL runs
-  // against Layerbase's HTTP query API instead of a local sql.js copy -
+  // against the server HTTP query API instead of a local sql.js copy -
   // no downloaded database, bytes is ignored. The dashboards are unchanged;
   // only where the query executes moves.
   const remote = getRemoteBackend()
@@ -522,7 +522,7 @@ export const executeQuery = async (
   (await executeQueries(bytes, [sql], variables))[0] ?? { columns: [], rows: [] }
 
 // buildLoaded assembles the whole LoadedDatabase from a Runner, so the
-// exact same queries drive the local (sql.js) and remote (Layerbase HTTP)
+// exact same queries drive the local (sql.js) and remote HTTP
 // paths. Awaited in order - fine for sql.js, and keeps the remote backend
 // to one request at a time (rate-limit safe).
 const buildLoaded = async (
@@ -584,8 +584,8 @@ export const openDatabaseBytes = async (
   }
 }
 
-// openDatabaseRemote builds the same LoadedDatabase by querying a Layerbase
-// cloud database over HTTP - no file downloaded. databaseBytes is empty
+// openDatabaseRemote builds the same LoadedDatabase by querying the teslalog
+// data server over HTTP - no file downloaded. databaseBytes is empty
 // because nothing local is held; the dashboards read remotely too via the
 // active remote backend (see executeQueries), which the caller sets.
 export const openDatabaseRemote = async (config: RemoteConfig): Promise<LoadedDatabase> => {

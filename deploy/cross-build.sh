@@ -51,9 +51,6 @@ build() {
 
 build linux   amd64 teslalog-linux-amd64
 build linux   arm64 teslalog-linux-arm64
-# Windows/amd64, for run-teslalog.bat/status-teslalog.bat - side-by-side
-# testing directly on a Windows dev machine, no Linux box or Pi required.
-build windows amd64 teslalog-windows-amd64.exe
 
 # 32-bit ARM (armv7), for a Pi Zero 2 W running 32-bit Raspberry Pi OS
 # instead of the 64-bit image this README otherwise assumes. The chip
@@ -67,7 +64,7 @@ echo "  -> teslalog-linux-armv7 ($(du -h teslalog-linux-armv7 | cut -f1), static
 
 cat <<'EOF'
 
-Done. All four binaries are fully static (no glibc/cgo dependency) and
+Done. All three binaries are fully static (no glibc/cgo dependency) and
 can just be copied to the target machine and run directly:
 
   Testing on a PC/server (linux/amd64), side-by-side with TeslaMate:
@@ -80,11 +77,6 @@ can just be copied to the target machine and run directly:
   "armv7l" means a 32-bit OS (use teslalog-linux-armv7 instead):
     scp teslalog-linux-arm64 pi@<pi-host>:~/
     ssh pi@<pi-host> 'sudo bash deploy/install.sh ~/teslalog-linux-arm64'
-
-  Testing directly on Windows (windows/amd64): copy
-  teslalog-windows-amd64.exe next to config.windows-test.toml,
-  run-teslalog.bat and status-teslalog.bat (double-click, or from a
-  terminal) at the repo root - no Linux box or Pi required.
 
 No Docker, systemd, or install step is required just to try it out -
 either Linux binary can be run directly in a terminal against a
