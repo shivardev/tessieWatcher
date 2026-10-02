@@ -191,16 +191,16 @@ user_agent = "teslalog/0.2.0 (personal use)"
 # session_fee is a flat amount added once per session.
 # [[geofence]]
 # name          = "Apartment charger"
-# lat           = 36.1220
-# lng           = -86.7746
+# lat           = 40.7128
+# lng           = -74.0060
 # radius_m      = 50
 # cost_per_unit = 0.30
 # session_fee   = 0.45
 #
 # [[geofence]]
 # name          = "Free charger at the store"
-# lat           = 36.1288
-# lng           = -86.7783
+# lat           = 40.7580
+# lng           = -73.9855
 # radius_m      = 50
 # cost_per_unit = 0
 

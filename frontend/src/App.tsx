@@ -1136,7 +1136,7 @@ export default function App() {
             <p>Enter the Pi portal address. The request is queued when the car is driving or charging and runs only after it is idle, asleep, offline, or suspended.</p>
             <form onSubmit={(event) => { event.preventDefault(); void requestPiSync() }}>
               <label htmlFor="pi-sync-url">Pi address</label>
-              <input id="pi-sync-url" value={piSyncUrl} onChange={(event) => setPiSyncUrl(event.target.value)} placeholder="10.0.0.236:8083" spellCheck={false} autoFocus />
+              <input id="pi-sync-url" value={piSyncUrl} onChange={(event) => setPiSyncUrl(event.target.value)} placeholder="192.168.1.25:8083" spellCheck={false} autoFocus />
               <button className="cta" type="submit" disabled={piSyncBusy || piSyncUrl.trim() === ''}>
                 <RefreshCw />
                 {piSyncBusy ? 'Checking…' : 'Check and sync'}
@@ -1255,7 +1255,7 @@ export default function App() {
                   id="live-url"
                   value={liveUrl}
                   onChange={(event) => setLiveUrl(event.target.value)}
-                  placeholder="10.0.0.236:8083"
+                  placeholder="192.168.1.25:8083"
                   spellCheck={false}
                 />
                 <button type="submit" disabled={busy}>

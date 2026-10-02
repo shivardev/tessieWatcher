@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
+  Area,
   CartesianGrid,
   Bar,
   BarChart,
-  Cell,
-  Legend,
+  ComposedChart,
   Line,
-  LineChart,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -20,9 +17,11 @@ import { StateTimeline, spansFromRows } from './StateTimeline'
 import { executeQueries, interpolateLabel } from './database'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, temperature, timestampDate, type ViewSettings } from './viewSettings'
+import { AnimatedText, AreaGradient, Donut, animateBelow, chartTheme, palette, seriesPalette } from './ui'
 
 type PanelState = Readonly<{ definition: PanelDefinition; results: readonly QueryResult[] }>
-const seriesColors = ['#5794f2', '#ff9830', '#b877d9', '#73bf69', '#fade2a', '#8ab8ff', '#f2495c', '#56a64b'] as const
+const seriesColors = seriesPalette
+const statTones = [palette.lime, palette.cyan, palette.violet, palette.amber, palette.emerald, palette.rose] as const
 export const convertLabel = (label: string, settings: ViewSettings): string =>
   label
     .replaceAll('km/h', settings.lengthUnit === 'mi' ? 'mi/h' : 'km/h')
@@ -179,10 +178,13 @@ const timeTick = (value: string | number): string => {
 
 function StatPanel({ panel }: Readonly<{ panel: PanelState }>) {
   const value = panel.results[0]?.rows[0]?.[0]
+  const tone = statTones[Math.abs(panel.definition.id) % statTones.length]
   return (
-    <article className="catalog-panel stat-panel">
+    <article className="catalog-panel stat-panel" style={{ '--tone': tone } as CSSProperties}>
       <h2>{panel.definition.title}</h2>
-      <strong>{displayMetric(value)}</strong>
+      <strong>
+        <AnimatedText text={displayMetric(value)} />
+      </strong>
     </article>
   )
 }
@@ -233,13 +235,21 @@ function BarPanel({ panel }: Readonly<{ panel: PanelState }>) {
     <article className="catalog-panel chart">
       <h2>{panel.definition.title}</h2>
       <ResponsiveContainer width="100%" height={260}>
-        <BarChart data={[...data]} layout="vertical">
-          <CartesianGrid stroke="#26322f" horizontal={false} />
-          <XAxis type="number" stroke="#879491" />
-          <YAxis dataKey={category} type="category" stroke="#879491" width={130} tick={{ fontSize: 11 }} />
-          <Tooltip contentStyle={{ background: '#11191a', border: '1px solid #53605d', borderRadius: 4 }} />
+        <BarChart data={[...data]} layout="vertical" margin={{ left: 4, right: 12 }}>
+          <CartesianGrid stroke={chartTheme.grid} horizontal={false} />
+          <XAxis type="number" stroke={chartTheme.axis} tick={chartTheme.tick} tickLine={false} axisLine={false} />
+          <YAxis dataKey={category} type="category" stroke={chartTheme.axis} width={130} tick={chartTheme.tick} tickLine={false} axisLine={false} />
+          <Tooltip cursor={{ fill: 'rgba(255,255,255,0.04)' }} contentStyle={chartTheme.tooltip} labelStyle={chartTheme.tooltipLabel} />
           {series.map((key, index) => (
-            <Bar key={key} dataKey={key} fill={seriesColors[index % seriesColors.length]} isAnimationActive={false} />
+            <Bar
+              key={key}
+              dataKey={key}
+              fill={seriesColors[index % seriesColors.length]}
+              radius={[0, 6, 6, 0]}
+              maxBarSize={22}
+              isAnimationActive={data.length < animateBelow}
+              animationDuration={800}
+            />
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -252,35 +262,67 @@ function TimeSeriesPanel({ panel }: Readonly<{ panel: PanelState }>) {
   const data = useMemo(() => (result ? chartRows(result) : []), [result])
   const xKey = result?.columns[0] ?? 'time'
   const series = result?.columns.slice(1) ?? []
+  const gradientBase = `ts-${panel.definition.id}`
+  const animate = data.length < animateBelow
   return (
     <article className="catalog-panel chart">
       <h2>{panel.definition.title}</h2>
       <ResponsiveContainer width="100%" height={260}>
-        <LineChart data={[...data]} syncId="dashboard-time" syncMethod={nearestTimeSync}>
-          <CartesianGrid stroke="#26322f" vertical={false} />
+        <ComposedChart data={[...data]} syncId="dashboard-time" syncMethod={nearestTimeSync} margin={{ top: 6, right: 8, left: -4 }}>
+          {series.map((key, index) => (
+            <AreaGradient key={key} id={`${gradientBase}-${index}`} color={seriesColors[index % seriesColors.length] ?? palette.cyan} />
+          ))}
+          <CartesianGrid stroke={chartTheme.grid} vertical={false} />
           <XAxis
             dataKey={xKey}
-            stroke="#879491"
+            stroke={chartTheme.axis}
             minTickGap={45}
             tickFormatter={timeTick}
-            tick={{ fontSize: 11 }}
+            tick={chartTheme.tick}
+            tickLine={false}
+            axisLine={false}
           />
-          <YAxis stroke="#879491" width={45} />
+          <YAxis stroke={chartTheme.axis} width={45} tick={chartTheme.tick} tickLine={false} axisLine={false} />
           <Tooltip
-            contentStyle={{ background: '#11191a', border: '1px solid #53605d', borderRadius: 4 }}
+            cursor={chartTheme.cursor}
+            contentStyle={chartTheme.tooltip}
+            labelStyle={chartTheme.tooltipLabel}
             labelFormatter={(label) => timeTick(String(label))}
           />
-          {series.map((key, index) => (
-            <Line
-              key={key}
-              dataKey={key}
-              dot={false}
-              stroke={seriesColors[index % seriesColors.length] ?? '#5794f2'}
-              connectNulls={false}
-              isAnimationActive={false}
-            />
-          ))}
-        </LineChart>
+          {series.map((key, index) => {
+            const color = seriesColors[index % seriesColors.length] ?? palette.cyan
+            // Fill only when there are few series: stacked translucent
+            // fills under many lines turn into mud.
+            return series.length <= 3 ? (
+              <Area
+                key={key}
+                dataKey={key}
+                type="monotone"
+                stroke={color}
+                strokeWidth={2}
+                fill={`url(#${gradientBase}-${index})`}
+                dot={false}
+                activeDot={{ r: 4, strokeWidth: 0 }}
+                connectNulls={false}
+                isAnimationActive={animate}
+                animationDuration={900}
+              />
+            ) : (
+              <Line
+                key={key}
+                dataKey={key}
+                type="monotone"
+                dot={false}
+                stroke={color}
+                strokeWidth={1.75}
+                activeDot={{ r: 4, strokeWidth: 0 }}
+                connectNulls={false}
+                isAnimationActive={animate}
+                animationDuration={900}
+              />
+            )
+          })}
+        </ComposedChart>
       </ResponsiveContainer>
       <div className="chart-series-summary">
         {series.map((key, index) => (
@@ -302,21 +344,10 @@ function PiePanel({ panel }: Readonly<{ panel: PanelState }>) {
       ? [{ name: row[0], value: row[1] }]
       : [],
   )
-  const colors = ['#c9ff43', '#63d8ff', '#ff9e64', '#d5a6ff']
   return (
     <article className="catalog-panel chart">
       <h2>{panel.definition.title}</h2>
-      <ResponsiveContainer width="100%" height={260}>
-        <PieChart>
-          <Pie data={data} dataKey="value" nameKey="name" innerRadius="48%" outerRadius="78%">
-            {data.map((item, index) => (
-              <Cell key={item.name} fill={colors[index % colors.length] ?? '#c9ff43'} />
-            ))}
-          </Pie>
-          <Tooltip contentStyle={{ background: '#11191a', border: '1px solid #26322f' }} />
-          <Legend />
-        </PieChart>
-      </ResponsiveContainer>
+      <Donut data={data} format={(value) => displayMetric(value)} height={200} />
     </article>
   )
 }
@@ -448,10 +479,19 @@ export function GenericDashboard({
         </div>
       )}
       {loading && panels.length === 0 && (
-        <p className="dashboard-loading" role="status" aria-live="polite">
-          <span className="spinner" aria-hidden="true" />
-          Reading the database…
-        </p>
+        <>
+          <p className="dashboard-loading" role="status" aria-live="polite">
+            <span className="spinner" aria-hidden="true" />
+            Reading the database…
+          </p>
+          <div className="skeleton-grid" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+            <i className="tall" />
+          </div>
+        </>
       )}
       <section className="catalog-grid grafana-grid">
         {panels.map((panel) => (

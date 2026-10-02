@@ -1278,7 +1278,7 @@ func TestVehicleEfficiencyReportsUnknownRatherThanZero(t *testing.T) {
 }
 
 // TestUpsertVehicleNeverErasesAKnownFieldWithAnEmptyOne pins the bug
-// found on the live database: the API reported "Shivaradhan's Model Y"
+// found on the live database: the API reported "My Model Y"
 // and the stored row held "".
 //
 // The fields arrive from two endpoints. The vehicle list carries
@@ -1289,7 +1289,7 @@ func TestUpsertVehicleNeverErasesAKnownFieldWithAnEmptyOne(t *testing.T) {
 	store := openTestStore(t)
 
 	if _, err := store.UpsertVehicle(VehicleMeta{
-		VIN: "VIN-KEEP", TeslaID: "111", DisplayName: "Shivaradhan's Model Y",
+		VIN: "VIN-KEEP", TeslaID: "111", DisplayName: "My Model Y",
 		Model: "Y", TrimBadging: "62", MarketingName: "LR AWD",
 	}); err != nil {
 		t.Fatalf("first upsert: %v", err)
@@ -1308,7 +1308,7 @@ func TestUpsertVehicleNeverErasesAKnownFieldWithAnEmptyOne(t *testing.T) {
 		 FROM vehicles WHERE vin = 'VIN-KEEP'`).Scan(&name, &marketing, &trim); err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	if name != "Shivaradhan's Model Y" {
+	if name != "My Model Y" {
 		t.Errorf("display_name was erased: got %q", name)
 	}
 	if marketing != "LR AWD" {

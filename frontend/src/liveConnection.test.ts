@@ -18,11 +18,11 @@ const meta = (overrides: Partial<LiveMeta> = {}): LiveMeta => ({
 describe('normaliseBaseUrl', () => {
   // People type the address off the sticker on the Pi, not a URL.
   it.each([
-    ['10.0.0.236', 'http://10.0.0.236:8083'],
-    ['10.0.0.236:8083', 'http://10.0.0.236:8083'],
-    ['http://10.0.0.236:8083', 'http://10.0.0.236:8083'],
-    ['http://10.0.0.236:8083/', 'http://10.0.0.236:8083'],
-    ['  10.0.0.236:9000  ', 'http://10.0.0.236:9000'],
+    ['192.168.1.25', 'http://192.168.1.25:8083'],
+    ['192.168.1.25:8083', 'http://192.168.1.25:8083'],
+    ['http://192.168.1.25:8083', 'http://192.168.1.25:8083'],
+    ['http://192.168.1.25:8083/', 'http://192.168.1.25:8083'],
+    ['  192.168.1.25:9000  ', 'http://192.168.1.25:9000'],
     ['teslalog.local', 'http://teslalog.local:8083'],
   ])('normalises %s', (input, expected) => {
     expect(normaliseBaseUrl(input)).toBe(expected)

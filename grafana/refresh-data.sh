@@ -5,7 +5,7 @@
 # picks up the new file on its next query - no restart needed.
 #
 # Usage: ./refresh-data.sh <portal-url>
-#   e.g. ./refresh-data.sh http://10.0.0.236:8083 - your teslalog Pi's
+#   e.g. ./refresh-data.sh http://192.168.1.25:8083 - your teslalog Pi's
 #   own address (config.toml's [portal].addr, from whatever device is
 #   on the same network as it), NOT a value copied from someone else's
 #   setup. Or export TESLALOG_PORTAL_URL once instead of passing it
@@ -15,7 +15,7 @@ cd "$(dirname "$0")"
 
 PORTAL_URL="${1:-${TESLALOG_PORTAL_URL:-}}"
 if [ -z "$PORTAL_URL" ]; then
-  echo "Usage: $0 <portal-url>   e.g. $0 http://10.0.0.236:8083" >&2
+  echo "Usage: $0 <portal-url>   e.g. $0 http://192.168.1.25:8083" >&2
   echo "(or: export TESLALOG_PORTAL_URL=http://<your-pi-ip>:8083)" >&2
   echo "This is YOUR teslalog portal's address, not a default that works for everyone." >&2
   exit 1

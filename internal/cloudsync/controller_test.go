@@ -23,7 +23,7 @@ func TestControllerPersistsBrowserManagedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Settings{BaseURL: "http://10.0.0.213:8085/", DatabaseID: "fleet", Interval: 5 * time.Minute, BatchSize: 250}
+	want := Settings{BaseURL: "http://192.168.1.50:8085/", DatabaseID: "fleet", Interval: 5 * time.Minute, BatchSize: 250}
 	if err := controller.Configure(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestControllerPersistsBrowserManagedSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.BaseURL != "http://10.0.0.213:8085" || got.DatabaseID != "fleet" || got.Interval != 5*time.Minute || got.BatchSize != 250 || got.Enabled {
+	if got.BaseURL != "http://192.168.1.50:8085" || got.DatabaseID != "fleet" || got.Interval != 5*time.Minute || got.BatchSize != 250 || got.Enabled {
 		t.Fatalf("unexpected persisted settings: %+v", got)
 	}
 }

@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
 :root {
   font-family:
     Inter,
@@ -7,18 +7,59 @@
     -apple-system,
     'Segoe UI',
     sans-serif;
-  color: #edf3f1;
-  background: #0a1011;
+  color: #ececf1;
+  background: #000;
+  color-scheme: dark;
   font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11', 'ss01';
 }
 * {
   box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+  scrollbar-color: #26262c transparent;
+  scrollbar-width: thin;
 }
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  background: #000;
 }
 button {
   font: inherit;
+}
+::selection {
+  background: rgb(198 255 61 / 28%);
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e1e23;
+  border: 3px solid #000;
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2e2e35;
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

@@ -45,8 +45,8 @@ export class LiveConnectionError extends Error {
   override readonly name = 'LiveConnectionError'
 }
 
-// normaliseBaseUrl accepts what a person actually types - "10.0.0.236",
-// "10.0.0.236:8083", a full URL, a trailing slash - and returns an
+// normaliseBaseUrl accepts what a person actually types - "192.168.1.25",
+// "192.168.1.25:8083", a full URL, a trailing slash - and returns an
 // origin. Bare hosts default to http and teslalog's default port,
 // because a teslalog portal on a home LAN is plain HTTP.
 export const normaliseBaseUrl = (input: string): string => {

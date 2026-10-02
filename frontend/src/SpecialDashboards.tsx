@@ -3,18 +3,51 @@ import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
 import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip as LeafletTooltip, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
-  LineChart,
-  Pie,
-  PieChart,
-  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
   type TooltipContentProps,
 } from 'recharts'
+import {
+  Activity,
+  ArrowLeft,
+  BatteryCharging,
+  CalendarClock,
+  Coins,
+  Cpu,
+  Database,
+  Gauge,
+  Hash,
+  HeartPulse,
+  Leaf,
+  MapPin,
+  Mountain,
+  Navigation,
+  PlugZap,
+  Route,
+  Thermometer,
+  Timer,
+  Wallet,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react'
+import {
+  AreaGradient,
+  Donut,
+  RingGauge,
+  StatGrid,
+  StatTile,
+  animateBelow,
+  chartTheme,
+  palette,
+  seriesPalette,
+  type Tone,
+} from './ui'
 import { executeQueries, type QueryVariables } from './database'
 import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
@@ -105,6 +138,13 @@ function DashboardLoading({ title }: Readonly<{ title: string }>) {
         <span className="spinner" aria-hidden="true" />
         Reading the database…
       </p>
+      <div className="skeleton-grid" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+        <i />
+        <i className="tall" />
+      </div>
     </main>
   )
 }
@@ -174,7 +214,7 @@ export function LocalPlot({ points }: Readonly<{ points: readonly Point[] }>) {
     const y = (latitude: number): number =>
       height - 24 - ((latitude - minLat) / Math.max(maxLat - minLat, 0.00001)) * (height - 48)
     context.clearRect(0, 0, width, height)
-    context.strokeStyle = '#26322f'
+    context.strokeStyle = 'rgba(255,255,255,0.06)'
     context.lineWidth = 1
     for (let line = 1; line < 5; line += 1) {
       context.beginPath()
@@ -182,8 +222,10 @@ export function LocalPlot({ points }: Readonly<{ points: readonly Point[] }>) {
       context.lineTo(width, (height * line) / 5)
       context.stroke()
     }
-    context.strokeStyle = '#c9ff43'
-    context.lineWidth = 3
+    context.strokeStyle = '#c6ff3d'
+    context.shadowColor = 'rgba(198,255,61,0.6)'
+    context.shadowBlur = 10
+    context.lineWidth = 2.5
     context.lineJoin = 'round'
     context.beginPath()
     const sampleEvery = Math.max(1, Math.ceil(points.length / 10_000))
@@ -284,10 +326,10 @@ function RouteMap({
             />
           ))
         ) : (
-          <Polyline positions={[...positions]} pathOptions={{ color: '#2455d6', weight: 4 }} />
+          <Polyline positions={[...positions]} pathOptions={{ color: palette.cyan, weight: 4 }} />
         )}
-        {positions.length === 1 && <CircleMarker center={positions[0] ?? [0, 0]} radius={8} pathOptions={{ color: '#c9ff43', fillColor: '#c9ff43', fillOpacity: 0.85 }} />}
-        {activePoint && <CircleMarker center={[activePoint.latitude, activePoint.longitude]} radius={7} pathOptions={{ color: '#ffffff', weight: 2, fillColor: '#c9ff43', fillOpacity: 1 }} />}
+        {positions.length === 1 && <CircleMarker center={positions[0] ?? [0, 0]} radius={8} pathOptions={{ color: palette.lime, fillColor: palette.lime, fillOpacity: 0.85 }} />}
+        {activePoint && <CircleMarker center={[activePoint.latitude, activePoint.longitude]} radius={7} pathOptions={{ color: '#ffffff', weight: 2, fillColor: palette.lime, fillOpacity: 1 }} />}
         <FitRoute points={positions} />
       </MapContainer>
       {speedRoute && (
@@ -315,13 +357,13 @@ function ChargingSitesMap({ result }: Readonly<{ result: QueryResult | undefined
   return (
     <MapContainer className="route-map" center={positions[0] ?? [0,0]} zoom={9} scrollWheelZoom>
       <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      {sites.map((site) => <CircleMarker key={`${site.latitude}-${site.longitude}`} center={[site.latitude,site.longitude]} radius={Math.max(6,Math.min(22,Math.sqrt(site.energy)*2))} pathOptions={{color:'#fade2a',fillColor:'#ff9830',fillOpacity:.7}}><LeafletTooltip>{site.name}: {site.energy.toFixed(1)} kWh · {site.sessions} sessions</LeafletTooltip></CircleMarker>)}
+      {sites.map((site) => <CircleMarker key={`${site.latitude}-${site.longitude}`} center={[site.latitude,site.longitude]} radius={Math.max(6,Math.min(22,Math.sqrt(site.energy)*2))} pathOptions={{color:palette.amber,fillColor:palette.orange,fillOpacity:.6,weight:1.5}}><LeafletTooltip>{site.name}: {site.energy.toFixed(1)} kWh · {site.sessions} sessions</LeafletTooltip></CircleMarker>)}
       <FitRoute points={positions}/>
     </MapContainer>
   )
 }
 
-const telemetryColors = ['#8ab4ff', '#ff8a00', '#b15cff', '#76d275', '#ffd54f'] as const
+const telemetryColors = seriesPalette
 const chartTime = (value: string | number): string => {
   const date = timestampDate(value)
   return Number.isNaN(date.getTime())
@@ -437,24 +479,32 @@ function TelemetryChart({
     value === null ? '—' : telemetryValue(value, column)
   const hideStateLine = (column: string): boolean =>
     title.startsWith('Temperatures') && (booleanSeries(column) || /fan/iu.test(column))
+  // The first real series gets a gradient fill so the panel has a clear
+  // primary reading; the rest stay as lines on top of it.
+  const filledSeries = series.find((column) => !booleanSeries(column) && !/fan/iu.test(column) && !hideStateLine(column))
+  const gradientId = `tele-${title.replace(/\W+/gu, '-')}`
+  const animate = data.length < animateBelow
   return (
     <article className="catalog-panel drive-telemetry-panel">
       <h2>{title}</h2>
       {hasValues ? (
         <ResponsiveContainer width="100%" height={270}>
-          <LineChart
+          <ComposedChart
             data={data}
             margin={{ top: 8, right: 14, bottom: 4, left: 2 }}
             {...(xIsTime ? { syncId: 'drive-telemetry', syncMethod: nearestTimeSync } : {})}
             onMouseMove={(state) => onHoverTime?.(typeof state.activeLabel === 'string' ? state.activeLabel : null)}
             onMouseLeave={() => onHoverTime?.(null)}
           >
-            <CartesianGrid stroke="#26322f" vertical={false} />
+            <AreaGradient id={gradientId} color={telemetryColors[0] ?? palette.cyan} />
+            <CartesianGrid stroke={chartTheme.grid} vertical={false} />
             <XAxis
               dataKey={xKey}
               minTickGap={48}
-              stroke="#879491"
-              tick={{ fontSize: 11 }}
+              stroke={chartTheme.axis}
+              tick={chartTheme.tick}
+              tickLine={false}
+              axisLine={false}
               tickFormatter={formatX}
             />
             {scaleIds.map((scale) => (
@@ -463,31 +513,37 @@ function TelemetryChart({
                 yAxisId={scale}
                 hide={scale !== visibleScale}
                 domain={scale === 'boolean' ? [0, 1] : ['auto', 'auto']}
-                stroke="#879491"
+                stroke={chartTheme.axis}
                 width={48}
-                tick={{ fontSize: 11 }}
+                tick={chartTheme.tick}
+                tickLine={false}
+                axisLine={false}
               />
             ))}
-            <Tooltip content={(props) => <CompactTelemetryTooltip {...props} labelAsTime={xIsTime} xLabel={xKey} />} />
-            {series.map((column, index) => (
-              <Line
-                key={column}
-                dataKey={column}
-                yAxisId={scaleForSeries(column)}
-                dot={false}
-                activeDot={!hideStateLine(column)}
-                isAnimationActive={false}
-                type={booleanSeries(column) || /fan/iu.test(column) ? 'stepAfter' : 'linear'}
-                stroke={
-                  hideStateLine(column)
-                    ? 'transparent'
-                    : (telemetryColors[index % telemetryColors.length] ?? '#c9ff43')
-                }
-                strokeWidth={booleanSeries(column) || /fan/iu.test(column) ? 1 : 1.5}
-                connectNulls={!hideStateLine(column)}
-              />
-            ))}
-          </LineChart>
+            <Tooltip cursor={chartTheme.cursor} content={(props) => <CompactTelemetryTooltip {...props} labelAsTime={xIsTime} xLabel={xKey} />} />
+            {series.map((column, index) => {
+              const stepped = booleanSeries(column) || /fan/iu.test(column)
+              const color = hideStateLine(column)
+                ? 'transparent'
+                : (telemetryColors[index % telemetryColors.length] ?? palette.cyan)
+              const common = {
+                dataKey: column,
+                yAxisId: scaleForSeries(column),
+                dot: false,
+                activeDot: hideStateLine(column) ? false : { r: 4, strokeWidth: 0 },
+                isAnimationActive: animate,
+                animationDuration: 900,
+                type: stepped ? ('stepAfter' as const) : ('monotone' as const),
+                stroke: color,
+                connectNulls: !hideStateLine(column),
+              }
+              return column === filledSeries && index === 0 ? (
+                <Area key={column} {...common} strokeWidth={2} fill={`url(#${gradientId})`} />
+              ) : (
+                <Line key={column} {...common} strokeWidth={stepped ? 1 : 1.6} />
+              )
+            })}
+          </ComposedChart>
         </ResponsiveContainer>
       ) : (
         <p className="no-data">{emptyMessage}</p>
@@ -498,7 +554,7 @@ function TelemetryChart({
             <div key={summary.column}>
               <i
                 aria-hidden="true"
-                style={{ background: telemetryColors[index % telemetryColors.length] ?? '#c9ff43' }}
+                style={{ background: telemetryColors[index % telemetryColors.length] ?? palette.cyan }}
               />
               <b>{summary.column}</b>
               <span>Mean: {metric(summary.mean, summary.column)}</span>
@@ -523,13 +579,14 @@ function ChargingCurveChart({ result }: Readonly<{ result: QueryResult | undefin
       <h2>Charging curve</h2>
       {data.length === 0 ? <p className="no-data">No charging curve recorded.</p> : (
         <ResponsiveContainer width="100%" height={270}>
-          <LineChart data={data} margin={{ top: 8, right: 18, bottom: 10, left: 2 }}>
-            <CartesianGrid stroke="#26322f" vertical={false} />
-            <XAxis dataKey="soc" type="number" domain={['dataMin', 'dataMax']} unit="%" stroke="#879491" tick={{ fontSize: 11 }} />
-            <YAxis dataKey="power" unit=" kW" stroke="#879491" width={58} tick={{ fontSize: 11 }} />
-            <Tooltip formatter={(value) => [`${String(value)} kW`, 'Power']} labelFormatter={(value) => `SOC ${String(value)}%`} />
-            <Line dataKey="power" name="Power" dot={false} activeDot isAnimationActive={false} stroke="#c9ff43" strokeWidth={2} />
-          </LineChart>
+          <ComposedChart data={data} margin={{ top: 8, right: 18, bottom: 10, left: 2 }}>
+            <AreaGradient id="charging-curve" color={palette.lime} />
+            <CartesianGrid stroke={chartTheme.grid} vertical={false} />
+            <XAxis dataKey="soc" type="number" domain={['dataMin', 'dataMax']} unit="%" stroke={chartTheme.axis} tick={chartTheme.tick} tickLine={false} axisLine={false} />
+            <YAxis dataKey="power" unit=" kW" stroke={chartTheme.axis} width={58} tick={chartTheme.tick} tickLine={false} axisLine={false} />
+            <Tooltip cursor={chartTheme.cursor} contentStyle={chartTheme.tooltip} labelStyle={chartTheme.tooltipLabel} formatter={(value) => [`${String(value)} kW`, 'Power']} labelFormatter={(value) => `SOC ${String(value)}%`} />
+            <Area dataKey="power" name="Power" type="monotone" dot={false} activeDot={{ r: 4, strokeWidth: 0 }} isAnimationActive={data.length < animateBelow} animationDuration={900} stroke={palette.lime} strokeWidth={2} fill="url(#charging-curve)" />
+          </ComposedChart>
         </ResponsiveContainer>
       )}
     </article>
@@ -598,9 +655,9 @@ export function TripDashboard({
   const odometerKm = number(aggregate?.[4]) ?? 0
   const grossDistance = distance(odometerKm > 0 ? odometerKm : distanceKm, settings.lengthUnit)
   const timeSpent = [
-    { name: 'driving', value: driveMinutes * 60, color: '#5794f2' },
-    { name: 'charging (AC)', value: acSeconds, color: '#73bf69' },
-    { name: 'charging (DC)', value: dcSeconds, color: '#fade2a' },
+    { name: 'driving', value: driveMinutes * 60, color: palette.violet },
+    { name: 'charging (AC)', value: acSeconds, color: palette.emerald },
+    { name: 'charging (DC)', value: dcSeconds, color: palette.amber },
   ].filter((entry) => entry.value > 0)
   const timeline = (results[8]?.rows ?? []).flatMap((row) => {
     const start = typeof row[0] === 'string' ? timestampDate(row[0]).getTime() : null
@@ -624,7 +681,7 @@ export function TripDashboard({
           <article><span>Ø Cost per 100 {settings.lengthUnit}</span><strong>{(chargingCost / Math.max(billedEnergy, .001) * (grossEnergy / 1000) / Math.max(shownDistance, .001) * 100).toFixed(2)}</strong></article>
           <article className="energy-bars"><span>Total energy</span><div><i style={{width:`${Math.min(100,grossEnergy/1000/Math.max(grossEnergy/1000,acEnergy+dcEnergy)*100)}%`}} />{(grossEnergy/1000).toFixed(2)} kWh consumed</div><div><i style={{width:`${Math.min(100,(acEnergy+dcEnergy)/Math.max(grossEnergy/1000,acEnergy+dcEnergy)*100)}%`}} />{(acEnergy+dcEnergy).toFixed(2)} kWh added</div></article>
         </div>
-        <article className="catalog-panel trip-pie"><h2>Time spent</h2><ResponsiveContainer width="100%" height={260}><PieChart><Pie data={timeSpent} dataKey="value" nameKey="name" outerRadius={88} label={({name,percent}) => `${String(name)} ${((percent ?? 0)*100).toFixed(1)}%`}>{timeSpent.map((entry)=><Cell key={entry.name} fill={entry.color}/>)}</Pie><Tooltip formatter={(value) => `${(Number(value)/3600).toFixed(1)} hours`} /></PieChart></ResponsiveContainer></article>
+        <article className="catalog-panel trip-pie"><h2>Time spent</h2><Donut data={timeSpent} format={(value) => `${(value / 3600).toFixed(1)} h`} centerLabel="Active time" /></article>
       </section>
       <StateTimeline spans={timeline} title="States" />
       <h2 className="telemetry-heading">Drives</h2>
@@ -670,20 +727,13 @@ export function VisitedDashboard({
         note={settings.timeRange === 'all' ? 'All time' : settings.timeRange}
       />
       {error && <p className="no-data">{error}</p>}
-      <section className="charging-stat-grid">
-        {[
-          ['Mileage', `${(number(results[1]?.rows[0]?.[0]) ?? 0).toFixed(0)} ${settings.lengthUnit}`],
-          ['Energy added', `${(number(results[2]?.rows[0]?.[0]) ?? 0).toFixed(1)} kWh`],
-          ['Energy used', `${(number(results[2]?.rows[0]?.[1]) ?? 0).toFixed(1)} kWh`],
-          ['Charging efficiency', `${(number(results[2]?.rows[0]?.[2]) ?? 0).toFixed(1)}%`],
-          ['Total charging cost', (number(results[2]?.rows[0]?.[3]) ?? 0).toFixed(2)],
-        ].map(([label, value]) => (
-          <article key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </article>
-        ))}
-      </section>
+      <StatGrid>
+        <StatTile label="Mileage" icon={Route} tone="cyan" value={`${(number(results[1]?.rows[0]?.[0]) ?? 0).toFixed(0)} ${settings.lengthUnit}`} />
+        <StatTile label="Energy added" icon={Zap} tone="lime" value={`${(number(results[2]?.rows[0]?.[0]) ?? 0).toFixed(1)} kWh`} />
+        <StatTile label="Energy used" icon={PlugZap} tone="violet" value={`${(number(results[2]?.rows[0]?.[1]) ?? 0).toFixed(1)} kWh`} />
+        <StatTile label="Charging efficiency" icon={Leaf} tone="emerald" value={`${(number(results[2]?.rows[0]?.[2]) ?? 0).toFixed(1)}%`} progress={(number(results[2]?.rows[0]?.[2]) ?? 0) / 100} />
+        <StatTile label="Total charging cost" icon={Coins} tone="amber" value={(number(results[2]?.rows[0]?.[3]) ?? 0).toFixed(2)} />
+      </StatGrid>
       <section className="catalog-panel route-panel">
         <h2>Visited places</h2>
         <LocalPlot points={points} />
@@ -720,29 +770,26 @@ export function DatabaseInformationDashboard({
   const count = (index: number): number => number(row?.[index]) ?? 0
   const incomplete = count(4) + count(5)
   const odometer = distance(count(0), settings.lengthUnit)
-  const cards: readonly (readonly [string, string])[] = [
-    ['Odometer', `${odometer.toFixed(0)} ${settings.lengthUnit}`],
-    ['Drives logged', String(count(1))],
-    ['Charges logged', String(count(2))],
-    ['Firmware', text(row?.[3])],
+  const cards: readonly (readonly [string, string, LucideIcon, Tone])[] = [
+    ['Odometer', `${odometer.toFixed(0)} ${settings.lengthUnit}`, Gauge, 'cyan'],
+    ['Drives logged', String(count(1)), Route, 'violet'],
+    ['Charges logged', String(count(2)), PlugZap, 'lime'],
+    ['Firmware', text(row?.[3]), Cpu, 'blue'],
     // Named the way TeslaMate names it. Zero is the state to expect; a
     // non-zero count means some totals in this viewer are quietly short,
     // because everything sums over closed records only.
-    ['Incomplete data', incomplete === 0 ? 'none' : `${incomplete} unclosed`],
-    ['Logging since', row?.[6] === null || row?.[6] === undefined ? '—' : timestampDate(String(row[6])).toLocaleDateString()],
+    ['Incomplete data', incomplete === 0 ? 'none' : `${incomplete} unclosed`, Database, incomplete === 0 ? 'emerald' : 'rose'],
+    ['Logging since', row?.[6] === null || row?.[6] === undefined ? '—' : timestampDate(String(row[6])).toLocaleDateString(), CalendarClock, 'amber'],
   ]
   return (
     <main>
       <Heading title="Database information" note="Uploaded SQLite snapshot" />
       {error && <p className="no-data">{error}</p>}
-      <section className="charging-stat-grid">
-        {cards.map(([label, value]) => (
-          <article key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </article>
+      <StatGrid>
+        {cards.map(([label, value, icon, tone]) => (
+          <StatTile key={label} label={label} value={value} icon={icon} tone={tone} animate={label !== 'Firmware' && label !== 'Logging since'} />
         ))}
-      </section>
+      </StatGrid>
       <h2 className="telemetry-heading">Row counts</h2>
       <DataTable result={results[0]} />
       <h2 className="telemetry-heading">Indexes</h2>
@@ -780,6 +827,10 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
      UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')}
      UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}
      ORDER BY 1`,
+    // Explicit AS aliases: the data server may be PostgreSQL, where a bare
+    // `day` alias is a syntax error.
+    `SELECT date(start_time) AS drive_day, SUM(distance_km) AS distance_km, COUNT(*) AS drives FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange,'start_time')} GROUP BY date(start_time) ORDER BY drive_day`,
+    `SELECT COUNT(*) AS sessions, COALESCE(SUM(charge_energy_added_kwh),0) AS energy_kwh, COALESCE(SUM(cost),0) AS cost FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange,'start_time')}`,
   ], [settings])
   const {results,error,loading}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   if (loading && results.length === 0) return <DashboardLoading title="Overview" />
@@ -797,15 +848,47 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     if(typeof stateRow[0]!=='string'||typeof stateRow[1]!=='string'||typeof stateRow[2]!=='string')return[]
     return[{start:timestampDate(stateRow[0]).getTime(),end:timestampDate(stateRow[1]).getTime(),state:stateRow[2]}]
   })
+  const vehicleState=text(row?.[3])
+  const stateClass=/charg/iu.test(vehicleState)?'charging':/asleep|offline|suspend/iu.test(vehicleState)?'asleep':'live'
+  const battery=number(row?.[4])
+  const socTrend=(results[5]?.rows??[]).flatMap((socRow)=>typeof socRow[1]==='number'?[socRow[1]]:[]).slice(-72)
+  const dailyDistance=(results[8]?.rows??[]).map((dayRow)=>distance(number(dayRow[1])??0,settings.lengthUnit))
+  const driveCount=(results[8]?.rows??[]).reduce((sum,dayRow)=>sum+(number(dayRow[2])??0),0)
+  const chargeRow=results[9]?.rows[0]
+  const netConsumption=net/Math.max(shownDistance,.001)
+  const grossConsumption=gross/Math.max(grossDistance,.001)
+  const rangeLabel=settings.timeRange==='all'?'all time':`last ${settings.timeRange}`
   return <main>
     <Heading title={text(row?.[0])} note={text(row?.[1])}/>
     {error&&<p className="no-data">{error}</p>}
-    <section className="overview-stat-grid">
-      <article><span>Battery level</span><strong>{value(4)}%</strong></article><article><span>Charging voltage</span><strong>{value(10)} V</strong></article><article><span>Charging power</span><strong>{value(11)} kW</strong></article>
-      <article><span>Ø Consumption (net)</span><strong>{(net/Math.max(shownDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Ø Consumption (gross)</span><strong>{(gross/Math.max(grossDistance,.001)).toFixed(0)} Wh/{settings.lengthUnit}</strong></article><article><span>Total distance logged</span><strong>{shownDistance.toFixed(1)} {settings.lengthUnit}</strong></article>
-      <article><span>Range</span><strong>{value(5)} {settings.lengthUnit}</strong></article><article><span>Firmware</span><strong>{text(row?.[2])}</strong></article><article><span>Odometer</span><strong>{value(6)} {settings.lengthUnit}</strong></article>
-      <article><span>Driver temp</span><strong>{value(7)} °{settings.temperatureUnit}</strong></article><article><span>Outside temp</span><strong>{value(8)} °{settings.temperatureUnit}</strong></article><article><span>Inside temp</span><strong>{value(9)} °{settings.temperatureUnit}</strong></article>
+    <section className="hero">
+      <RingGauge value={battery} label="Battery">
+        <em>{value(5)} {settings.lengthUnit} range</em>
+      </RingGauge>
+      <div className="hero-side">
+        <div className="hero-meta">
+          <span className={`chip ${stateClass}`}>{vehicleState}</span>
+          <span className="chip"><Cpu aria-hidden="true"/>{text(row?.[2])}</span>
+          <span className="chip"><Thermometer aria-hidden="true"/>{value(8)} °{settings.temperatureUnit} outside</span>
+        </div>
+        <div className="hero-figures">
+          <div><span>Odometer</span><strong>{value(6)}<small>{settings.lengthUnit}</small></strong></div>
+          <div><span>Distance · {rangeLabel}</span><strong>{shownDistance.toFixed(0)}<small>{settings.lengthUnit}</small></strong></div>
+          <div><span>Drives · {rangeLabel}</span><strong>{driveCount}</strong></div>
+          <div><span>Energy charged</span><strong>{(number(chargeRow?.[1])??0).toFixed(0)}<small>kWh</small></strong></div>
+        </div>
+      </div>
     </section>
+    <StatGrid>
+      <StatTile label="Battery level" icon={BatteryCharging} tone="lime" value={`${value(4)}%`} progress={battery===null?null:battery/100} trend={socTrend}/>
+      <StatTile label="Range" icon={Navigation} tone="cyan" value={`${value(5)} ${settings.lengthUnit}`} trend={socTrend}/>
+      <StatTile label="Distance logged" icon={Route} tone="violet" value={`${shownDistance.toFixed(1)} ${settings.lengthUnit}`} trend={dailyDistance}/>
+      <StatTile label="Ø Consumption (net)" icon={Leaf} tone="emerald" value={`${netConsumption.toFixed(0)} Wh/${settings.lengthUnit}`}/>
+      <StatTile label="Ø Consumption (gross)" icon={Activity} tone="amber" value={`${grossConsumption.toFixed(0)} Wh/${settings.lengthUnit}`} sub={grossConsumption>0?`${((netConsumption/grossConsumption)*100).toFixed(0)}% spent driving`:undefined}/>
+      <StatTile label="Charging cost" icon={Wallet} tone="rose" value={(number(chargeRow?.[2])??0).toFixed(2)} sub={`${number(chargeRow?.[0])??0} sessions`}/>
+      <StatTile label="Charging power" icon={Zap} tone="lime" value={`${value(11)} kW`} sub={`${value(10)} V`}/>
+      <StatTile label="Inside / driver temp" icon={Thermometer} tone="blue" value={`${value(9)} °${settings.temperatureUnit}`} sub={`Set to ${value(7)} °${settings.temperatureUnit}`}/>
+    </StatGrid>
     <section className="drive-detail-grid"><TelemetryChart result={results[5]} title="Charge Level"/><TelemetryChart result={results[6]} title="Charging Details"/></section>
     <StateTimeline spans={states} title="States" />
   </main>
@@ -885,7 +968,8 @@ export function BatteryHealthDashboard({
   const decimal = (candidate: number | null, digits = 1): string => candidate === null ? '—' : candidate.toFixed(digits)
   const shownDistance = (candidate: number | null): string => candidate === null ? '—' : distance(candidate, settings.lengthUnit).toFixed(1)
   const degradation = currentCapacity === null || maximumCapacity === null ? null : Math.max(0,100-currentCapacity*100/maximumCapacity)
-  const pieData = [{ name:'AC', value:number(charge?.[3])??0, color:'#73bf69' },{ name:'DC', value:number(charge?.[4])??0, color:'#fade2a' }]
+  const pieData = [{ name:'AC', value:number(charge?.[3])??0, color:palette.emerald },{ name:'DC', value:number(charge?.[4])??0, color:palette.amber }]
+  const health = degradation===null?null:100-degradation
   const capacityResult: QueryResult | undefined = results[4] ? {
     columns: [`Odometer (${settings.lengthUnit})`, 'Capacity (kWh)'],
     rows: results[4].rows.map((row) => [typeof row[0] === 'number' ? distance(row[0],settings.lengthUnit) : (row[0] ?? null),row[1] ?? null]),
@@ -894,6 +978,17 @@ export function BatteryHealthDashboard({
     <main>
       <Heading title="Battery health" note="TeslaMate capacity model" />
       {error && <p className="no-data">{error}</p>}
+      <section className="hero health-hero">
+        <RingGauge value={health} label="Health">
+          <em>{decimal(currentCapacity)} of {decimal(maximumCapacity)} kWh</em>
+        </RingGauge>
+        <StatGrid>
+          <StatTile label="Estimated degradation" icon={HeartPulse} tone="rose" value={`${decimal(degradation)}%`} progress={degradation===null?null:degradation/100} />
+          <StatTile label="Usable capacity (now)" icon={BatteryCharging} tone="lime" value={`${decimal(currentCapacity)} kWh`} sub={`New: ${decimal(maximumCapacity)} kWh`} />
+          <StatTile label="Max range (now)" icon={Navigation} tone="cyan" value={`${shownDistance(currentRange)} ${settings.lengthUnit}`} sub={`New: ${shownDistance(maximumRange)} ${settings.lengthUnit}`} />
+          <StatTile label="Current SOC" icon={Gauge} tone="violet" value={`${decimal(soc)}%`} progress={soc===null?null:soc/100} />
+        </StatGrid>
+      </section>
       <section className="battery-health-grid">
         <article><h2>Battery Capacity</h2><strong>{decimal(maximumCapacity)} kWh</strong><span>Usable (new)</span><strong>{decimal(currentCapacity)} kWh</strong><span>Usable (now)</span><small>Difference: {decimal(currentCapacity===null||maximumCapacity===null?null:currentCapacity-maximumCapacity)} kWh</small></article>
         <article><h2>Ranges [rated]</h2><strong>{shownDistance(maximumRange)} {settings.lengthUnit}</strong><span>Max range (new)</span><strong>{shownDistance(currentRange)} {settings.lengthUnit}</strong><span>Max range (now)</span><small>Range lost: {shownDistance(maximumRange===null||currentRange===null?null:maximumRange-currentRange)} {settings.lengthUnit}</small></article>
@@ -906,7 +1001,7 @@ export function BatteryHealthDashboard({
         <article><h2>Current Stored Energy</h2><strong>{decimal(currentCapacity===null||soc===null?null:currentCapacity*soc/100)} kWh</strong></article>
       </section>
       <section className="drive-detail-grid">
-        <article className="catalog-panel trip-pie"><h2>AC/DC - Energy Used</h2><ResponsiveContainer width="100%" height={280}><PieChart><Pie data={pieData} dataKey="value" nameKey="name" innerRadius="42%" outerRadius="76%" label>{pieData.map(item=><Cell key={item.name} fill={item.color}/>)}</Pie><Tooltip/></PieChart></ResponsiveContainer></article>
+        <article className="catalog-panel trip-pie"><h2>AC/DC - Energy Used</h2><Donut data={pieData} format={(v) => `${v.toFixed(1)} kWh`} centerLabel="Energy used" /></article>
         <TelemetryChart result={capacityResult} title="Battery Capacity by Mileage" />
       </section>
     </main>
@@ -948,7 +1043,7 @@ export function ProjectedRangeDashboard({
 
 function DistributionPie({ result, unit }: Readonly<{ result: QueryResult | undefined; unit: string }>) {
   const data = (result?.rows ?? []).flatMap((row) => typeof row[0] === 'string' && typeof row[1] === 'number' ? [{name:row[0],value:row[1]}] : [])
-  return data.length === 0 ? <p className="no-data">No matching charging data.</p> : <ResponsiveContainer width="100%" height={270}><PieChart><Pie data={data} dataKey="value" nameKey="name" innerRadius="42%" outerRadius="76%" label={({name,value})=>`${String(name)} ${Number(value).toFixed(1)} ${unit}`}>{data.map(item=><Cell key={item.name} fill={item.name==='DC'?'#fade2a':'#73bf69'}/>)}</Pie><Tooltip formatter={(value)=>[`${Number(value).toFixed(1)} ${unit}`,'']}/></PieChart></ResponsiveContainer>
+  return data.length === 0 ? <p className="no-data">No matching charging data.</p> : <Donut data={data.map((item)=>({...item,color:item.name==='DC'?palette.amber:palette.emerald}))} format={(v)=>`${v.toFixed(1)} ${unit}`} />
 }
 
 export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
@@ -979,13 +1074,26 @@ export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Ui
   if (loading && results.length === 0) return <DashboardLoading title="Charging stats" />
   const metric=results[0]?.rows[0]
   const money=(value:QueryValue|undefined):string=>typeof value==='number'?value.toFixed(2):'—'
-  const cards=[['# of Charges',number(metric?.[0])?.toFixed(0)??'—'],['Total Energy added',`${money(metric?.[1])} kWh`],['SuC Charging Cost',money(metric?.[2])],['Total Charging Cost',money(metric?.[3])],[`Ø Cost per 100 ${settings.lengthUnit}`,money(metric?.[4])],['Ø Cost per kWh',money(metric?.[5])],['Ø Cost per kWh DC',money(metric?.[6])],['Ø Cost per kWh AC',money(metric?.[7])]]
-  return <main><Heading title="Charging stats" note={settings.timeRange.toUpperCase()}/>{error&&<p className="no-data">{error}</p>}<section className="charging-stat-grid">{cards.map(([label,value])=><article key={label}><span>{label}</span><strong>{value}</strong></article>)}</section><section className="charging-analytics-grid"><TelemetryChart result={results[1]} title="Charge Heatmap"/><TelemetryChart result={results[1]} title="Charge Delta"/><article className="catalog-panel"><h2>AC/DC - Energy Used</h2><DistributionPie result={results[2]} unit="kWh"/></article><article className="catalog-panel"><h2>Charging heat map by kWh</h2><ChargingSitesMap result={results[4]}/></article><article className="catalog-panel"><h2>AC/DC - Duration</h2><DistributionPie result={results[3]} unit="hours"/></article><TelemetryChart result={results[5]} title="DC Charging Curve"/><article className="catalog-panel"><h2>Charge Stats</h2><DataTable result={results[6]}/></article><article className="catalog-panel"><h2>Discharge Stats</h2><DataTable result={results[7]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Charged)</h2><DataTable result={results[8]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Cost)</h2><DataTable result={results[9]}/></article></section></main>
+  const cards:readonly (readonly [string,string,LucideIcon,Tone])[]=[['# of Charges',number(metric?.[0])?.toFixed(0)??'—',Hash,'violet'],['Total Energy added',`${money(metric?.[1])} kWh`,Zap,'lime'],['SuC Charging Cost',money(metric?.[2]),PlugZap,'rose'],['Total Charging Cost',money(metric?.[3]),Wallet,'amber'],[`Ø Cost per 100 ${settings.lengthUnit}`,money(metric?.[4]),Route,'cyan'],['Ø Cost per kWh',money(metric?.[5]),Coins,'amber'],['Ø Cost per kWh DC',money(metric?.[6]),Zap,'orange'],['Ø Cost per kWh AC',money(metric?.[7]),PlugZap,'emerald']]
+  return <main><Heading title="Charging stats" note={settings.timeRange.toUpperCase()}/>{error&&<p className="no-data">{error}</p>}<StatGrid>{cards.map(([label,value,icon,tone])=><StatTile key={label} label={label} value={value} icon={icon} tone={tone}/>)}</StatGrid><section className="charging-analytics-grid"><TelemetryChart result={results[1]} title="Charge Heatmap"/><TelemetryChart result={results[1]} title="Charge Delta"/><article className="catalog-panel"><h2>AC/DC - Energy Used</h2><DistributionPie result={results[2]} unit="kWh"/></article><article className="catalog-panel"><h2>Charging heat map by kWh</h2><ChargingSitesMap result={results[4]}/></article><article className="catalog-panel"><h2>AC/DC - Duration</h2><DistributionPie result={results[3]} unit="hours"/></article><TelemetryChart result={results[5]} title="DC Charging Curve"/><article className="catalog-panel"><h2>Charge Stats</h2><DataTable result={results[6]}/></article><article className="catalog-panel"><h2>Discharge Stats</h2><DataTable result={results[7]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Charged)</h2><DataTable result={results[8]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Cost)</h2><DataTable result={results[9]}/></article></section></main>
 }
 
 // The per-drive figures shown as cards, in display order. Titles must
 // match grafana/teslalog-drive-details.json exactly - that file is the
 // single definition of each query, shared with Grafana.
+const driveStatLooks: readonly (readonly [LucideIcon, Tone])[] = [
+  [Route, 'cyan'],
+  [Timer, 'violet'],
+  [BatteryCharging, 'lime'],
+  [Gauge, 'rose'],
+  [Activity, 'blue'],
+  [MapPin, 'cyan'],
+  [Zap, 'lime'],
+  [Leaf, 'emerald'],
+  [BatteryCharging, 'emerald'],
+  [PlugZap, 'amber'],
+  [Mountain, 'violet'],
+]
 const driveStatTitles = [
   'Distance ($length_unit)',
   'Drive duration (min)',
@@ -1159,19 +1267,22 @@ export function DriveDetailsDashboard({
   return (
     <main>
       <button className="back-button" type="button" onClick={onBack}>
-        ← All drives
+        <ArrowLeft size={15} aria-hidden="true" /> All drives
       </button>
       <button className="gpx-button" type="button" onClick={exportGpx} disabled={route.length === 0}>Export GPX</button>
       <Heading title={`Drive ${driveId}`} note="Drive details" />
       {error && <p className="no-data">{error}</p>}
-      <section className="cards">
+      <StatGrid>
         {driveStatTitles.map((title, index) => (
-          <article key={title}>
-            <span>{panelTitle(title)}</span>
-            <strong>{statValue(index, title)}</strong>
-          </article>
+          <StatTile
+            key={title}
+            label={panelTitle(title)}
+            value={statValue(index, title)}
+            icon={driveStatLooks[index]?.[0]}
+            tone={driveStatLooks[index]?.[1] ?? 'cyan'}
+          />
         ))}
-      </section>
+      </StatGrid>
       <section className="drive-detail-grid">
         <TelemetryChart result={results[telemetryIndex]} title="Drive" onHoverTime={setHoverTime} />
         <article className="catalog-panel drive-route-panel">
@@ -1296,20 +1407,20 @@ export function ChargeDetailsDashboard({
   }
   return (
     <main>
-      <button className="back-button" type="button" onClick={onBack}>← All charges</button>
+      <button className="back-button" type="button" onClick={onBack}><ArrowLeft size={15} aria-hidden="true" /> All charges</button>
       <Heading title={`Charge ${chargingSessionId}`} note={`${text(row?.[14])} charge details`} />
       {error && <p className="no-data">{error}</p>}
-      <section className="charge-detail-summary">
-        <article><span>Total cost</span><strong>{savedCost === null ? '—' : `$${savedCost.toFixed(2)}`}</strong><small>{text(row?.[15]) === '—' ? 'No pricing geofence' : text(row?.[15])}</small></article>
-        <article><span>Price per kWh</span><strong>{effectivePricePerKwh === null ? '—' : `$${effectivePricePerKwh.toFixed(4)}`}</strong><small>{billingEnergy === null ? 'No billing energy' : `${billingEnergy.toFixed(2)} kWh billed`}</small></article>
-        <article><span>Configured rate</span><strong>{n(17) === null ? '—' : `$${n(17)!.toFixed(4)} / ${text(row?.[16]) === 'per_minute' ? 'min' : 'kWh'}`}</strong><small>{n(18) === null || n(18) === 0 ? 'No session fee' : `$${n(18)!.toFixed(2)} session fee`}</small></article>
-        <article><span>Duration</span><strong>{duration === null ? '—' : `${Math.floor(duration / 60)}h ${Math.round(duration % 60)}m`}</strong></article>
-        <article><span>Energy added / used</span><strong>{display(4, 2)} / {display(5, 2)} kWh</strong><small>{display(6, 1)}% efficiency</small></article>
-        <article><span>Battery level</span><strong>{display(2, 0)}% → {display(3, 0)}%</strong></article>
-        <article><span>Ø power</span><strong>{averagePower === null ? '—' : averagePower.toFixed(2)} kW</strong></article>
-        <article><span>Ø outdoor temperature</span><strong>{temperatureText}</strong></article>
-        <article><span>Range ({settings.lengthUnit})</span><strong>{n(10) === null ? '—' : (n(10)! * rangeFactor).toFixed(1)} → {n(11) === null ? '—' : (n(11)! * rangeFactor).toFixed(1)}</strong></article>
-      </section>
+      <StatGrid>
+        <StatTile label="Total cost" icon={Wallet} tone="amber" value={savedCost === null ? '—' : `$${savedCost.toFixed(2)}`} sub={text(row?.[15]) === '—' ? 'No pricing geofence' : text(row?.[15])} />
+        <StatTile label="Price per kWh" icon={Coins} tone="amber" value={effectivePricePerKwh === null ? '—' : `$${effectivePricePerKwh.toFixed(4)}`} sub={billingEnergy === null ? 'No billing energy' : `${billingEnergy.toFixed(2)} kWh billed`} />
+        <StatTile label="Configured rate" icon={Hash} tone="violet" value={n(17) === null ? '—' : `$${n(17)!.toFixed(4)} / ${text(row?.[16]) === 'per_minute' ? 'min' : 'kWh'}`} sub={n(18) === null || n(18) === 0 ? 'No session fee' : `$${n(18)!.toFixed(2)} session fee`} />
+        <StatTile label="Duration" icon={Timer} tone="violet" value={duration === null ? '—' : `${Math.floor(duration / 60)}h ${Math.round(duration % 60)}m`} />
+        <StatTile label="Energy added / used" icon={Zap} tone="lime" value={`${display(4, 2)} / ${display(5, 2)} kWh`} sub={`${display(6, 1)}% efficiency`} progress={n(6) === null ? null : n(6)! / 100} />
+        <StatTile label="Battery level" icon={BatteryCharging} tone="emerald" value={`${display(2, 0)}% → ${display(3, 0)}%`} progress={n(3) === null ? null : n(3)! / 100} />
+        <StatTile label="Ø power" icon={PlugZap} tone="cyan" value={`${averagePower === null ? '—' : averagePower.toFixed(2)} kW`} />
+        <StatTile label="Ø outdoor temperature" icon={Thermometer} tone="blue" value={temperatureText} />
+        <StatTile label={`Range (${settings.lengthUnit})`} icon={Navigation} tone="cyan" value={`${n(10) === null ? '—' : (n(10)! * rangeFactor).toFixed(1)} → ${n(11) === null ? '—' : (n(11)! * rangeFactor).toFixed(1)}`} />
+      </StatGrid>
       {backend && <section className="charge-cost-editor" aria-label="Edit charging cost">
         <div><label htmlFor="charge-total-cost">Total cost ($)</label><input id="charge-total-cost" aria-label="Total charging cost" type="number" min="0" step="0.01" value={costInput} onChange={(event) => changeTotalCost(event.target.value)} placeholder="0.00" /></div>
         <div><label htmlFor="charge-price-kwh">Price per kWh ($/kWh)</label><input id="charge-price-kwh" aria-label="Charging price per kWh" type="number" min="0" step="0.0001" value={pricePerKwhInput} onChange={(event) => changePricePerKwh(event.target.value)} placeholder="0.0000" disabled={billingEnergy === null || billingEnergy <= 0} /></div>

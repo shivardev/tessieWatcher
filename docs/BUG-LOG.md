@@ -113,7 +113,7 @@ carries `display_name`; `vehicle_data` carries `vehicle_config` (and so
 the model) but not always the name. Both paths upsert the vehicle row,
 and the upsert assigned each column straight from the incoming value —
 so every `vehicle_data` poll wrote `display_name = ""`. Found on the
-live database: the API reports "Shivaradhan's Model Y" while the stored
+live database: the API reports "My Model Y" while the stored
 row held an empty string, which is why the portal and the viewer had
 been showing a generic label. Fixed at the SQL level for every column at
 once, with `COALESCE(NULLIF(excluded.x, ''), vehicles.x)`, so an absent

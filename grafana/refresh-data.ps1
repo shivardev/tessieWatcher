@@ -3,7 +3,7 @@
 # its already-provisioned SQLite datasource) reads it from. Grafana
 # picks up the new file on its next query - no restart needed.
 #
-# Usage: .\refresh-data.ps1 -PortalUrl http://10.0.0.236:8083
+# Usage: .\refresh-data.ps1 -PortalUrl http://192.168.1.25:8083
 #   That's an example, not a default that works for everyone - it's
 #   YOUR teslalog Pi's own address (config.toml's [portal].addr, as
 #   seen from whatever device is on the same network as it). Or set

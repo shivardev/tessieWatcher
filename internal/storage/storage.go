@@ -320,7 +320,7 @@ func (s *Store) UpsertVehicle(v VehicleMeta) (int64, error) {
 			-- "display_name = excluded.display_name" meant each poll
 			-- overwrote the real name with "" - which is exactly what
 			-- had happened to the live database, where the API reports
-			-- "Shivaradhan's Model Y" and the row held "".
+			-- "My Model Y" and the row held "".
 			tesla_id = COALESCE(NULLIF(excluded.tesla_id, ''), vehicles.tesla_id),
 			display_name = COALESCE(NULLIF(excluded.display_name, ''), vehicles.display_name),
 			model = COALESCE(NULLIF(excluded.model, ''), vehicles.model),
