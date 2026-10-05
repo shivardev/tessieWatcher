@@ -16,7 +16,7 @@ import { nearestTimeSync } from './chartSync'
 import { StateTimeline, spansFromRows } from './StateTimeline'
 import { executeQueries, interpolateLabel } from './database'
 import type { QueryResult, QueryValue } from './domain'
-import { distance, speed, temperature, timestampDate, type ViewSettings } from './viewSettings'
+import { distance, speed, temperature, timestampDate, withinTimeWindow, type ViewSettings } from './viewSettings'
 import { AnimatedText, AreaGradient, Donut, animateBelow, chartTheme, palette, seriesPalette } from './ui'
 
 type PanelState = Readonly<{ definition: PanelDefinition; results: readonly QueryResult[] }>
@@ -96,15 +96,7 @@ const transformResult = (
       if (settings.timeRange === 'all' || !/^(?:time|date)$/iu.test(result.columns[0] ?? ''))
         return true
       if (typeof row[0] !== 'string') return true
-      const rangeMilliseconds: Readonly<Record<Exclude<ViewSettings['timeRange'], 'all'>, number>> =
-        {
-          '24h': 24 * 60 * 60 * 1000,
-          '7d': 7 * 24 * 60 * 60 * 1000,
-          '30d': 30 * 24 * 60 * 60 * 1000,
-          '90d': 90 * 24 * 60 * 60 * 1000,
-          '1y': 365 * 24 * 60 * 60 * 1000,
-        }
-      return timestampDate(row[0]).getTime() >= Date.now() - rangeMilliseconds[settings.timeRange]
+      return withinTimeWindow(row[0], settings)
     })
     .map((row) =>
       row.map((value, index) =>
@@ -429,6 +421,8 @@ export function GenericDashboard({
           lengthUnit: settings.lengthUnit,
           temperatureUnit: settings.temperatureUnit,
           timeRange: settings.timeRange,
+          customFrom: settings.customFrom,
+          customTo: settings.customTo,
           preferredRange: settings.preferredRange,
           minDistance: settings.minDistance,
           statisticsPeriod: settings.statisticsPeriod,

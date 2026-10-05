@@ -53,7 +53,7 @@ import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
 import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
-import { distance, speed, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
+import { distance, speed, timeRangeLabel, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
 import { getRemoteBackend, runRemoteStatement } from './remoteBackend'
 
 type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string; speedKmh?: number }>
@@ -600,30 +600,30 @@ export function TripDashboard({
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings; onSelectDrive?: (driveId: number) => void }>) {
   const tripQueries = useMemo(
     () => [
-      `SELECT p.latitude, p.longitude, p.timestamp FROM positions p JOIN drives d ON d.id=p.drive_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange, 'd.start_time')} AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL AND (p.id % 25)=0 ORDER BY p.timestamp`,
-      `SELECT COALESCE(SUM(d.distance_km),0), COALESCE(SUM(d.duration_min),0), COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0), COALESCE(SUM(d.distance_km)/NULLIF(SUM(d.duration_min)/60.0,0),0), COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange, 'd.start_time')}`,
-      `SELECT COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*24 ELSE 0 END),0), COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0) FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
+      `SELECT p.latitude, p.longitude, p.timestamp FROM positions p JOIN drives d ON d.id=p.drive_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')} AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL AND (p.id % 25)=0 ORDER BY p.timestamp`,
+      `SELECT COALESCE(SUM(d.distance_km),0), COALESCE(SUM(d.duration_min),0), COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0), COALESCE(SUM(d.distance_km)/NULLIF(SUM(d.duration_min)/60.0,0),0), COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')}`,
+      `SELECT COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*24 ELSE 0 END),0), COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0) FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}`,
       `WITH events AS (
-         SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}
-         UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}
-         UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}
-         UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}
+         SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}
+         UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}
+         UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}
+         UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}
        ), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (
          SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL
        ) SELECT COALESCE(SUM(loss)*(SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1),0) FROM losses`,
-      `SELECT id, start_time, COALESCE(start_location, printf('%.4f, %.4f',start_lat,start_lng)), COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)), duration_min, distance_km, start_battery_level, end_battery_level, (start_range_km-end_range_km)*(SELECT efficiency_wh_km FROM vehicles WHERE id=drives.vehicle_id)/NULLIF(distance_km,0) FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')} ORDER BY start_time DESC`,
-      `SELECT start_time "Date", location "Location", CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END "Type", ROUND((julianday(end_time)-julianday(start_time))*24*60,1) "Duration (min)", cost "Cost", charge_energy_added_kwh "Energy added (kWh)", charge_energy_used_kwh "Energy used (kWh)", start_battery_level "% Start", end_battery_level "% End" FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')} ORDER BY start_time DESC`,
+      `SELECT id, start_time, COALESCE(start_location, printf('%.4f, %.4f',start_lat,start_lng)), COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)), duration_min, distance_km, start_battery_level, end_battery_level, (start_range_km-end_range_km)*(SELECT efficiency_wh_km FROM vehicles WHERE id=drives.vehicle_id)/NULLIF(distance_km,0) FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')} ORDER BY start_time DESC`,
+      `SELECT start_time "Date", location "Location", CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END "Type", ROUND((julianday(end_time)-julianday(start_time))*24*60,1) "Duration (min)", cost "Cost", charge_energy_added_kwh "Energy added (kWh)", charge_energy_used_kwh "Energy used (kWh)", start_battery_level "% Start", end_battery_level "% End" FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')} ORDER BY start_time DESC`,
       `SELECT strftime('%Y-%m-%dT%H:00:00Z',timestamp) time,
         ROUND(AVG(battery_level),1) "Battery (%)",
         ROUND(AVG(CASE WHEN '${settings.lengthUnit}'='mi' THEN battery_range_km/1.60934 ELSE battery_range_km END),1) "Range (${settings.lengthUnit})"
-        FROM battery_samples WHERE ${timeRangeSql(settings.timeRange, 'timestamp')}
+        FROM battery_samples WHERE ${timeRangeSql(settings, 'timestamp')}
         GROUP BY strftime('%Y-%m-%dT%H:00:00Z',timestamp) ORDER BY time`,
-      `SELECT timestamp time, CASE WHEN '${settings.lengthUnit}'='mi' THEN elevation_m*3.28084 ELSE elevation_m END "Elevation" FROM positions WHERE elevation_m IS NOT NULL AND ${timeRangeSql(settings.timeRange, 'timestamp')} ORDER BY timestamp`,
-      `SELECT started_at, COALESCE(ended_at,datetime('now')), state FROM states WHERE ${timeRangeSql(settings.timeRange, 'started_at')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings.timeRange, 'start_time')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange, 'start_time')} ORDER BY 1`,
+      `SELECT timestamp time, CASE WHEN '${settings.lengthUnit}'='mi' THEN elevation_m*3.28084 ELSE elevation_m END "Elevation" FROM positions WHERE elevation_m IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
+      `SELECT started_at, COALESCE(ended_at,datetime('now')), state FROM states WHERE ${timeRangeSql(settings, 'started_at')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')} ORDER BY 1`,
     ],
-    [settings.lengthUnit, settings.timeRange],
+    [settings],
   )
-  const { results, error, loading } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const { results, error, loading } = useResults(bytes, tripQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, customFrom: settings.customFrom, customTo: settings.customTo, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   if (loading && results.length === 0) return <DashboardLoading title="Trip" />
   const points = (results[0]?.rows ?? []).flatMap((row) => {
     const latitude = number(row[0])
@@ -667,7 +667,7 @@ export function TripDashboard({
   })
   return (
     <main>
-      <Heading title="Trip" note={settings.timeRange === 'all' ? 'All time' : settings.timeRange} />
+      <Heading title="Trip" note={timeRangeLabel(settings)} />
       {error && <p className="no-data">{error}</p>}
       <section className="trip-grid">
         <article className="catalog-panel drive-route-panel trip-map"><h2>Route</h2><RouteMap points={points} /></article>
@@ -698,20 +698,20 @@ export function VisitedDashboard({
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const visitedQueries = useMemo(
     () => [
-      `SELECT COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) "Location", COUNT(*) "Visits", ROUND(MAX(end_lat),5) latitude, ROUND(MAX(end_lng),5) longitude, MAX(end_time) "Last visited" FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'end_time')} GROUP BY COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) ORDER BY COUNT(*) DESC`,
+      `SELECT COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) "Location", COUNT(*) "Visits", ROUND(MAX(end_lat),5) latitude, ROUND(MAX(end_lng),5) longitude, MAX(end_time) "Last visited" FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'end_time')} GROUP BY COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) ORDER BY COUNT(*) DESC`,
       // Mileage from the odometer delta rather than summed drive
       // distance, matching TeslaMate: the odometer is the car's own
       // record and includes anything teslalog missed.
       `SELECT COALESCE(CASE WHEN '${settings.lengthUnit}'='mi' THEN (MAX(end_odometer_km)-MIN(start_odometer_km))/1.60934 ELSE MAX(end_odometer_km)-MIN(start_odometer_km) END,0)
-       FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
+       FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}`,
       `SELECT COALESCE(SUM(charge_energy_added_kwh),0),
               COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0),
               SUM(charge_energy_added_kwh)*100.0/NULLIF(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0),
               COALESCE(SUM(cost),0)
        FROM charging_sessions WHERE status='closed' AND charge_energy_added_kwh > 0.01
-         AND ${timeRangeSql(settings.timeRange, 'start_time')}`,
+         AND ${timeRangeSql(settings, 'start_time')}`,
     ],
-    [settings.timeRange, settings.lengthUnit],
+    [settings],
   )
   const { results, error, loading } = useResults(bytes, visitedQueries)
   if (loading && results.length === 0) return <DashboardLoading title="Visited" />
@@ -724,7 +724,7 @@ export function VisitedDashboard({
     <main>
       <Heading
         title="Visited"
-        note={settings.timeRange === 'all' ? 'All time' : settings.timeRange}
+        note={timeRangeLabel(settings)}
       />
       {error && <p className="no-data">{error}</p>}
       <StatGrid>
@@ -815,24 +815,24 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
      FROM vehicles v ORDER BY v.id LIMIT 1`,
     `SELECT SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km) AS net_energy_wh,
       SUM(d.distance_km) AS distance_km
-      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings.timeRange,'d.start_time')}`,
-    `SELECT end_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} AND end_odometer_km IS NOT NULL ORDER BY end_odometer_km DESC LIMIT 1`,
-    `SELECT start_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} AND start_odometer_km IS NOT NULL ORDER BY start_odometer_km ASC LIMIT 1`,
-    `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1) AS gross_energy_wh FROM losses`,
+      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE ${timeRangeSql(settings, 'd.start_time')}`,
+    `SELECT end_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings, 'start_time')} AND end_odometer_km IS NOT NULL ORDER BY end_odometer_km DESC LIMIT 1`,
+    `SELECT start_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings, 'start_time')} AND start_odometer_km IS NOT NULL ORDER BY start_odometer_km ASC LIMIT 1`,
+    `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1) AS gross_energy_wh FROM losses`,
     `SELECT strftime('%Y-%m-%dT%H:00:00Z',timestamp) time,ROUND(AVG(battery_level),1) "SOC (%)"
-      FROM battery_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')}
+      FROM battery_samples WHERE ${timeRangeSql(settings, 'timestamp')}
       GROUP BY strftime('%Y-%m-%dT%H:00:00Z',timestamp) ORDER BY time`,
-    `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings.timeRange,'timestamp')} ORDER BY timestamp`,
-    `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings.timeRange,'started_at')}
-     UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings.timeRange,'start_time')}
-     UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings.timeRange,'start_time')}
+    `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
+    `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings, 'started_at')}
+     UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings, 'start_time')}
+     UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')}
      ORDER BY 1`,
     // Explicit AS aliases: the data server may be PostgreSQL, where a bare
     // `day` alias is a syntax error.
-    `SELECT date(start_time) AS drive_day, SUM(distance_km) AS distance_km, COUNT(*) AS drives FROM drives WHERE status='closed' AND ${timeRangeSql(settings.timeRange,'start_time')} GROUP BY date(start_time) ORDER BY drive_day`,
-    `SELECT COUNT(*) AS sessions, COALESCE(SUM(charge_energy_added_kwh),0) AS energy_kwh, COALESCE(SUM(cost),0) AS cost FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings.timeRange,'start_time')}`,
+    `SELECT date(start_time) AS drive_day, SUM(distance_km) AS distance_km, COUNT(*) AS drives FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')} GROUP BY date(start_time) ORDER BY drive_day`,
+    `SELECT COUNT(*) AS sessions, COALESCE(SUM(charge_energy_added_kwh),0) AS energy_kwh, COALESCE(SUM(cost),0) AS cost FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}`,
   ], [settings])
-  const {results,error,loading}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const {results,error,loading}=useResults(bytes,queries,{ lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, customFrom: settings.customFrom, customTo: settings.customTo, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   if (loading && results.length === 0) return <DashboardLoading title="Overview" />
   const row=results[0]?.rows[0]
   const value=(index:number,digits=0):string=>{const current=number(row?.[index]); return current===null?'—':current.toFixed(digits)}
@@ -857,7 +857,7 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
   const chargeRow=results[9]?.rows[0]
   const netConsumption=net/Math.max(shownDistance,.001)
   const grossConsumption=gross/Math.max(grossDistance,.001)
-  const rangeLabel=settings.timeRange==='all'?'all time':`last ${settings.timeRange}`
+  const rangeLabel=timeRangeLabel(settings)
   return <main>
     <Heading title={text(row?.[0])} note={text(row?.[1])}/>
     {error&&<p className="no-data">{error}</p>}
@@ -1016,21 +1016,21 @@ export function ProjectedRangeDashboard({
     () => [
       `SELECT (CASE WHEN '$length_unit'='mi' THEN odometer_km/1.60934 ELSE odometer_km END) AS "Mileage ($length_unit)",
         (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND odometer_km IS NOT NULL AND ${timeRangeSql(settings.timeRange, 'timestamp')} ORDER BY timestamp`,
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND odometer_km IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
       `SELECT battery_level AS "Battery level (%)",
         (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND ${timeRangeSql(settings.timeRange, 'timestamp')} ORDER BY timestamp`,
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
       `SELECT (CASE WHEN '$temp_unit'='F' THEN outside_temp_c*9.0/5+32 ELSE outside_temp_c END) AS "Outdoor temp (°$temp_unit)",
         (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND outside_temp_c IS NOT NULL AND ${timeRangeSql(settings.timeRange, 'timestamp')} ORDER BY timestamp`,
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND outside_temp_c IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
     ],
-    [settings.timeRange],
+    [settings],
   )
-  const { results, error, loading } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
+  const { results, error, loading } = useResults(bytes, projectedQueries, { lengthUnit: settings.lengthUnit, temperatureUnit: settings.temperatureUnit, timeRange: settings.timeRange, customFrom: settings.customFrom, customTo: settings.customTo, preferredRange: settings.preferredRange, minDistance: settings.minDistance, statisticsPeriod: settings.statisticsPeriod })
   if (loading && results.length === 0) return <DashboardLoading title="Projected range" />
   return (
     <main>
-      <Heading title="Projected range" note={settings.timeRange.toUpperCase()} />
+      <Heading title="Projected range" note={timeRangeLabel(settings)} />
       {error && <p className="no-data">{error}</p>}
       <section className="projected-range-grid">
         <TelemetryChart result={results[0]} title="Projected Range - Mileage" />
@@ -1048,9 +1048,9 @@ function DistributionPie({ result, unit }: Readonly<{ result: QueryResult | unde
 
 export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const queries = useMemo(() => {
-    const filtered = timeRangeSql(settings.timeRange,'end_time')
+    const filtered = timeRangeSql(settings, 'end_time')
     return [
-      `WITH c AS (SELECT * FROM charging_sessions WHERE status='closed' AND ${filtered}), d AS (SELECT d.*,v.efficiency_wh_km FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings.timeRange,'d.start_time')}),
+      `WITH c AS (SELECT * FROM charging_sessions WHERE status='closed' AND ${filtered}), d AS (SELECT d.*,v.efficiency_wh_km FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')}),
        events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM d UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM d UNION ALL SELECT 'charge_start',start_time,start_range_km FROM c UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM c),
        ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL),
        gross AS (SELECT SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1) energy,(SELECT MAX(end_odometer_km)-MIN(start_odometer_km) FROM d) distance FROM losses)
@@ -1063,19 +1063,19 @@ export function ChargingStatsDashboard({ bytes, settings }: Readonly<{ bytes: Ui
       `SELECT CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END,SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))) FROM charging_sessions WHERE status='closed' AND ${filtered} GROUP BY 1`,
       `SELECT CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END,SUM((julianday(end_time)-julianday(start_time))*24) FROM charging_sessions WHERE status='closed' AND ${filtered} GROUP BY 1`,
       `SELECT location,AVG(latitude),AVG(longitude),SUM(charge_energy_added_kwh),COUNT(*) FROM charging_sessions WHERE status='closed' AND latitude IS NOT NULL AND longitude IS NOT NULL AND ${filtered} GROUP BY location ORDER BY 4 DESC`,
-      `SELECT battery_level "SOC (%)",AVG(charger_power_kw) "Power (kW)" FROM charging_samples WHERE fast_charger_present=1 AND charger_power_kw>0 AND ${timeRangeSql(settings.timeRange,'timestamp')} GROUP BY battery_level ORDER BY battery_level`,
+      `SELECT battery_level "SOC (%)",AVG(charger_power_kw) "Power (kW)" FROM charging_samples WHERE fast_charger_present=1 AND charger_power_kw>0 AND ${timeRangeSql(settings, 'timestamp')} GROUP BY battery_level ORDER BY battery_level`,
       `SELECT ROUND(end_battery_level/5.0)*5 "SOC",COUNT(*) "Charges" FROM charging_sessions WHERE status='closed' AND ${filtered} GROUP BY 1 ORDER BY 1`,
       `SELECT ROUND(start_battery_level/5.0)*5 "SOC",COUNT(*) "Discharges" FROM charging_sessions WHERE status='closed' AND ${filtered} GROUP BY 1 ORDER BY 1`,
       `SELECT location "Location",SUM(charge_energy_added_kwh) "Energy added (kWh)" FROM charging_sessions WHERE status='closed' AND ${filtered} GROUP BY location ORDER BY 2 DESC LIMIT 17`,
       `SELECT location "Location",SUM(cost) "Cost" FROM charging_sessions WHERE status='closed' AND cost IS NOT NULL AND ${filtered} GROUP BY location ORDER BY 2 DESC LIMIT 17`,
     ]
-  },[settings.timeRange])
+  },[settings])
   const {results,error,loading}=useResults(bytes,queries)
   if (loading && results.length === 0) return <DashboardLoading title="Charging stats" />
   const metric=results[0]?.rows[0]
   const money=(value:QueryValue|undefined):string=>typeof value==='number'?value.toFixed(2):'—'
   const cards:readonly (readonly [string,string,LucideIcon,Tone])[]=[['# of Charges',number(metric?.[0])?.toFixed(0)??'—',Hash,'violet'],['Total Energy added',`${money(metric?.[1])} kWh`,Zap,'lime'],['SuC Charging Cost',money(metric?.[2]),PlugZap,'rose'],['Total Charging Cost',money(metric?.[3]),Wallet,'amber'],[`Ø Cost per 100 ${settings.lengthUnit}`,money(metric?.[4]),Route,'cyan'],['Ø Cost per kWh',money(metric?.[5]),Coins,'amber'],['Ø Cost per kWh DC',money(metric?.[6]),Zap,'orange'],['Ø Cost per kWh AC',money(metric?.[7]),PlugZap,'emerald']]
-  return <main><Heading title="Charging stats" note={settings.timeRange.toUpperCase()}/>{error&&<p className="no-data">{error}</p>}<StatGrid>{cards.map(([label,value,icon,tone])=><StatTile key={label} label={label} value={value} icon={icon} tone={tone}/>)}</StatGrid><section className="charging-analytics-grid"><TelemetryChart result={results[1]} title="Charge Heatmap"/><TelemetryChart result={results[1]} title="Charge Delta"/><article className="catalog-panel"><h2>AC/DC - Energy Used</h2><DistributionPie result={results[2]} unit="kWh"/></article><article className="catalog-panel"><h2>Charging heat map by kWh</h2><ChargingSitesMap result={results[4]}/></article><article className="catalog-panel"><h2>AC/DC - Duration</h2><DistributionPie result={results[3]} unit="hours"/></article><TelemetryChart result={results[5]} title="DC Charging Curve"/><article className="catalog-panel"><h2>Charge Stats</h2><DataTable result={results[6]}/></article><article className="catalog-panel"><h2>Discharge Stats</h2><DataTable result={results[7]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Charged)</h2><DataTable result={results[8]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Cost)</h2><DataTable result={results[9]}/></article></section></main>
+  return <main><Heading title="Charging stats" note={timeRangeLabel(settings)}/>{error&&<p className="no-data">{error}</p>}<StatGrid>{cards.map(([label,value,icon,tone])=><StatTile key={label} label={label} value={value} icon={icon} tone={tone}/>)}</StatGrid><section className="charging-analytics-grid"><TelemetryChart result={results[1]} title="Charge Heatmap"/><TelemetryChart result={results[1]} title="Charge Delta"/><article className="catalog-panel"><h2>AC/DC - Energy Used</h2><DistributionPie result={results[2]} unit="kWh"/></article><article className="catalog-panel"><h2>Charging heat map by kWh</h2><ChargingSitesMap result={results[4]}/></article><article className="catalog-panel"><h2>AC/DC - Duration</h2><DistributionPie result={results[3]} unit="hours"/></article><TelemetryChart result={results[5]} title="DC Charging Curve"/><article className="catalog-panel"><h2>Charge Stats</h2><DataTable result={results[6]}/></article><article className="catalog-panel"><h2>Discharge Stats</h2><DataTable result={results[7]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Charged)</h2><DataTable result={results[8]}/></article><article className="catalog-panel"><h2>Top Charging Stations (Cost)</h2><DataTable result={results[9]}/></article></section></main>
 }
 
 // The per-drive figures shown as cards, in display order. Titles must

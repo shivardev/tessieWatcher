@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import initSqlJs, { type Database } from 'sql.js'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { num, openDatabase } from './database'
+import { executeQueries, num, openDatabase } from './database'
 
 let schema = ''
 
@@ -65,5 +65,38 @@ describe('database compatibility boundary', () => {
     expect(loaded.charges.map((charge) => charge.startBattery)).toEqual([35, 30, 20])
     expect(loaded.charges.map((charge) => charge.endBattery)).toEqual([37, 35, 30])
     expect(loaded.charges.map((charge) => charge.odometerKm)).toEqual([null, null, null])
+  })
+
+  it('uses the latest position before a charge as its odometer reading', async () => {
+    const SQL = await initSqlJs()
+    const database = new SQL.Database()
+    database.exec(schema)
+    database.run("INSERT INTO vehicles (vin, display_name) VALUES ('TESTVIN', 'Test car')")
+    database.run("INSERT INTO drives (vehicle_id,start_time,status) VALUES (1,'2026-09-12T08:00:00Z','closed')")
+    database.run(`INSERT INTO positions (drive_id,vehicle_id,timestamp,odometer_km) VALUES
+      (1,1,'2026-09-12T09:00:00Z',1234.5),
+      (1,1,'2026-09-12T10:30:00Z',1235.0)`)
+    database.run(`INSERT INTO charging_sessions
+      (vehicle_id,start_time,end_time,start_battery_level,end_battery_level,status)
+      VALUES (1,'2026-09-12T10:00:00Z','2026-09-12T11:00:00Z',20,80,'closed')`)
+    const loaded = await openDatabase(fileFromDatabase(database))
+    database.close()
+    expect(loaded.charges[0]?.odometerKm).toBe(1234.5)
+  })
+
+  it('rewrites catalog relative bounds into a closed custom date window', async () => {
+    const SQL = await initSqlJs()
+    const database = new SQL.Database()
+    database.exec('CREATE TABLE t (start_time TEXT)')
+    for (const day of ['2026-08-31 12:00:00', '2026-09-15 12:00:00', '2026-10-02 12:00:00'])
+      database.run('INSERT INTO t VALUES (?)', [day])
+    const bytes = database.export()
+    database.close()
+    const [result] = await executeQueries(
+      bytes,
+      ["SELECT COUNT(*) FROM t WHERE start_time >= datetime('now', '-90 days')"],
+      { timeRange: 'custom', customFrom: '2026-09-02', customTo: '2026-09-29' },
+    )
+    expect(result?.rows[0]?.[0]).toBe(1)
   })
 })

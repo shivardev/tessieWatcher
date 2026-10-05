@@ -13,7 +13,7 @@ import {
   type IncompleteRow,
   type SpeedBand,
 } from './domain'
-import type { PreferredRange, StatisticsPeriod, TimeRange } from './viewSettings'
+import { quickRangeModifier, sqlDateTime, timeRangeSql, timeWindow, type PreferredRange, type StatisticsPeriod, type TimeRange } from './viewSettings'
 import {
   getRemoteBackend,
   runRemoteQueries,
@@ -303,7 +303,12 @@ const charges = async (run: Runner) =>
        outside_temp_avg_c,
        end_range_km-start_range_km rated_range_added_km,
        end_ideal_range_km-start_ideal_range_km ideal_range_added_km,
-       NULL odometer_km
+       (SELECT p.odometer_km
+          FROM positions p
+         WHERE p.vehicle_id=charge_data.vehicle_id
+           AND p.timestamp<=charge_data.start_time
+           AND p.odometer_km IS NOT NULL
+         ORDER BY p.timestamp DESC LIMIT 1) odometer_km
      FROM charge_data ORDER BY start_time DESC LIMIT 500`,
   )).map((r) =>
     chargeRowSchema.parse({
@@ -323,8 +328,8 @@ const charges = async (run: Runner) =>
       outsideTempC: nullableNum(r.outside_temp_avg_c, 'outside temperature'),
       ratedRangeAddedKm: nullableNum(r.rated_range_added_km, 'rated range added'),
       idealRangeAddedKm: nullableNum(r.ideal_range_added_km, 'ideal range added'),
-      // TeslaMate links a charge to a position with an odometer reading.
-      // teslalog's charging_sessions and charging_samples do not store it.
+      // Charging samples do not carry odometer. Use the last vehicle
+      // position recorded before the charge began.
       odometerKm: nullableNum(r.odometer_km, 'charge odometer'),
     }),
   )
@@ -389,26 +394,14 @@ export type QueryVariables = Readonly<{
   temperatureUnit?: 'C' | 'F'
   minimumIdleHours?: number
   timeRange?: TimeRange
+  customFrom?: string
+  customTo?: string
   preferredRange?: PreferredRange
   minDistance?: number
   statisticsPeriod?: StatisticsPeriod
 }>
-const rangeExpression = (range: TimeRange): string => {
-  switch (range) {
-    case '24h':
-      return "datetime('now', '-24 hours')"
-    case '7d':
-      return "datetime('now', '-7 days')"
-    case '30d':
-      return "datetime('now', '-30 days')"
-    case '90d':
-      return "datetime('now', '-90 days')"
-    case '1y':
-      return "datetime('now', '-1 year')"
-    case 'all':
-      return "datetime('0000-01-01')"
-  }
-}
+const rangeExpression = (range: Exclude<TimeRange, 'custom'>): string =>
+  range === 'all' ? "datetime('0000-01-01')" : `datetime('now', '${quickRangeModifier(range)}')`
 
 // queryVariables is the complete set of $names a catalog query may use.
 // Declared as data rather than a chain of replaceAll calls so the
@@ -454,18 +447,28 @@ export const interpolateLabel = (label: string, variables: QueryVariables): stri
     label,
   )
 
+const relativeBound = /datetime\('now',\s*'-\d+\s+(?:hours?|days?|months?|years?)'\)/giu
+
 const interpolate = (sql: string, variables: QueryVariables): string => {
   const interpolated = substitutionOrder.reduce(
     (query, name) =>
       query.replaceAll(name, queryVariables[name as keyof typeof queryVariables](variables)),
     sql,
   )
-  return variables.timeRange
-    ? interpolated.replace(
-        /datetime\('now',\s*'-\d+\s+(?:hours?|days?|months?|years?)'\)/giu,
-        rangeExpression(variables.timeRange),
-      )
-    : interpolated
+  const { timeRange } = variables
+  if (!timeRange) return interpolated
+  if (timeRange !== 'custom')
+    return interpolated.replace(relativeBound, rangeExpression(timeRange))
+  // A custom range has an upper bound too, so the whole "column >= ..."
+  // comparison is rewritten, not just its right-hand side. A relative
+  // bound with no column in front of it falls back to the start date.
+  const filter = { timeRange, customFrom: variables.customFrom ?? '', customTo: variables.customTo ?? '' }
+  const { from } = timeWindow(filter)
+  return interpolated
+    .replace(new RegExp(`([\\w.]+)\\s*>=\\s*${relativeBound.source}`, 'giu'), (_, column: string) =>
+      timeRangeSql(filter, column),
+    )
+    .replace(relativeBound, from === null ? "datetime('0000-01-01')" : `datetime('${sqlDateTime(from)}')`)
 }
 
 export const executeQueries = async (

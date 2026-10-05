@@ -335,6 +335,377 @@
 .view-controls select:hover {
   background-color: var(--surface-3);
 }
+/* ───────────────────────── Time range picker ───────────────────────── */
+.time-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  flex: 0 0 auto;
+}
+.time-picker button {
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+.time-picker svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+.time-picker-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2) !important;
+  transition: background-color 160ms, color 160ms;
+}
+.time-picker-icon:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text) !important;
+}
+.time-picker-icon:disabled {
+  opacity: 0.35;
+  cursor: default !important;
+}
+.time-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  font-size: 13px !important;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: background-color 160ms;
+}
+.time-picker-trigger:hover,
+.time-picker-trigger.open {
+  background: var(--surface-3);
+}
+.time-picker-trigger .chevron {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+  transition: transform 160ms;
+}
+.time-picker-trigger.open .chevron {
+  transform: rotate(180deg);
+}
+.time-picker-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  box-shadow: 0 24px 60px rgb(0 0 0 / 60%);
+  color: var(--text);
+}
+.time-picker-body {
+  display: grid;
+  grid-template-columns: 300px 220px;
+}
+.time-picker-absolute {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-right: 1px solid var(--line);
+}
+.time-picker h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+.time-picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.time-picker-field label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.time-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--bg);
+  transition: border-color 160ms;
+}
+.time-input:focus-within {
+  border-color: var(--accent);
+}
+.time-input.invalid {
+  border-color: var(--rose);
+}
+.time-input input,
+.time-picker-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.time-input input {
+  padding: 8px 10px;
+}
+.time-picker-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgb(251 113 133 / 14%);
+  color: var(--rose);
+  font-size: 12px;
+}
+.time-picker-error svg {
+  width: 13px;
+}
+.time-picker-apply {
+  align-self: flex-start;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-ink) !important;
+  font-size: 13px !important;
+  font-weight: 650;
+}
+.time-picker-apply:hover {
+  filter: brightness(1.08);
+}
+.time-picker-hint {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.time-picker-hint code {
+  white-space: nowrap;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 11px;
+}
+.time-picker-recent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.time-picker-recent h4 {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.time-picker-recent button,
+.time-picker-quick li button {
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px !important;
+  text-align: left;
+}
+.time-picker-recent button:hover,
+.time-picker-quick li button:hover {
+  background: var(--surface-3);
+}
+.time-picker-quick {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 8px 8px;
+}
+.time-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 4px 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--muted);
+}
+.time-picker-search:focus-within {
+  border-color: var(--accent);
+}
+.time-picker-quick ul {
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.time-picker-quick li button.active {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.time-picker-quick li.empty {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.time-picker-popover footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.time-picker-popover footer b {
+  color: var(--text);
+  font-weight: 600;
+}
+.time-picker-popover footer em {
+  margin-left: auto;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.time-picker-panels {
+  display: flex;
+  min-height: 0;
+}
+.time-picker-calendar {
+  width: 290px;
+  padding: 12px;
+  border-right: 1px solid var(--line);
+}
+.time-picker-calendar header,
+.time-picker-calendar nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.time-picker-calendar header b {
+  font-size: 13px;
+}
+.time-picker-calendar nav {
+  margin: 8px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.calendar-grid .weekday {
+  padding: 4px 0;
+  color: var(--cyan);
+  font-size: 11px;
+  text-align: center;
+}
+.calendar-grid button {
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 13px !important;
+  font-variant-numeric: tabular-nums;
+}
+.calendar-grid button:hover {
+  background: var(--surface-3);
+}
+.calendar-grid button.outside {
+  color: var(--muted);
+}
+.calendar-grid button.today {
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.calendar-grid button.in-range {
+  border-radius: 0;
+  background: var(--accent-soft);
+}
+.calendar-grid button.edge {
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+.calendar-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+@media (max-width: 1100px) {
+  .time-picker-popover {
+    position: fixed;
+    top: calc(var(--topbar) + 8px);
+    left: 50%;
+    max-width: calc(100vw - 32px);
+    max-height: calc(100dvh - var(--topbar) - 24px);
+    overflow-y: auto;
+    transform: translateX(-50%);
+  }
+}
+@media (max-width: 860px) {
+  .time-picker-popover {
+    width: calc(100vw - 32px);
+  }
+  .time-picker-panels {
+    flex-direction: column;
+  }
+  .time-picker-body {
+    grid-template-columns: 1fr;
+  }
+  .time-picker-absolute {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .time-picker-calendar {
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .time-picker-quick ul {
+    max-height: 220px;
+  }
+  .time-picker-trigger span {
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+@media (max-width: 520px) {
+  .time-picker > .time-picker-icon,
+  .time-picker-trigger span {
+    display: none;
+  }
+}
 select option {
   background: #111114;
   color: var(--text);
@@ -1116,7 +1487,7 @@ main:not(.empty) {
 }
 .charges-table table {
   table-layout: fixed;
-  min-width: 1100px;
+  min-width: 1740px;
   font-size: 12.5px;
 }
 .charges-table th,
@@ -1148,6 +1519,16 @@ main:not(.empty) {
 }
 .charges-table th:nth-child(10) {
   width: 86px;
+}
+.charges-table th:nth-child(11),
+.charges-table th:nth-child(12),
+.charges-table th:nth-child(13),
+.charges-table th:nth-child(16) {
+  width: 104px;
+}
+.charges-table th:nth-child(14),
+.charges-table th:nth-child(15) {
+  width: 76px;
 }
 .charges-table td:nth-child(2) {
   overflow: hidden;

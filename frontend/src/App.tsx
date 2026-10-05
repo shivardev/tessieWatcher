@@ -12,6 +12,7 @@ import {
   type RemoteConfig,
 } from './remoteBackend'
 import { GeofenceSettings } from './GeofenceSettings'
+import { TimeRangePicker } from './TimeRangePicker'
 import {
   fetchMeta,
   fetchCloudSyncStatus,
@@ -46,10 +47,11 @@ import {
   distance,
   speed,
   temperature,
+  timeRangeLabel,
   timestampDate,
+  withinTimeWindow,
   type LengthUnit,
   type TemperatureUnit,
-  type TimeRange,
   type PreferredRange,
   type ViewSettings,
 } from './viewSettings'
@@ -96,17 +98,6 @@ const date = (value: string): string =>
   new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(
     timestampDate(value),
   )
-const withinRange = (value: string, range: TimeRange): boolean => {
-  if (range === 'all') return true
-  const milliseconds: Readonly<Record<Exclude<TimeRange, 'all'>, number>> = {
-    '24h': 24 * 60 * 60 * 1000,
-    '7d': 7 * 24 * 60 * 60 * 1000,
-    '30d': 30 * 24 * 60 * 60 * 1000,
-    '90d': 90 * 24 * 60 * 60 * 1000,
-    '1y': 365 * 24 * 60 * 60 * 1000,
-  }
-  return timestampDate(value).getTime() >= Date.now() - milliseconds[range]
-}
 const chargeDuration = (minutes: number | null): string => {
   if (minutes === null) return '—'
   if (minutes < 60) return `${minutes.toFixed(1)} min`
@@ -254,7 +245,7 @@ function Drives({
     else { setSort(key); setDescending(false) }
   }
   const drives = data.drives
-    .filter((drive) => withinRange(drive.time, settings.timeRange))
+    .filter((drive) => withinTimeWindow(drive.time, settings))
     .filter((drive) => geofence === 'All' || drive.from === geofence || drive.to === geofence)
     .filter((drive) => `${drive.from} ${drive.to}`.toLocaleLowerCase().includes(location.trim().toLocaleLowerCase()))
     .filter((drive) => convertedDistance(drive) >= Number(minimumDistance || 0))
@@ -284,7 +275,7 @@ function Drives({
     },
   ]
   return (
-    <Page title="Drives" eyebrow={settings.timeRange === 'all' ? 'All time' : settings.timeRange}>
+    <Page title="Drives" eyebrow={timeRangeLabel(settings)}>
       <section className="charge-filters drive-filters" aria-label="Drive filters">
         <label>Geofence<select value={geofence} onChange={(event) => setGeofence(event.target.value)}><option>All</option>{places.map((place) => <option key={place}>{place}</option>)}</select></label>
         <label>Location<input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Enter value" /></label>
@@ -445,7 +436,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
   const [minimumDuration, setMinimumDuration] = useState('0')
   const geofences = [...new Set(data.charges.map((charge) => charge.location))].sort()
   const charges = data.charges.filter((charge) =>
-    withinRange(charge.time, settings.timeRange) &&
+    withinTimeWindow(charge.time, settings) &&
     (geofence === 'All' || charge.location === geofence) &&
     (type === 'All' || charge.type === type) &&
     charge.location.toLocaleLowerCase().includes(location.trim().toLocaleLowerCase()) &&
@@ -473,7 +464,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     },
   ]
   return (
-    <Page title="Charges" eyebrow={settings.timeRange === 'all' ? 'All time' : settings.timeRange}>
+    <Page title="Charges" eyebrow={timeRangeLabel(settings)}>
       <section className="charge-filters" aria-label="Charge filters">
         <label>Geofence<select value={geofence} onChange={(event) => setGeofence(event.target.value)}><option>All</option>{geofences.map((name) => <option key={name}>{name}</option>)}</select></label>
         <label>Location<input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Enter value" /></label>
@@ -497,6 +488,12 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
               <th>Energy used</th>
               <th>Efficiency</th>
               <th>Temp</th>
+              <th>Max power</th>
+              <th>Charge rate</th>
+              <th>Range gained</th>
+              <th>% Start</th>
+              <th>% End</th>
+              <th>Odometer</th>
             </tr>
           </thead>
           <tbody>
@@ -512,6 +509,12 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
                 <td>{cell(charge.energyUsedKwh, 2)} kWh</td>
                 <td><span className="efficiency"><i style={{ width: `${Math.min(100, charge.efficiencyPercent ?? 0)}%` }} /> <b>{cell(charge.efficiencyPercent)}%</b></span></td>
                 <td>{charge.outsideTempC === null ? '—' : `${format(temperature(charge.outsideTempC, settings.temperatureUnit), 1)} °${settings.temperatureUnit}`}</td>
+                <td>{charge.maxPowerKw === null ? '—' : `${cell(charge.maxPowerKw, 1)} kW`}</td>
+                <td>{charge.ratedRangeAddedKm === null || charge.durationMin === null || charge.durationMin <= 0 ? '—' : `${cell(speed(charge.ratedRangeAddedKm / (charge.durationMin / 60), settings.lengthUnit))} ${settings.lengthUnit}/h`}</td>
+                <td>{charge.ratedRangeAddedKm === null ? '—' : `${cell(distance(charge.ratedRangeAddedKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
+                <td>{charge.startBattery === null ? '—' : `${cell(charge.startBattery)}%`}</td>
+                <td>{charge.endBattery === null ? '—' : `${cell(charge.endBattery)}%`}</td>
+                <td>{charge.odometerKm === null ? '—' : `${cell(distance(charge.odometerKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
               </tr>
             ))}
           </tbody>
@@ -998,27 +1001,13 @@ export default function App() {
         </button>
         <div className="top-actions">
           {data && (
+            <TimeRangePicker
+              value={settings}
+              onChange={(next) => setSettings((current) => ({ ...current, ...next }))}
+            />
+          )}
+          {data && (
             <div className="view-controls" aria-label="Dashboard display settings">
-              <label>
-                Range
-                <select
-                  aria-label="Time range"
-                  value={settings.timeRange}
-                  onChange={(event) =>
-                    setSettings((current) => ({
-                      ...current,
-                      timeRange: event.target.value as TimeRange,
-                    }))
-                  }
-                >
-                  <option value="24h">24 hours</option>
-                  <option value="7d">7 days</option>
-                  <option value="30d">30 days</option>
-                  <option value="90d">90 days</option>
-                  <option value="1y">1 year</option>
-                  <option value="all">All</option>
-                </select>
-              </label>
               <label>
                 Distance
                 <select
