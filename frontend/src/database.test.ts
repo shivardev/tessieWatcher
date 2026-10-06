@@ -67,18 +67,14 @@ describe('database compatibility boundary', () => {
     expect(loaded.charges.map((charge) => charge.odometerKm)).toEqual([null, null, null])
   })
 
-  it('uses the latest position before a charge as its odometer reading', async () => {
+  it('reads the odometer recorded when each charge started', async () => {
     const SQL = await initSqlJs()
     const database = new SQL.Database()
     database.exec(schema)
     database.run("INSERT INTO vehicles (vin, display_name) VALUES ('TESTVIN', 'Test car')")
-    database.run("INSERT INTO drives (vehicle_id,start_time,status) VALUES (1,'2026-09-12T08:00:00Z','closed')")
-    database.run(`INSERT INTO positions (drive_id,vehicle_id,timestamp,odometer_km) VALUES
-      (1,1,'2026-09-12T09:00:00Z',1234.5),
-      (1,1,'2026-09-12T10:30:00Z',1235.0)`)
     database.run(`INSERT INTO charging_sessions
-      (vehicle_id,start_time,end_time,start_battery_level,end_battery_level,status)
-      VALUES (1,'2026-09-12T10:00:00Z','2026-09-12T11:00:00Z',20,80,'closed')`)
+      (vehicle_id,start_time,end_time,start_battery_level,end_battery_level,status,odometer_km)
+      VALUES (1,'2026-09-12T10:00:00Z','2026-09-12T11:00:00Z',20,80,'closed',1234.5)`)
     const loaded = await openDatabase(fileFromDatabase(database))
     database.close()
     expect(loaded.charges[0]?.odometerKm).toBe(1234.5)

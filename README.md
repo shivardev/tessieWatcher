@@ -124,6 +124,14 @@ teslalog wake            # wake the car — only ever done when you ask
 sudo teslalog update     # update to the latest release
 ```
 
+When deploying current source directly from a Windows development PC, one
+command detects the Pi architecture, builds the viewer and Go binary, copies
+it, installs it, restarts the service, and verifies the result:
+
+```powershell
+./deploy/update-pi.ps1
+```
+
 Full list and flags: [CLI reference](docs/reference.md#cli-reference).
 
 ## Optional: sync to a home server
@@ -132,6 +140,9 @@ Keep the Pi small and put the full archive on a PC:
 
 1. On the PC, copy `deploy/postgres.env.example` to `.env`, set the secrets,
    then run `docker compose -f docker-compose.postgres.yml up -d --build`.
+   For later updates, run `./deploy/update.ps1`; it pulls the latest commit,
+   detects the running Docker stack, rebuilds the server and embedded viewer,
+   and waits for a healthy container.
 2. On the Pi, open `http://<pi>:8083/admin/sync`, enter the server address
    and press **Test, link, and sync now**.
 

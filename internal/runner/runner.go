@@ -586,7 +586,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			}
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
 				VehicleID: l.vehicleDBID, GeofenceID: geofenceID, Time: ev.At, BatteryLevel: s.BatteryLevel,
-				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, Lat: s.Lat, Lng: s.Lng,
+				RangeKm: s.RangeKm, IdealRangeKm: s.IdealRangeKm, Lat: s.Lat, Lng: s.Lng, OdometerKm: s.OdometerKm,
 				Location: l.geo.Resolve(context.Background(), s.Lat, s.Lng),
 			})
 			if err != nil {
@@ -676,7 +676,7 @@ func (l *loopState) persist(events []vehicle.Event) error {
 			id, err := l.store.OpenChargingSession(storage.ChargeStart{
 				VehicleID: l.vehicleDBID, GeofenceID: offlineGeofenceID, Time: before.Time, BatteryLevel: before.BatteryLevel,
 				RangeKm: before.RangeKm, IdealRangeKm: before.IdealRangeKm,
-				Lat: before.Lat, Lng: before.Lng,
+				Lat: before.Lat, Lng: before.Lng, OdometerKm: before.OdometerKm,
 				Location: l.geo.Resolve(context.Background(), before.Lat, before.Lng),
 			})
 			if err != nil {

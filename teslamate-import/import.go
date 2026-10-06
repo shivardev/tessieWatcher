@@ -289,6 +289,10 @@ func importChargingProcesses(ctx context.Context, pg *pgx.Conn, sq *sql.DB, vehi
 
 	geofenceJoin := fmt.Sprintf("LEFT JOIN geofences gf ON gf.id = %s", pickQualified(cols, "c", "geofence_id"))
 	addrJoin := fmt.Sprintf("LEFT JOIN addresses a ON a.id = %s", pickQualified(cols, "c", "address_id"))
+	// TeslaMate's Charges dashboard reads the odometer through the
+	// position recorded at charge start: LEFT JOIN positions p ON
+	// p.id = cp.position_id.
+	posJoin := fmt.Sprintf("LEFT JOIN positions cp ON cp.id = %s", pickQualified(cols, "c", "position_id"))
 	// fast_charger_present lives on the per-sample "charges" table, not
 	// charging_processes - is_dc_fast_charge is derived the same way
 	// teslalog derives it itself at close time (see storage/schema.go's
@@ -303,8 +307,9 @@ func importChargingProcesses(ctx context.Context, pg *pgx.Conn, sq *sql.DB, vehi
 		       %s, %s,
 		       %s, %s,
 		       COALESCE(gf.name, a.display_name),
-		       %s
+		       %s, cp.odometer
 		FROM charging_processes c
+		%s
 		%s
 		%s
 		WHERE c.end_date IS NOT NULL
@@ -315,7 +320,7 @@ func importChargingProcesses(ctx context.Context, pg *pgx.Conn, sq *sql.DB, vehi
 		pickQualified(cols, "c", "start_ideal_range_km"), pickQualified(cols, "c", "end_ideal_range_km"),
 		pickQualified(cols, "c", "charge_energy_added"), pickQualified(cols, "c", "charge_energy_used"),
 		pickQualified(cols, "c", "outside_temp_avg"), pickQualified(cols, "c", "cost"),
-		dcExpr, geofenceJoin, addrJoin,
+		dcExpr, geofenceJoin, addrJoin, posJoin,
 	)
 
 	rows, err := pg.Query(ctx, q)
@@ -335,10 +340,11 @@ func importChargingProcesses(ctx context.Context, pg *pgx.Conn, sq *sql.DB, vehi
 		var energyAdded, energyUsed, outsideTemp, cost *float64
 		var location *string
 		var isDC bool
+		var odometer *float64
 
 		if err := rows.Scan(&srcID, &startDate, &endDate, &startBatt, &endBatt,
 			&startRated, &endRated, &startIdeal, &endIdeal, &energyAdded, &energyUsed,
-			&outsideTemp, &cost, &location, &isDC); err != nil {
+			&outsideTemp, &cost, &location, &isDC, &odometer); err != nil {
 			return nil, fmt.Errorf("scan charging process: %w", err)
 		}
 
@@ -354,12 +360,12 @@ func importChargingProcesses(ctx context.Context, pg *pgx.Conn, sq *sql.DB, vehi
 			INSERT INTO charging_sessions (vehicle_id, start_time, end_time, start_battery_level, end_battery_level,
 				start_range_km, end_range_km, start_ideal_range_km, end_ideal_range_km,
 				charge_energy_added_kwh, charge_energy_used_kwh, outside_temp_avg_c, cost, location,
-				is_dc_fast_charge, status)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'closed')
+				is_dc_fast_charge, odometer_km, status)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'closed')
 			RETURNING id
 		`, vehicleID, fmtTime(startDate), fmtTimePtr(endDate), startBatt, endBatt,
 			startRated, endRated, startIdeal, endIdeal, energyAdded, energyUsed, outsideTemp, cost, location,
-			isDC).Scan(&newID)
+			isDC, odometer).Scan(&newID)
 		if err != nil {
 			return nil, fmt.Errorf("insert charging session (source id %d): %w", srcID, err)
 		}

@@ -113,6 +113,22 @@ var dataMigrations = []struct {
 			 WHERE EXISTS (SELECT 1 FROM positions WHERE drive_id = drives.id AND elevation_m IS NOT NULL)`,
 		},
 	},
+	{
+		// charging_sessions.odometer_km is recorded at charge start from
+		// now on; sessions written before it existed take the odometer of
+		// the last position at or before their start, which is what the
+		// viewer used to compute on every load.
+		key: "backfill_charge_odometer_v1",
+		stmt: []string{
+			`UPDATE charging_sessions SET odometer_km = (
+				SELECT p.odometer_km FROM positions p
+				WHERE p.vehicle_id = charging_sessions.vehicle_id
+				  AND p.timestamp <= charging_sessions.start_time
+				  AND p.odometer_km IS NOT NULL
+				ORDER BY p.timestamp DESC LIMIT 1
+			) WHERE odometer_km IS NULL`,
+		},
+	},
 }
 
 func applyDataMigrations(db *sql.DB) error {
@@ -187,6 +203,7 @@ var columnMigrations = []string{
 	`ALTER TABLE geocode_cache ADD COLUMN state TEXT`,
 	`ALTER TABLE geocode_cache ADD COLUMN postcode TEXT`,
 	`ALTER TABLE geocode_cache ADD COLUMN country TEXT`,
+	`ALTER TABLE charging_sessions ADD COLUMN odometer_km REAL`,
 }
 
 func applyColumnMigrations(db *sql.DB) error {
@@ -945,6 +962,8 @@ type ChargeStart struct {
 	RangeKm      float64
 	IdealRangeKm float64
 	Lat, Lng     float64
+	// OdometerKm at the start of the charge; 0 when the snapshot had none.
+	OdometerKm float64
 	// Location - see DriveStart.StartLocation's doc comment. A charging
 	// session only gets one (unlike a drive's separate start/end), since
 	// it happens in one place.
@@ -955,9 +974,9 @@ func (s *Store) OpenChargingSession(c ChargeStart) (int64, error) {
 	res, err := s.db.Exec(`
 		INSERT INTO charging_sessions (
 			vehicle_id, geofence_id, start_time, start_battery_level, start_range_km, start_ideal_range_km,
-			latitude, longitude, location, status
-		) VALUES (?, NULLIF(?,0), ?, ?, ?, ?, ?, ?, ?, 'open')
-	`, c.VehicleID, c.GeofenceID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng, nullIfEmpty(c.Location))
+			latitude, longitude, location, odometer_km, status
+		) VALUES (?, NULLIF(?,0), ?, ?, ?, ?, ?, ?, ?, NULLIF(?,0), 'open')
+	`, c.VehicleID, c.GeofenceID, fmtTime(c.Time), c.BatteryLevel, c.RangeKm, c.IdealRangeKm, c.Lat, c.Lng, nullIfEmpty(c.Location), c.OdometerKm)
 	if err != nil {
 		return 0, fmt.Errorf("open charging session: %w", err)
 	}

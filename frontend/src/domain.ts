@@ -82,7 +82,6 @@ export type LoadedDatabase = Readonly<{
   driveMetrics: readonly Metric[]
   lifetimeDriveMetrics: readonly Metric[]
   destinations: readonly Destination[]
-  speedHistogram: readonly SpeedBand[]
   charges: readonly ChargeRow[]
   chargeMetrics: readonly Metric[]
   incompleteDrives: readonly IncompleteRow[]

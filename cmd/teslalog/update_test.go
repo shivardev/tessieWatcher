@@ -46,6 +46,33 @@ func TestAssetNameForUnsupportedPlatformErrors(t *testing.T) {
 	}
 }
 
+func TestCompareVersionsPreventsDowngrades(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"v0.5.1", "0.6.0", -1},
+		{"0.6.0", "v0.6.0", 0},
+		{"v0.6.1", "0.6.0", 1},
+		{"1.0.0", "0.99.99", 1},
+	}
+	for _, c := range cases {
+		got, err := compareVersions(c.a, c.b)
+		if err != nil {
+			t.Fatalf("compareVersions(%q, %q): %v", c.a, c.b, err)
+		}
+		if got != c.want {
+			t.Fatalf("compareVersions(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestCompareVersionsRejectsInvalidVersion(t *testing.T) {
+	if _, err := compareVersions("latest", "0.6.0"); err == nil {
+		t.Fatal("expected an invalid version error")
+	}
+}
+
 // TestDownloadFileToUnwritableTargetReturnsPermissionError pins the
 // error runUpdate's "run as root instead" hint (see update.go) relies
 // on: writing to a path this process can't write to must produce an

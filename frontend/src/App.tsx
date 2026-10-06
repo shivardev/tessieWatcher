@@ -1,7 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { CarFront, Database, Gauge, Menu, RefreshCw, Upload, Wifi, X } from 'lucide-react'
-import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric } from './domain'
-import { openDatabase, openDatabaseBytes, openDatabaseRemote } from './database'
+import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric, type SpeedBand } from './domain'
+import {
+  loadSpeedHistogram,
+  loadSteps,
+  openDatabaseBytes,
+  openDatabaseRemote,
+  type LoadStep,
+} from './database'
+import { LoadingProgress, type LoadingStage, type LoadingState } from './LoadingProgress'
 import { importTeslaMateDump, isPostgresDump, type ImportProgress } from './teslamateImport'
 import { catalogDashboardKeys } from './dashboardRegistry'
 import {
@@ -354,12 +361,43 @@ function DriveStats({
   settings,
 }: Readonly<{ data: LoadedDatabase; settings: ViewSettings }>) {
   const maxVisits = Math.max(1, ...data.destinations.map((item) => item.visits))
+  // The speed profile is fetched when this page opens, for the selected
+  // time range (as TeslaMate's Drive Stats does), rather than delaying
+  // every connect. Keyed by what it was asked for, so a stale answer from
+  // another database or range is never shown.
+  const { timeRange, customFrom, customTo } = settings
+  const histogramKey = `${timeRange}|${customFrom}|${customTo}`
+  const [histogram, setHistogram] = useState<Readonly<{
+    source: LoadedDatabase
+    key: string
+    bands?: readonly SpeedBand[]
+    error?: string
+  }> | null>(null)
+  useEffect(() => {
+    let active = true
+    const key = `${timeRange}|${customFrom}|${customTo}`
+    loadSpeedHistogram(data.databaseBytes, { timeRange, customFrom, customTo }).then(
+      (bands) => active && setHistogram({ source: data, key, bands }),
+      (reason: unknown) =>
+        active &&
+        setHistogram({
+          source: data,
+          key,
+          error: reason instanceof Error ? reason.message : 'Could not load the speed profile.',
+        }),
+    )
+    return () => {
+      active = false
+    }
+  }, [data, timeRange, customFrom, customTo])
+  const current =
+    histogram?.source === data && histogram.key === histogramKey ? histogram : null
   // The query buckets in 10 km/h steps; converting each bucket to mi/h
   // and rounding maps two of them onto one band (30 and 40 km/h both land
   // on 20 mi/h), so they have to be merged after conversion or the chart
   // shows the same band twice with the time split between them.
   const speedBands = [
-    ...data.speedHistogram
+    ...(current?.bands ?? [])
       .reduce((bands, band) => {
         const shown = Math.round(speed(band.speedKmh, settings.lengthUnit) / 10) * 10
         return bands.set(shown, (bands.get(shown) ?? 0) + band.seconds)
@@ -408,7 +446,9 @@ function DriveStats({
         {data.destinations.length === 0 && <p className="no-data">No named destinations found.</p>}
       </section>
       <section className="chart-panel">
-        <h2>Speed histogram ({settings.lengthUnit}/h)</h2>
+        <h2>
+          Speed histogram ({settings.lengthUnit}/h) · {timeRangeLabel(settings)}
+        </h2>
         {speedBands.map((band) => (
           <div className="bar-row" key={band.shownSpeed}>
             <span>{band.shownSpeed}</span>
@@ -420,8 +460,14 @@ function DriveStats({
             </b>
           </div>
         ))}
-        {speedBands.length === 0 && (
-          <p className="no-data">No position samples with a recorded speed.</p>
+        {current === null ? (
+          <p className="no-data">Loading speed profile…</p>
+        ) : current.error ? (
+          <p className="no-data">{current.error}</p>
+        ) : (
+          speedBands.length === 0 && (
+            <p className="no-data">No position samples with a recorded speed.</p>
+          )
         )}
       </section>
     </Page>
@@ -456,6 +502,11 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
       // No unit: teslalog has no currency setting, and every other money
       // figure in the viewer is printed bare. "3.4 cost" read as a bug.
       unit: '',
+    },
+    {
+      label: 'Total charging time',
+      value: charges.reduce((sum, charge) => sum + (charge.durationMin ?? 0), 0) / 60,
+      unit: 'hours',
     },
     {
       label: 'Average duration',
@@ -606,6 +657,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null)
+  const [loading, setLoading] = useState<LoadingState | null>(null)
+  const loadController = useRef<AbortController | null>(null)
   const [menu, setMenu] = useState(false)
   const [selectedDriveId, setSelectedDriveId] = useState<number | null>(null)
   const [selectedChargeId, setSelectedChargeId] = useState<number | null>(null)
@@ -644,12 +697,77 @@ export default function App() {
   const [cloudRevision, setCloudRevision] = useState(0)
   const choose = (): void => input.current?.click()
 
+  // beginLoading starts a cancellable load with a visible checklist. Only
+  // the most recent load may update state: one that was cancelled or
+  // superseded and finishes later is ignored (see isCurrent).
+  const beginLoading = (
+    details: Pick<LoadingState, 'title' | 'source' | 'slowHint'> | null,
+    prefix: readonly LoadingStage[] = [],
+  ): AbortController => {
+    loadController.current?.abort()
+    const controller = new AbortController()
+    loadController.current = controller
+    setLoading(
+      details && {
+        ...details,
+        stages: [...prefix, ...loadSteps],
+        done: [],
+        sequentialThrough: 'vehicle',
+        startedAt: Date.now(),
+      },
+    )
+    return controller
+  }
+  const isCurrent = (controller: AbortController): boolean =>
+    loadController.current === controller && !controller.signal.aborted
+  const markLoaded =
+    (controller: AbortController) =>
+    (step: LoadStep | 'status' | 'download' | 'read'): void => {
+      if (isCurrent(controller))
+        setLoading((current) => current && { ...current, done: [...current.done, step] })
+    }
+  const endLoading = (controller: AbortController): void => {
+    if (loadController.current !== controller) return
+    loadController.current = null
+    setLoading(null)
+    setBusy(false)
+  }
+  const cancelLoading = (): void => {
+    const controller = loadController.current
+    if (!controller) return
+    controller.abort()
+    loadController.current = null
+    setLoading(null)
+    setBusy(false)
+    setImportProgress(null)
+    // Leave a previously loaded remote dataset usable; only drop the
+    // backend when nothing is showing yet.
+    if (data === null) setRemoteBackend(null)
+  }
+  // The first request to a server doubles as the reachability check, so an
+  // address this machine cannot see fails in seconds rather than hanging
+  // on the browser's own connect timeout.
+  const serverTimeout = (controller: AbortController): AbortSignal =>
+    AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)])
+
   // Pull a snapshot from a running teslalog and open it. Kept separate
   // from the poll loop so the Connect button and the loop share one code
   // path for "the data moved, fetch it".
-  const pullSnapshot = async (baseUrl: string, meta: LiveMeta): Promise<void> => {
-    const bytes = await fetchSnapshot(baseUrl)
-    setData(await openDatabaseBytes('tesla.db', bytes.byteLength, bytes))
+  const pullSnapshot = async (
+    baseUrl: string,
+    meta: LiveMeta,
+    controller?: AbortController,
+  ): Promise<void> => {
+    const bytes = await fetchSnapshot(baseUrl, controller?.signal)
+    if (controller) markLoaded(controller)('download')
+    const loaded = await openDatabaseBytes(
+      'tesla.db',
+      bytes.byteLength,
+      bytes,
+      controller ? { onStep: markLoaded(controller), signal: controller.signal } : {},
+    )
+    if (controller && !isCurrent(controller)) return
+    setData(loaded)
     setLiveMeta(meta)
   }
 
@@ -661,11 +779,34 @@ export default function App() {
     setBusy(true)
     if (!quiet) setError(null)
     setRemoteBackend(null) // a local/portal connection runs queries against sql.js, not the cloud
+    // The automatic probe of this page's own origin stays invisible: it
+    // usually is not a teslalog portal and fails immediately.
+    const controller = beginLoading(
+      quiet
+        ? null
+        : {
+            title: 'Connecting to teslalog',
+            source: address,
+            slowHint:
+              'Still waiting for teslalog to answer. If this machine cannot reach it, this stops with an error after about 10 seconds.',
+          },
+      [
+        { key: 'status', label: 'Reach teslalog' },
+        { key: 'download', label: 'Download snapshot' },
+      ],
+    )
     try {
       const baseUrl = normaliseBaseUrl(address)
-      const [status, meta] = await Promise.all([fetchStatus(baseUrl), fetchMeta(baseUrl)])
+      const probe = serverTimeout(controller)
+      const [status, meta] = await Promise.all([
+        fetchStatus(baseUrl, probe),
+        fetchMeta(baseUrl, probe),
+      ])
+      if (!isCurrent(controller)) return
+      markLoaded(controller)('status')
       setLive(status)
-      await pullSnapshot(baseUrl, meta)
+      await pullSnapshot(baseUrl, meta, controller)
+      if (!isCurrent(controller)) return
       setLiveUrl(baseUrl)
       rememberUrl(baseUrl)
       setLiveCheckedAt(new Date())
@@ -673,10 +814,11 @@ export default function App() {
       setSelectedDriveId(null)
       setSelectedChargeId(null)
     } catch (reason: unknown) {
+      if (!isCurrent(controller)) return
       setLive(null)
       if (!quiet) setError(reason instanceof Error ? reason.message : 'Could not connect.')
     } finally {
-      setBusy(false)
+      endLoading(controller)
     }
   }
   const connect = async (): Promise<void> => connectTo(liveUrl)
@@ -692,9 +834,19 @@ export default function App() {
       databaseId: (cloud.databaseId ?? '').trim(),
       apiKey: (cloud.apiKey ?? '').trim(),
     }
+    const controller = beginLoading({
+      title: 'Connecting to your teslalog data server',
+      source: `${config.baseUrl} · ${config.databaseId}`,
+      slowHint:
+        'Still waiting for the server to answer. If you are off the VPN or the server is down, this stops with an error after about 10 seconds.',
+    })
     try {
       setRemoteBackend(config)
-      const loaded = await openDatabaseRemote(config)
+      const loaded = await openDatabaseRemote(config, {
+        onStep: markLoaded(controller),
+        signal: controller.signal,
+      })
+      if (!isCurrent(controller)) return
       setData(loaded)
       setLive({
         vehicleName: loaded.vehicle.displayName,
@@ -711,10 +863,11 @@ export default function App() {
         /* remembering the connection is a convenience, not required */
       }
     } catch (reason: unknown) {
+      if (!isCurrent(controller)) return
       setRemoteBackend(null)
       setError(reason instanceof Error ? reason.message : 'Could not connect to the teslalog data server.')
     } finally {
-      setBusy(false)
+      endLoading(controller)
     }
   }
 
@@ -950,22 +1103,46 @@ export default function App() {
     setImportProgress(null)
     setError(null)
     setRemoteBackend(null) // an opened file is read locally via sql.js, not the cloud
+    const controller = beginLoading({ title: 'Opening database', source: file.name }, [
+      { key: 'read', label: 'Read file' },
+    ])
     try {
+      let databaseBytes: Uint8Array
+      let outputName = file.name
       if (await isPostgresDump(file)) {
-        const databaseBytes = await importTeslaMateDump(file, setImportProgress)
-        const outputName = file.name.replace(/\.(?:dump|sql)$/iu, '') + '.db'
-        setData(await openDatabaseBytes(outputName, databaseBytes.byteLength, databaseBytes))
+        // A TeslaMate dump has its own byte-level progress card while it
+        // converts; the checklist takes over for the dashboard build.
+        setLoading(null)
+        databaseBytes = await importTeslaMateDump(file, setImportProgress)
+        if (!isCurrent(controller)) return
+        setImportProgress(null)
+        setLoading({
+          title: 'Building dashboards',
+          source: file.name,
+          stages: [{ key: 'read', label: 'Convert TeslaMate dump' }, ...loadSteps],
+          done: ['read'],
+          sequentialThrough: 'vehicle',
+          startedAt: Date.now(),
+        })
+        outputName = file.name.replace(/\.(?:dump|sql)$/iu, '') + '.db'
       } else {
-        setData(await openDatabase(file))
+        databaseBytes = new Uint8Array(await file.arrayBuffer())
+        markLoaded(controller)('read')
       }
+      const loaded = await openDatabaseBytes(outputName, databaseBytes.byteLength, databaseBytes, {
+        onStep: markLoaded(controller),
+      })
+      if (!isCurrent(controller)) return
+      setData(loaded)
       setActive('Overview')
       setSelectedDriveId(null)
       setSelectedChargeId(null)
     } catch (reason: unknown) {
+      if (!isCurrent(controller)) return
       setError(reason instanceof Error ? reason.message : 'Could not open database.')
     } finally {
-      setBusy(false)
-      setImportProgress(null)
+      if (loadController.current === controller) setImportProgress(null)
+      endLoading(controller)
     }
   }
   return (
@@ -1203,6 +1380,7 @@ export default function App() {
           </strong>
         </div>
       )}
+      {loading && <LoadingProgress state={loading} onCancel={cancelLoading} />}
       {data ? (
         <DashboardContent
           key={cloudRevision}

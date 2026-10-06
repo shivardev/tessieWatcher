@@ -300,6 +300,17 @@ Then:
 
 ### The manual way: cross-build on your own machine
 
+From a Windows development PC, the complete build/copy/restart flow is one
+command (the default SSH destination is `konda@raspberrypi`):
+
+```powershell
+./deploy/update-pi.ps1
+```
+
+Use `-Pi user@hostname` when the SSH destination differs. The script detects
+`aarch64` versus `armv7l` before building, so it cannot install the wrong CPU
+architecture.
+
 If you'd rather build from source yourself (e.g. you've changed the
 code) instead of using a prebuilt release binary:
 
@@ -568,6 +579,23 @@ secrets, then start PostgreSQL and the API/WebUI:
 ```powershell
 docker compose -f docker-compose.postgres.yml up -d --build
 ```
+
+After the first installation, update the complete data server and bundled
+viewer with one command from the repository directory:
+
+```powershell
+./deploy/update.ps1
+```
+
+The updater runs a fast-forward-only `git pull`, rebuilds the Docker image,
+recreates the server container, and waits for its health check. Persistent
+PostgreSQL data and backups are not replaced. To rebuild the current checkout
+without pulling (for example, while testing local edits), use
+`./deploy/update.ps1 -SkipPull`. Auto-detection selects a running Docker data
+server; use `-Target Docker` or `-Target Native` to override it. A native
+source update produces `teslalog-local.exe` on Windows or `teslalog-local` on
+Linux. Installed release binaries keep their even shorter update command:
+`sudo teslalog update`.
 
 For a trusted LAN or Tailscale-only installation, authentication can be
 explicitly disabled in `.env`:

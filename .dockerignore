@@ -2,8 +2,9 @@
 .gocache
 .gomodcache
 backups
-frontend
-grafana
+frontend/node_modules
+frontend/dist
+frontend/.vite
 teslamate-import
 teslamate-sync
 .claude

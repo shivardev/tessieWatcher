@@ -131,15 +131,31 @@ export const normaliseResult = (json: unknown): QueryResult => {
 // result. A failure - network, auth, or a SQL error the API reports - is
 // captured on the QueryResult (like the local path) so one bad panel does
 // not blank the whole dashboard.
-export const runRemoteQuery = async (config: RemoteConfig, sql: string): Promise<QueryResult> => {
+export const runRemoteQuery = async (
+  config: RemoteConfig,
+  sql: string,
+  signal?: AbortSignal,
+): Promise<QueryResult> => {
   let response: Response
   try {
     response = await fetch(queryEndpoint(config), {
       method: 'POST',
       headers: remoteHeaders(config),
       body: JSON.stringify({ query: sql }),
+      ...(signal === undefined ? {} : { signal }),
     })
   } catch {
+    // An unreachable address (VPN down, server off) otherwise hangs until
+    // the browser's own connect timeout, so callers pass a timeout signal
+    // and the two abort reasons get their own wording here.
+    const reason: unknown = signal?.aborted ? signal.reason : undefined
+    if (reason instanceof DOMException && reason.name === 'TimeoutError')
+      return {
+        columns: [],
+        rows: [],
+        error: `The teslalog data server at ${config.baseUrl} did not answer in time. Check the VPN connection and that the server is running.`,
+      }
+    if (reason !== undefined) return { columns: [], rows: [], error: 'Cancelled.' }
     return {
       columns: [],
       rows: [],

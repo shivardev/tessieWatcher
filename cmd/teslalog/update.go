@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,47 @@ type ghRelease struct {
 		Name               string `json:"name"`
 		BrowserDownloadURL string `json:"browser_download_url"`
 	} `json:"assets"`
+}
+
+// compareVersions compares the numeric major/minor/patch portion of two
+// release versions. It prevents an older GitHub release from replacing a
+// newer locally built binary (for example v0.6.0 with GitHub's v0.5.1).
+func compareVersions(a, b string) (int, error) {
+	parse := func(value string) ([3]int, error) {
+		var result [3]int
+		value = strings.TrimPrefix(strings.TrimSpace(value), "v")
+		value = strings.SplitN(value, "+", 2)[0]
+		value = strings.SplitN(value, "-", 2)[0]
+		parts := strings.Split(value, ".")
+		if len(parts) != 3 {
+			return result, fmt.Errorf("invalid version %q (expected major.minor.patch)", value)
+		}
+		for i, part := range parts {
+			n, err := strconv.Atoi(part)
+			if err != nil || n < 0 {
+				return result, fmt.Errorf("invalid version %q", value)
+			}
+			result[i] = n
+		}
+		return result, nil
+	}
+	av, err := parse(a)
+	if err != nil {
+		return 0, err
+	}
+	bv, err := parse(b)
+	if err != nil {
+		return 0, err
+	}
+	for i := range av {
+		if av[i] < bv[i] {
+			return -1, nil
+		}
+		if av[i] > bv[i] {
+			return 1, nil
+		}
+	}
+	return 0, nil
 }
 
 // assetNameForPlatform returns the release-asset filename cross-build.sh
@@ -92,8 +134,16 @@ func runUpdate() error {
 	if latest == "" {
 		return fmt.Errorf("no releases found for %s yet", repoSlug)
 	}
-	if latest == version {
+	comparison, err := compareVersions(latest, version)
+	if err != nil {
+		return fmt.Errorf("compare installed and release versions: %w", err)
+	}
+	if comparison == 0 {
 		fmt.Printf("Already up to date (v%s).\n", version)
+		return nil
+	}
+	if comparison < 0 {
+		fmt.Printf("Installed v%s is newer than the latest GitHub release (%s); refusing to downgrade.\n", version, rel.TagName)
 		return nil
 	}
 

@@ -1423,3 +1423,85 @@ func TestElevationDataMigrationRunsOnceAndFixesTheScale(t *testing.T) {
 		t.Fatalf("migration ran twice: elevation is now %v", first)
 	}
 }
+
+// The odometer is recorded from the snapshot that opens the charge, the
+// way TeslaMate links a charging_process to the position taken at start.
+func TestOpenChargingSessionRecordsOdometer(t *testing.T) {
+	s := openTestStore(t)
+	vehicleID, err := s.UpsertVehicle(VehicleMeta{VIN: "TEST-ODO", DisplayName: "Test car"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withOdometer, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: time.Now().UTC(), OdometerKm: 4321.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutOdometer, err := s.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got float64
+	if err := s.db.QueryRow(`SELECT odometer_km FROM charging_sessions WHERE id=?`, withOdometer).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != 4321.5 {
+		t.Fatalf("expected odometer 4321.5, got %v", got)
+	}
+	var missing sql.NullFloat64
+	if err := s.db.QueryRow(`SELECT odometer_km FROM charging_sessions WHERE id=?`, withoutOdometer).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing.Valid {
+		t.Fatalf("expected NULL odometer when the snapshot had none, got %v", missing.Float64)
+	}
+}
+
+// Sessions written before odometer_km existed are backfilled once from the
+// last position at or before their start.
+func TestChargeOdometerBackfillMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	vehicleID, err := store.UpsertVehicle(VehicleMeta{VIN: "TEST-BACKFILL", DisplayName: "Test car"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	driveID, err := store.OpenDrive(DriveStart{VehicleID: vehicleID, Time: start.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []struct {
+		at  time.Time
+		odo float64
+	}{{start.Add(-time.Hour), 1234.5}, {start.Add(30 * time.Minute), 1240}} {
+		if err := store.AppendPosition(PositionSample{DriveID: driveID, VehicleID: vehicleID, Time: p.at, OdometerKm: p.odo, ShiftState: "D"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sessionID, err := store.OpenChargingSession(ChargeStart{VehicleID: vehicleID, Time: start})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stand in for a database from before the column and backfill existed.
+	if _, err := store.DB().Exec(`DELETE FROM schema_meta WHERE key = 'backfill_charge_odometer_v1'`); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	store, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var got float64
+	if err := store.DB().QueryRow(`SELECT odometer_km FROM charging_sessions WHERE id=?`, sessionID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != 1234.5 {
+		t.Fatalf("expected the odometer of the last position before the charge (1234.5), got %v", got)
+	}
+}

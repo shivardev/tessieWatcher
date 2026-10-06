@@ -13,7 +13,7 @@ import {
   type IncompleteRow,
   type SpeedBand,
 } from './domain'
-import { quickRangeModifier, sqlDateTime, timeRangeSql, timeWindow, type PreferredRange, type StatisticsPeriod, type TimeRange } from './viewSettings'
+import { quickRangeModifier, sqlDateTime, timeRangeSql, timeWindow, type PreferredRange, type StatisticsPeriod, type TimeFilter, type TimeRange } from './viewSettings'
 import {
   getRemoteBackend,
   runRemoteQueries,
@@ -93,6 +93,7 @@ const requiredColumns: Readonly<Record<string, readonly string[]>> = {
     'max_charger_power_kw',
     'cost',
     'is_dc_fast_charge',
+    'odometer_km',
   ],
   charging_samples: [
     'charging_session_id',
@@ -237,11 +238,8 @@ const metric = async (run: Runner, label: string, sql: string, unit: string): Pr
 const metrics = async (
   run: Runner,
   specs: readonly (readonly [string, string, string])[],
-): Promise<Metric[]> => {
-  const out: Metric[] = []
-  for (const [label, sql, unit] of specs) out.push(await metric(run, label, sql, unit))
-  return out
-}
+): Promise<Metric[]> =>
+  Promise.all(specs.map(([label, sql, unit]) => metric(run, label, sql, unit)))
 const drives = async (run: Runner) =>
   (await rows(
     run,
@@ -255,7 +253,8 @@ const drives = async (run: Runner) =>
               CASE WHEN SUM(CASE WHEN battery_level - usable_battery_level > 0 THEN 1 ELSE 0 END) * 1.0 / COUNT(*) > 0.25
                    THEN 1 ELSE 0 END has_reduced_range
        FROM positions
-       WHERE drive_id IS NOT NULL AND battery_level IS NOT NULL AND usable_battery_level IS NOT NULL
+       WHERE drive_id IN (SELECT id FROM drives WHERE status='closed' ORDER BY start_time DESC LIMIT 500)
+         AND battery_level IS NOT NULL AND usable_battery_level IS NOT NULL
        GROUP BY drive_id
      ) rr ON rr.drive_id = d.id
      WHERE d.status='closed' ORDER BY d.start_time DESC LIMIT 500`,
@@ -303,12 +302,7 @@ const charges = async (run: Runner) =>
        outside_temp_avg_c,
        end_range_km-start_range_km rated_range_added_km,
        end_ideal_range_km-start_ideal_range_km ideal_range_added_km,
-       (SELECT p.odometer_km
-          FROM positions p
-         WHERE p.vehicle_id=charge_data.vehicle_id
-           AND p.timestamp<=charge_data.start_time
-           AND p.odometer_km IS NOT NULL
-         ORDER BY p.timestamp DESC LIMIT 1) odometer_km
+       odometer_km
      FROM charge_data ORDER BY start_time DESC LIMIT 500`,
   )).map((r) =>
     chargeRowSchema.parse({
@@ -328,8 +322,7 @@ const charges = async (run: Runner) =>
       outsideTempC: nullableNum(r.outside_temp_avg_c, 'outside temperature'),
       ratedRangeAddedKm: nullableNum(r.rated_range_added_km, 'rated range added'),
       idealRangeAddedKm: nullableNum(r.ideal_range_added_km, 'ideal range added'),
-      // Charging samples do not carry odometer. Use the last vehicle
-      // position recorded before the charge began.
+      // Recorded when the charge started (TeslaMate's position_id).
       odometerKm: nullableNum(r.odometer_km, 'charge odometer'),
     }),
   )
@@ -369,23 +362,37 @@ const destinations = async (run: Runner): Promise<readonly Destination[]> =>
     run,
     `SELECT end_location destination, COUNT(*) visits FROM drives WHERE status='closed' AND end_location IS NOT NULL AND end_location!='' GROUP BY end_location ORDER BY COUNT(*) DESC LIMIT 10`,
   )).map((r) => ({ name: str(r.destination, 'destination'), visits: num(r.visits, 'visits') }))
-// speedHistogram weights each 10 km/h band by the seconds the car spent
-// in it, taken as the gap to the next position sample within the same
-// drive. Counting samples instead would let a dense stretch of slow
+// loadSpeedHistogram weights each 10 km/h band by the seconds the car
+// spent in it, taken as the gap to the next position sample within the
+// same drive. Counting samples instead would let a dense stretch of slow
 // city driving dominate a sparsely sampled motorway run.
-const speedHistogram = async (run: Runner): Promise<readonly SpeedBand[]> =>
-  (await rows(
-    run,
-    `WITH d AS (
+//
+// As in TeslaMate's Drive Stats dashboard, it covers the selected time
+// range ($__timeFilter(p.date) there) and runs only when that page is
+// opened - never as part of the startup load - so its cost follows the
+// window being looked at rather than the whole history. Runs locally or
+// against the active remote backend, like the dashboards (executeQueries).
+export const loadSpeedHistogram = async (
+  databaseBytes: Uint8Array,
+  filter: TimeFilter,
+): Promise<readonly SpeedBand[]> => {
+  const [result] = await executeQueries(databaseBytes, [speedHistogramSql(filter)])
+  if (!result || result.error) throw new DatabaseError(result?.error ?? 'Speed profile query failed.')
+  return toRecords(result).map((r) => ({
+    speedKmh: num(r.band, 'speed band'),
+    seconds: num(r.seconds, 'seconds'),
+  }))
+}
+const speedHistogramSql = (filter: TimeFilter): string => `WITH d AS (
        SELECT ROUND(speed_kmh/10.0)*10 AS band,
               (julianday(LEAD(timestamp) OVER (PARTITION BY drive_id ORDER BY timestamp))
                - julianday(timestamp)) * 86400 AS seconds
-       FROM positions WHERE drive_id IS NOT NULL AND speed_kmh IS NOT NULL
+       FROM positions
+       WHERE drive_id IS NOT NULL AND speed_kmh IS NOT NULL AND ${timeRangeSql(filter, 'timestamp')}
      )
      SELECT band, SUM(seconds) seconds FROM d
      WHERE band > 0 AND seconds IS NOT NULL AND seconds < 600
-     GROUP BY band ORDER BY band`,
-  )).map((r) => ({ speedKmh: num(r.band, 'speed band'), seconds: num(r.seconds, 'seconds') }))
+     GROUP BY band ORDER BY band`
 
 export type QueryVariables = Readonly<{
   driveId?: number
@@ -524,24 +531,97 @@ export const executeQuery = async (
 ): Promise<QueryResult> =>
   (await executeQueries(bytes, [sql], variables))[0] ?? { columns: [], rows: [] }
 
+// The sections a LoadedDatabase is built from, in the order a progress
+// display lists them. 'vehicle' always completes first and alone.
+export const loadSteps = [
+  { key: 'vehicle', label: 'Vehicle overview' },
+  { key: 'drives', label: 'Drives' },
+  { key: 'driveStats', label: 'Driving statistics' },
+  { key: 'places', label: 'Places' },
+  { key: 'charges', label: 'Charges' },
+  { key: 'chargeStats', label: 'Charging statistics' },
+  { key: 'incomplete', label: 'Data health checks' },
+] as const
+export type LoadStep = (typeof loadSteps)[number]['key']
+export type LoadOptions = Readonly<{
+  onStep?: (step: LoadStep) => void
+  signal?: AbortSignal
+}>
+
+// limitConcurrency caps how many queries a Runner has in flight. A
+// finishing query hands its slot straight to the next waiter, so the cap
+// holds even when new callers arrive in between.
+const limitConcurrency = (run: Runner, limit: number): Runner => {
+  let active = 0
+  const waiting: (() => void)[] = []
+  return async (sql) => {
+    if (active < limit) active += 1
+    else await new Promise<void>((resolve) => waiting.push(resolve))
+    try {
+      return await run(sql)
+    } finally {
+      const next = waiting.shift()
+      if (next) next()
+      else active -= 1
+    }
+  }
+}
+
 // buildLoaded assembles the whole LoadedDatabase from a Runner, so the
-// exact same queries drive the local (sql.js) and remote HTTP
-// paths. Awaited in order - fine for sql.js, and keeps the remote backend
-// to one request at a time (rate-limit safe).
+// exact same queries drive the local (sql.js) and remote HTTP paths. The
+// vehicle query runs first and alone - it proves the source is reachable
+// and readable - then the remaining sections run together. Over HTTP that
+// turns ~30 sequential round trips into a few concurrent batches.
 const buildLoaded = async (
   run: Runner,
   meta: Pick<LoadedDatabase, 'fileName' | 'fileSize' | 'databaseBytes'>,
-): Promise<LoadedDatabase> => ({
-  ...meta,
-  vehicle: await overview(run),
-  drives: await drives(run),
-  driveMetrics: await metrics(run, [
+  onStep: (step: LoadStep) => void = () => undefined,
+): Promise<LoadedDatabase> => {
+  const track = async <T,>(step: LoadStep, work: () => Promise<T>): Promise<T> => {
+    const value = await work()
+    onStep(step)
+    return value
+  }
+  const vehicle = await track('vehicle', () => overview(run))
+  const [
+    driveRows,
+    [driveMetrics, lifetimeDriveMetrics],
+    destinationRows,
+    chargeRows,
+    chargeMetrics,
+    [incompleteDriveRows, incompleteChargeRows],
+  ] = await Promise.all([
+    track('drives', () => drives(run)),
+    track('driveStats', () => Promise.all([driveMetricsFor(run), lifetimeDriveMetricsFor(run)])),
+    track('places', () => destinations(run)),
+    track('charges', () => charges(run)),
+    track('chargeStats', () => chargeMetricsFor(run)),
+    track('incomplete', () => Promise.all([incompleteDrives(run), incompleteCharges(run)])),
+  ])
+  return {
+    ...meta,
+    vehicle,
+    drives: driveRows,
+    driveMetrics,
+    lifetimeDriveMetrics,
+    destinations: destinationRows,
+    charges: chargeRows,
+    chargeMetrics,
+    incompleteDrives: incompleteDriveRows,
+    incompleteCharges: incompleteChargeRows,
+  }
+}
+
+const driveMetricsFor = (run: Runner) =>
+  metrics(run, [
     ['Total drives (90d)', `SELECT COUNT(*) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'drives'],
     ['Total distance (90d)', `SELECT SUM(distance_km) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km'],
     ['Average distance', `SELECT AVG(distance_km) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km'],
     ['Max speed (90d)', `SELECT MAX(max_speed_kmh) value FROM drives WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'km/h'],
-  ]),
-  lifetimeDriveMetrics: await metrics(run, [
+  ])
+
+const lifetimeDriveMetricsFor = (run: Runner) =>
+  metrics(run, [
     ['Total drives', `SELECT COUNT(*) value FROM drives WHERE status='closed'`, 'drives'],
     ['Total distance', `SELECT SUM(distance_km) value FROM drives WHERE status='closed'`, 'km'],
     ['Median distance', `SELECT (SELECT distance_km FROM drives WHERE status='closed' AND distance_km IS NOT NULL ORDER BY distance_km LIMIT 1 OFFSET (SELECT COUNT(*) FROM drives WHERE status='closed' AND distance_km IS NOT NULL)/2) value`, 'km'],
@@ -556,30 +636,31 @@ const buildLoaded = async (
     // down still counts - the odometer is the car's own record.
     ['Extrapolated monthly mileage', `SELECT (MAX(end_odometer_km)-MIN(start_odometer_km))/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*(365.0/12) value FROM drives WHERE status='closed'`, 'km'],
     ['Extrapolated annual mileage', `SELECT (MAX(end_odometer_km)-MIN(start_odometer_km))/MAX(1.0,julianday(MAX(end_time))-julianday(MIN(start_time)))*365.0 value FROM drives WHERE status='closed'`, 'km'],
-  ]),
-  speedHistogram: await speedHistogram(run),
-  destinations: await destinations(run),
-  charges: await charges(run),
-  chargeMetrics: await metrics(run, [
+  ])
+
+const chargeMetricsFor = (run: Runner) =>
+  metrics(run, [
     ['Total charges (90d)', `SELECT COUNT(*) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'charges'],
     ['Energy added (90d)', `SELECT SUM(charge_energy_added_kwh) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'kWh'],
     ['Total cost (90d)', `SELECT SUM(cost) value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days')`, 'cost'],
     ['Max charger power', `SELECT max_charger_power_kw value FROM charging_sessions WHERE status='closed' AND start_time>=datetime('now','-90 days') AND max_charger_power_kw IS NOT NULL ORDER BY CAST(max_charger_power_kw AS REAL) DESC LIMIT 1`, 'kW'],
-  ]),
-  incompleteDrives: await incompleteDrives(run),
-  incompleteCharges: await incompleteCharges(run),
-})
+  ])
 
 export const openDatabaseBytes = async (
   fileName: string,
   fileSize: number,
   databaseBytes: Uint8Array,
+  options: LoadOptions = {},
 ): Promise<LoadedDatabase> => {
   const SQL = await initSqlJs({ locateFile: () => wasmUrl })
   const db = new SQL.Database(databaseBytes)
   try {
     validate(db)
-    return await buildLoaded(sqlJsRunner(db), { fileName, fileSize, databaseBytes })
+    return await buildLoaded(
+      sqlJsRunner(db),
+      { fileName, fileSize, databaseBytes },
+      options.onStep,
+    )
   } catch (error: unknown) {
     throw new DatabaseError(error instanceof Error ? error.message : 'Could not read the database.')
   } finally {
@@ -591,13 +672,34 @@ export const openDatabaseBytes = async (
 // data server over HTTP - no file downloaded. databaseBytes is empty
 // because nothing local is held; the dashboards read remotely too via the
 // active remote backend (see executeQueries), which the caller sets.
-export const openDatabaseRemote = async (config: RemoteConfig): Promise<LoadedDatabase> => {
+//
+// The first query doubles as the connection check, so it gets a short
+// timeout: an unreachable address fails in seconds with a clear message
+// instead of hanging on the browser's own connect timeout. Later queries
+// get a longer allowance for genuinely heavy aggregates.
+const connectTimeoutMs = 10_000
+const queryTimeoutMs = 60_000
+const remoteConcurrency = 4
+
+export const openDatabaseRemote = async (
+  config: RemoteConfig,
+  { onStep, signal }: LoadOptions = {},
+): Promise<LoadedDatabase> => {
+  let connected = false
+  const timeout = (): AbortSignal => {
+    const limit = AbortSignal.timeout(connected ? queryTimeoutMs : connectTimeoutMs)
+    return signal ? AbortSignal.any([signal, limit]) : limit
+  }
+  const run = limitConcurrency((sql) => runRemoteQuery(config, sql, timeout()), remoteConcurrency)
   try {
-    return await buildLoaded((sql) => runRemoteQuery(config, sql), {
-      fileName: 'cloud',
-      fileSize: 0,
-      databaseBytes: new Uint8Array(0),
-    })
+    return await buildLoaded(
+      run,
+      { fileName: 'cloud', fileSize: 0, databaseBytes: new Uint8Array(0) },
+      (step) => {
+        if (step === 'vehicle') connected = true
+        onStep?.(step)
+      },
+    )
   } catch (error: unknown) {
     throw new DatabaseError(
       error instanceof Error ? error.message : 'Could not read the cloud database.',
@@ -605,5 +707,5 @@ export const openDatabaseRemote = async (config: RemoteConfig): Promise<LoadedDa
   }
 }
 
-export const openDatabase = async (file: File): Promise<LoadedDatabase> =>
-  openDatabaseBytes(file.name, file.size, new Uint8Array(await file.arrayBuffer()))
+export const openDatabase = async (file: File, options: LoadOptions = {}): Promise<LoadedDatabase> =>
+  openDatabaseBytes(file.name, file.size, new Uint8Array(await file.arrayBuffer()), options)

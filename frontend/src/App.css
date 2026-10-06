@@ -1396,6 +1396,167 @@ main:not(.empty) {
   box-shadow: 0 24px 70px rgb(0 0 0 / 80%);
   animation: fade-up 300ms var(--ease);
 }
+/* ───────────────────────── Loading checklist ───────────────────────── */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 55%);
+  backdrop-filter: blur(6px);
+  animation: fade-in 200ms var(--ease);
+}
+.loading-card {
+  width: min(440px, 100%);
+  padding: 20px;
+  border: 1px solid var(--line-strong);
+  border-radius: 18px;
+  background: rgb(10 10 12 / 96%);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 80%);
+  animation: fade-up 300ms var(--ease);
+}
+.loading-card header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.loading-card header > svg {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.loading-card header div {
+  min-width: 0;
+  flex: 1;
+}
+.loading-card header b,
+.loading-card header small {
+  display: block;
+}
+.loading-card header small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.loading-elapsed {
+  color: var(--text-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.loading-bar {
+  height: 4px;
+  margin: 16px 0 14px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-3);
+}
+.loading-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 300ms var(--ease);
+}
+.loading-card ol {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.loading-card li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 0;
+  color: var(--muted);
+  font-size: 13px;
+  transition: color 200ms;
+}
+.loading-card li svg,
+.loading-card li .dot {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+.loading-card li .dot {
+  display: grid;
+  place-items: center;
+}
+.loading-card li .dot::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  content: '';
+}
+.loading-card li.active {
+  color: var(--text);
+}
+.loading-card li.active svg {
+  color: var(--accent);
+}
+.loading-card li.done {
+  color: var(--text-2);
+}
+.loading-card li.done svg {
+  color: var(--emerald);
+}
+.loading-slow {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgb(251 191 36 / 10%);
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.loading-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.loading-card footer button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.loading-card footer button:hover {
+  background: var(--surface-3);
+}
+.loading-card footer svg {
+  width: 14px;
+}
+.loading-spin {
+  animation: dashboard-spin 900ms linear infinite;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
 .import-progress > div {
   display: flex;
   grid-column: 1 / -1;
@@ -2877,6 +3038,9 @@ main:not(.empty) {
   .dashboard-loading .spinner {
     animation: none;
     border-top-color: var(--accent);
+  }
+  .loading-spin {
+    animation: none;
   }
 }
 

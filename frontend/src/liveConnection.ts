@@ -81,6 +81,10 @@ const request = async (baseUrl: string, path: string, signal?: AbortSignal, meth
     response = await fetch(`${baseUrl}${path}`, { method, ...(signal === undefined ? {} : { signal }) })
   } catch (reason: unknown) {
     if (reason instanceof DOMException && reason.name === 'AbortError') throw reason
+    if (reason instanceof DOMException && reason.name === 'TimeoutError')
+      throw new LiveConnectionError(
+        `${baseUrl} did not answer in time. Check that teslalog is running and that this machine can see it.`,
+      )
     throw new LiveConnectionError(
       `Could not reach ${baseUrl}. Check that teslalog is running and that this machine can see it.`,
     )

@@ -407,11 +407,12 @@ export const importTeslaMateDump = async (
               target.recordId,
             ])
           else
-            database.run(`UPDATE charging_sessions SET latitude=?,longitude=? WHERE id=?`, [
-              latitude,
-              longitude,
-              target.recordId,
-            ])
+            // TeslaMate's Charges dashboard reads the charge odometer
+            // through this same position (cp.position_id).
+            database.run(
+              `UPDATE charging_sessions SET latitude=?,longitude=?,odometer_km=? WHERE id=?`,
+              [latitude, longitude, numeric(get('odometer')), target.recordId],
+            )
         }
         if (driveId !== null)
           statements.position.run(

@@ -173,6 +173,11 @@ CREATE TABLE IF NOT EXISTS positions (
 	climate_keeper_mode      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_positions_drive ON positions(drive_id, timestamp);
+-- Time-ordered lookups that are not per drive: the charge list's "odometer
+-- at the last position before this charge" and every time-range filtered
+-- dashboard. Without it each of those scans the whole table, the largest
+-- and fastest-growing one.
+CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON positions(timestamp);
 
 CREATE TABLE IF NOT EXISTS charging_sessions (
 	id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -204,7 +209,14 @@ CREATE TABLE IF NOT EXISTS charging_sessions (
 	-- wall connector/mobile connector (AC). TeslaMate's own dashboards
 	-- surface this same AC/DC split for its "Charging Stats" panel.
 	is_dc_fast_charge        INTEGER,
-	status                   TEXT NOT NULL DEFAULT 'open'
+	status                   TEXT NOT NULL DEFAULT 'open',
+	-- Odometer when the charge started, recorded from the same snapshot
+	-- that opens the session. TeslaMate stores a position_id on
+	-- charging_processes for exactly this (log.ex start_charging_process
+	-- inserts the position with the process) and its Charges dashboard
+	-- joins on it; looking it up by time at read time instead meant a
+	-- scan of positions per charge on every load.
+	odometer_km              REAL
 );
 CREATE INDEX IF NOT EXISTS idx_charging_sessions_vehicle_start ON charging_sessions(vehicle_id, start_time);
 CREATE INDEX IF NOT EXISTS idx_charging_sessions_status ON charging_sessions(vehicle_id, status);

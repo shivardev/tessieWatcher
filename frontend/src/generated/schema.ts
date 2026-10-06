@@ -120,6 +120,7 @@ valet_mode INTEGER,
 climate_keeper_mode TEXT
 )`,
   `CREATE INDEX IF NOT EXISTS idx_positions_drive ON positions(drive_id, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS idx_positions_timestamp ON positions(timestamp)`,
   `CREATE TABLE IF NOT EXISTS charging_sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 vehicle_id INTEGER NOT NULL REFERENCES vehicles(id),
@@ -141,7 +142,8 @@ latitude REAL,
 longitude REAL,
 location TEXT,
 is_dc_fast_charge INTEGER,
-status TEXT NOT NULL DEFAULT 'open'
+status TEXT NOT NULL DEFAULT 'open',
+odometer_km REAL
 )`,
   `CREATE INDEX IF NOT EXISTS idx_charging_sessions_vehicle_start ON charging_sessions(vehicle_id, start_time)`,
   `CREATE INDEX IF NOT EXISTS idx_charging_sessions_status ON charging_sessions(vehicle_id, status)`,
@@ -230,6 +232,7 @@ export const columnMigrations: readonly string[] = [
   'ALTER TABLE geocode_cache ADD COLUMN state TEXT',
   'ALTER TABLE geocode_cache ADD COLUMN postcode TEXT',
   'ALTER TABLE geocode_cache ADD COLUMN country TEXT',
+  'ALTER TABLE charging_sessions ADD COLUMN odometer_km REAL',
 ]
 
 /** Every table the schema defines. */

@@ -7,11 +7,25 @@
 # Or for the Pi directly from a dev machine:
 #   docker buildx build --platform linux/arm64 -t teslalog:arm64 --load .
 
+FROM node:22-bookworm-slim AS webui
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+WORKDIR /src
+COPY grafana/ ./grafana/
+COPY frontend/ ./frontend/
+WORKDIR /src/frontend
+RUN npm run build
+
 FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# The Go server embeds this directory. Always replace the committed fallback
+# with assets built from the source in this checkout, so a Docker rebuild can
+# never silently serve an older frontend.
+COPY --from=webui /src/frontend/dist ./internal/webui/dist
 # CGO_ENABLED=0: storage uses ncruces/go-sqlite3 (SQLite compiled to
 # WebAssembly, run via the pure-Go wazero runtime), not cgo - so this
 # cross-compiles for any TARGETARCH with no C toolchain at all.
