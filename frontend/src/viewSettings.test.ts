@@ -9,6 +9,7 @@ import {
   shiftTimeRange,
   sqlDateTime,
   timeRangeInputs,
+  timeBucketSql,
   timeRangeLabel,
   timeRangeSql,
   withinTimeWindow,
@@ -114,5 +115,14 @@ describe('view settings', () => {
       customTo: 'now',
     })
     expect(shiftTimeRange({ timeRange: 'all' }, -1, now)).toBeNull()
+  })
+
+  it('sizes time buckets to the window, like TeslaMate $__timeGroup', () => {
+    const now = new Date(2026, 9, 10, 12).getTime()
+    expect(timeBucketSql({ timeRange: '24h' }, 'timestamp', now)).toBe("substr(timestamp,1,16)||':00Z'")
+    expect(timeBucketSql({ timeRange: '7d' }, 'timestamp', now)).toBe("substr(timestamp,1,15)||'0:00Z'")
+    expect(timeBucketSql({ timeRange: '90d' }, 'timestamp', now)).toBe("substr(timestamp,1,13)||':00:00Z'")
+    expect(timeBucketSql({ timeRange: '1y' }, 'timestamp', now)).toBe("substr(timestamp,1,10)||'T00:00:00Z'")
+    expect(timeBucketSql({ timeRange: 'all' }, 'timestamp', now)).toBe("substr(timestamp,1,10)||'T00:00:00Z'")
   })
 })

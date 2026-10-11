@@ -53,7 +53,7 @@ import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
 import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
-import { distance, speed, timeRangeLabel, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
+import { distance, speed, timeBucketSql, timeRangeLabel, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
 import { getRemoteBackend, runRemoteStatement } from './remoteBackend'
 
 type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string; speedKmh?: number }>
@@ -600,7 +600,10 @@ export function TripDashboard({
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings; onSelectDrive?: (driveId: number) => void }>) {
   const tripQueries = useMemo(
     () => [
-      `SELECT p.latitude, p.longitude, p.timestamp FROM positions p JOIN drives d ON d.id=p.drive_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')} AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL AND (p.id % 25)=0 ORDER BY p.timestamp`,
+      // Thinned to roughly 15k points whatever the window: a fixed 1-in-25
+      // sample shipped ~50k points (3.8 MB) for 90 days and grows with it.
+      `SELECT p.latitude, p.longitude, p.timestamp FROM positions p JOIN drives d ON d.id=p.drive_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')} AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL
+        AND (p.id % (SELECT CAST(MAX(1, COUNT(*)/15000) AS INTEGER) FROM positions p2 JOIN drives d2 ON d2.id=p2.drive_id WHERE d2.status='closed' AND ${timeRangeSql(settings, 'd2.start_time')}))=0 ORDER BY p.timestamp`,
       `SELECT COALESCE(SUM(d.distance_km),0), COALESCE(SUM(d.duration_min),0), COALESCE(SUM((d.start_range_km-d.end_range_km)*v.efficiency_wh_km),0), COALESCE(SUM(d.distance_km)/NULLIF(SUM(d.duration_min)/60.0,0),0), COALESCE(MAX(d.end_odometer_km)-MIN(d.start_odometer_km),0) FROM drives d JOIN vehicles v ON v.id=d.vehicle_id WHERE d.status='closed' AND ${timeRangeSql(settings, 'd.start_time')}`,
       `SELECT COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*86400 ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=0 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN charge_energy_added_kwh ELSE 0 END),0), COALESCE(SUM(cost),0), COALESCE(SUM(CASE WHEN is_dc_fast_charge=1 THEN (julianday(end_time)-julianday(start_time))*24 ELSE 0 END),0), COALESCE(SUM(MAX(COALESCE(charge_energy_added_kwh,0),COALESCE(charge_energy_used_kwh,0))),0) FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')}`,
       `WITH events AS (
@@ -613,12 +616,12 @@ export function TripDashboard({
        ) SELECT COALESCE(SUM(loss)*(SELECT efficiency_wh_km FROM vehicles ORDER BY id LIMIT 1),0) FROM losses`,
       `SELECT id, start_time, COALESCE(start_location, printf('%.4f, %.4f',start_lat,start_lng)), COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)), duration_min, distance_km, start_battery_level, end_battery_level, (start_range_km-end_range_km)*(SELECT efficiency_wh_km FROM vehicles WHERE id=drives.vehicle_id)/NULLIF(distance_km,0) FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')} ORDER BY start_time DESC`,
       `SELECT start_time "Date", location "Location", CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END "Type", ROUND((julianday(end_time)-julianday(start_time))*24*60,1) "Duration (min)", cost "Cost", charge_energy_added_kwh "Energy added (kWh)", charge_energy_used_kwh "Energy used (kWh)", start_battery_level "% Start", end_battery_level "% End" FROM charging_sessions WHERE status='closed' AND ${timeRangeSql(settings, 'start_time')} ORDER BY start_time DESC`,
-      `SELECT strftime('%Y-%m-%dT%H:00:00Z',timestamp) time,
+      `SELECT ${timeBucketSql(settings, 'timestamp')} AS time,
         ROUND(AVG(battery_level),1) "Battery (%)",
         ROUND(AVG(CASE WHEN '${settings.lengthUnit}'='mi' THEN battery_range_km/1.60934 ELSE battery_range_km END),1) "Range (${settings.lengthUnit})"
         FROM battery_samples WHERE ${timeRangeSql(settings, 'timestamp')}
-        GROUP BY strftime('%Y-%m-%dT%H:00:00Z',timestamp) ORDER BY time`,
-      `SELECT timestamp time, CASE WHEN '${settings.lengthUnit}'='mi' THEN elevation_m*3.28084 ELSE elevation_m END "Elevation" FROM positions WHERE elevation_m IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
+        GROUP BY 1 ORDER BY 1`,
+      `SELECT ${timeBucketSql(settings, 'timestamp')} AS time, AVG(CASE WHEN '${settings.lengthUnit}'='mi' THEN elevation_m*3.28084 ELSE elevation_m END) "Elevation" FROM positions WHERE elevation_m IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} GROUP BY 1 ORDER BY 1`,
       `SELECT started_at, COALESCE(ended_at,datetime('now')), state FROM states WHERE ${timeRangeSql(settings, 'started_at')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')} ORDER BY 1`,
     ],
     [settings],
@@ -819,10 +822,12 @@ export function OverviewDashboard({ bytes, settings }: Readonly<{ bytes: Uint8Ar
     `SELECT end_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings, 'start_time')} AND end_odometer_km IS NOT NULL ORDER BY end_odometer_km DESC LIMIT 1`,
     `SELECT start_odometer_km AS odometer FROM drives WHERE ${timeRangeSql(settings, 'start_time')} AND start_odometer_km IS NOT NULL ORDER BY start_odometer_km ASC LIMIT 1`,
     `WITH events AS (SELECT 'drive_start' event,start_time time,start_range_km range FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'drive_end',COALESCE(end_time,start_time),end_range_km FROM drives WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'charge_start',start_time,start_range_km FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')} UNION ALL SELECT 'charge_end',COALESCE(end_time,start_time),end_range_km FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')}), ordered AS (SELECT event,range,LEAD(range) OVER (ORDER BY time) next_range FROM events WHERE range IS NOT NULL), losses AS (SELECT CASE WHEN event='drive_start' THEN range-next_range WHEN range-next_range>0 THEN range-next_range ELSE 0 END loss FROM ordered WHERE next_range IS NOT NULL) SELECT SUM(loss)*(SELECT efficiency_wh_km FROM vehicles LIMIT 1) AS gross_energy_wh FROM losses`,
-    `SELECT strftime('%Y-%m-%dT%H:00:00Z',timestamp) time,ROUND(AVG(battery_level),1) "SOC (%)"
+    `SELECT ${timeBucketSql(settings, 'timestamp')} AS time,ROUND(AVG(battery_level),1) "SOC (%)"
       FROM battery_samples WHERE ${timeRangeSql(settings, 'timestamp')}
-      GROUP BY strftime('%Y-%m-%dT%H:00:00Z',timestamp) ORDER BY time`,
-    `SELECT timestamp time,charger_power_kw "Power (kW)",battery_heater_on "Battery heater",charger_actual_current "Current (A)",charge_energy_added_kwh "Energy added (kWh)",charger_voltage "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
+      GROUP BY 1 ORDER BY 1`,
+    // Bucketed like TeslaMate's $__timeGroup: a 90-day window otherwise
+    // shipped every charging sample (~180k rows, 11 MB) to draw one chart.
+    `SELECT ${timeBucketSql(settings, 'timestamp')} AS time,AVG(charger_power_kw) "Power (kW)",MAX(battery_heater_on) "Battery heater",AVG(charger_actual_current) "Current (A)",MAX(charge_energy_added_kwh) "Energy added (kWh)",AVG(charger_voltage) "Charging voltage (V)" FROM charging_samples WHERE ${timeRangeSql(settings, 'timestamp')} GROUP BY 1 ORDER BY 1`,
     `SELECT started_at,COALESCE(ended_at,datetime('now')),state FROM states WHERE ${timeRangeSql(settings, 'started_at')}
      UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),'driving' FROM drives WHERE ${timeRangeSql(settings, 'start_time')}
      UNION ALL SELECT start_time,COALESCE(end_time,datetime('now')),CASE WHEN is_dc_fast_charge=1 THEN 'charging (DC)' ELSE 'charging (AC)' END FROM charging_sessions WHERE ${timeRangeSql(settings, 'start_time')}
@@ -1014,15 +1019,21 @@ export function ProjectedRangeDashboard({
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const projectedQueries = useMemo(
     () => [
-      `SELECT (CASE WHEN '$length_unit'='mi' THEN odometer_km/1.60934 ELSE odometer_km END) AS "Mileage ($length_unit)",
-        (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND odometer_km IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
-      `SELECT battery_level AS "Battery level (%)",
-        (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
-      `SELECT (CASE WHEN '$temp_unit'='F' THEN outside_temp_c*9.0/5+32 ELSE outside_temp_c END) AS "Outdoor temp (°$temp_unit)",
-        (CASE WHEN '$length_unit'='mi' THEN range_km*100.0/NULLIF(battery_level,0)/1.60934 ELSE range_km*100.0/NULLIF(battery_level,0) END) AS "Projected range ($length_unit)"
-       FROM positions WHERE battery_level>=20 AND range_km>0 AND outside_temp_c IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')} ORDER BY timestamp`,
+      // One point per time bucket rather than per position (TeslaMate's
+      // $__timeGroup(date, $interval)), with the projection taken per
+      // bucket as sum(range) / sum(battery_level) * 100 as TeslaMate does.
+      `SELECT (CASE WHEN '$length_unit'='mi' THEN AVG(odometer_km)/1.60934 ELSE AVG(odometer_km) END) AS "Mileage ($length_unit)",
+        (CASE WHEN '$length_unit'='mi' THEN SUM(range_km)*100.0/NULLIF(SUM(battery_level),0)/1.60934 ELSE SUM(range_km)*100.0/NULLIF(SUM(battery_level),0) END) AS "Projected range ($length_unit)"
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND odometer_km IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')}
+       GROUP BY ${timeBucketSql(settings, 'timestamp')} ORDER BY ${timeBucketSql(settings, 'timestamp')}`,
+      `SELECT AVG(battery_level) AS "Battery level (%)",
+        (CASE WHEN '$length_unit'='mi' THEN SUM(range_km)*100.0/NULLIF(SUM(battery_level),0)/1.60934 ELSE SUM(range_km)*100.0/NULLIF(SUM(battery_level),0) END) AS "Projected range ($length_unit)"
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND ${timeRangeSql(settings, 'timestamp')}
+       GROUP BY ${timeBucketSql(settings, 'timestamp')} ORDER BY ${timeBucketSql(settings, 'timestamp')}`,
+      `SELECT (CASE WHEN '$temp_unit'='F' THEN AVG(outside_temp_c)*9.0/5+32 ELSE AVG(outside_temp_c) END) AS "Outdoor temp (°$temp_unit)",
+        (CASE WHEN '$length_unit'='mi' THEN SUM(range_km)*100.0/NULLIF(SUM(battery_level),0)/1.60934 ELSE SUM(range_km)*100.0/NULLIF(SUM(battery_level),0) END) AS "Projected range ($length_unit)"
+       FROM positions WHERE battery_level>=20 AND range_km>0 AND outside_temp_c IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')}
+       GROUP BY ${timeBucketSql(settings, 'timestamp')} ORDER BY ${timeBucketSql(settings, 'timestamp')}`,
     ],
     [settings],
   )

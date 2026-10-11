@@ -257,6 +257,23 @@ export const timeRangeSql = (filter: TimeRange | TimeFilter, column: string): st
   return `${column} >= datetime('now', '${quickRangeModifier(resolved.timeRange)}')`
 }
 
+// timeBucketSql is TeslaMate's $__timeGroup(date, $interval): it groups a
+// sample series into time buckets sized to the selected window, so a chart
+// receives hundreds of points instead of every sample (a 90-day window held
+// ~180k charging samples and ~1.1M positions). Timestamps are stored as
+// ISO-8601 UTC text ("2026-10-04T20:30:34.73Z"), so a bucket is a prefix of
+// the text - no per-row date parsing, and identical in SQLite and the
+// PostgreSQL data server. The result is again an ISO timestamp.
+export const timeBucketSql = (filter: TimeFilter, column: string, now: number = Date.now()): string => {
+  const { from, to } = timeWindow(filter, now)
+  const span = from === null ? Number.POSITIVE_INFINITY : (to?.getTime() ?? now) - from.getTime()
+  const hour = 60 * 60 * 1000
+  if (span <= 36 * hour) return `substr(${column},1,16)||':00Z'`
+  if (span <= 10 * 24 * hour) return `substr(${column},1,15)||'0:00Z'`
+  if (span <= 120 * 24 * hour) return `substr(${column},1,13)||':00:00Z'`
+  return `substr(${column},1,10)||'T00:00:00Z'`
+}
+
 const sideLabel = (value: string | undefined, side: 'from' | 'to'): string | null => {
   const text = (value ?? '').trim()
   const date = parseTimeExpression(text, side)
