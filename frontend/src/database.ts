@@ -142,6 +142,8 @@ const str = (v: SqlValue | undefined, n: string): string => {
   if (typeof v !== 'string') throw new DatabaseError(`Invalid ${n}.`)
   return v
 }
+const place = (v: SqlValue | undefined): string =>
+  typeof v === 'string' && v.trim() !== '' ? v : 'Unknown location'
 // A Runner executes one SQL statement and returns its result. The load
 // helpers below are written against this so the same queries run either
 // against an in-browser sql.js database (a downloaded file) or the remote
@@ -262,8 +264,8 @@ const drives = async (run: Runner) =>
     driveRowSchema.parse({
       id: num(r.id, 'drive id'),
       time: str(r.time, 'drive time'),
-      from: str(r.from, 'origin'),
-      to: str(r.to, 'destination'),
+      from: place(r.from),
+      to: place(r.to),
       distanceKm: nullableNum(r.distance_km, 'distance'),
       durationMin: nullableNum(r.duration_min, 'duration'),
       startBattery: nullableNum(r.start_battery, 'start battery'),
@@ -291,7 +293,12 @@ const charges = async (run: Runner) =>
        END AS displayed_energy_used
        FROM charging_sessions WHERE status='closed'
      )
-     SELECT id, start_time time, COALESCE(location, printf('%.4f, %.4f', latitude, longitude)) location,
+     SELECT id, start_time time,
+       COALESCE(NULLIF(location, ''),
+         CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL
+           THEN printf('%.4f, %.4f', latitude, longitude)
+           ELSE 'Unknown location'
+         END) location,
        CASE WHEN is_dc_fast_charge=1 THEN 'DC' ELSE 'AC' END type,
        start_battery_level start_battery, end_battery_level end_battery,
        charge_energy_added_kwh energy_added, displayed_energy_used energy_used,
@@ -308,7 +315,10 @@ const charges = async (run: Runner) =>
     chargeRowSchema.parse({
       id: num(r.id, 'charge id'),
       time: str(r.time, 'charge time'),
-      location: str(r.location, 'charge location'),
+      // Historical/imported databases can contain NULL, empty, or even
+      // non-text values here. A missing label should not prevent the rest
+      // of an otherwise valid database from opening.
+      location: place(r.location),
       type: r.type === 'DC' ? 'DC' : 'AC',
       startBattery: nullableNum(r.start_battery, 'start battery'),
       endBattery: nullableNum(r.end_battery, 'end battery'),
@@ -361,7 +371,11 @@ const destinations = async (run: Runner): Promise<readonly Destination[]> =>
   (await rows(
     run,
     `SELECT end_location destination, COUNT(*) visits FROM drives WHERE status='closed' AND end_location IS NOT NULL AND end_location!='' GROUP BY end_location ORDER BY COUNT(*) DESC LIMIT 10`,
-  )).map((r) => ({ name: str(r.destination, 'destination'), visits: num(r.visits, 'visits') }))
+  )).flatMap((r) =>
+    typeof r.destination === 'string' && r.destination.trim() !== ''
+      ? [{ name: r.destination, visits: num(r.visits, 'visits') }]
+      : [],
+  )
 // loadSpeedHistogram weights each 10 km/h band by the seconds the car
 // spent in it, taken as the gap to the next position sample within the
 // same drive. Counting samples instead would let a dense stretch of slow
