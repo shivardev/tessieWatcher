@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { CarFront, Database, Gauge, Menu, Play, RefreshCw, Upload, Wifi, X } from 'lucide-react'
+import { CarFront, Database, Download, FileDown, Gauge, Menu, Play, RefreshCw, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric, type SpeedBand } from './domain'
 import {
   loadSpeedHistogram,
@@ -20,6 +20,7 @@ import {
 } from './remoteBackend'
 import { GeofenceSettings } from './GeofenceSettings'
 import { TimeRangePicker } from './TimeRangePicker'
+import { chargesCsv, download, drivesCsv } from './exportData'
 import {
   fetchMeta,
   fetchCloudSyncStatus,
@@ -1316,6 +1317,24 @@ export default function App() {
                 Request sync
               </button>
             </div>
+          )}
+          {data && (
+            <details className="export-menu">
+              <summary><Download />Export</summary>
+              <div>
+                {data.databaseBytes.byteLength > 0 && (
+                  <button type="button" onClick={() => download('teslalog.db', data.databaseBytes, 'application/vnd.sqlite3')}>
+                    <Database /><span><b>Complete database</b><small>Portable SQLite backup</small></span>
+                  </button>
+                )}
+                <button type="button" onClick={() => download('teslalog-drives.csv', drivesCsv(data.drives), 'text/csv;charset=utf-8')}>
+                  <FileDown /><span><b>Drives CSV</b><small>{data.drives.length.toLocaleString()} trips</small></span>
+                </button>
+                <button type="button" onClick={() => download('teslalog-charges.csv', chargesCsv(data.charges), 'text/csv;charset=utf-8')}>
+                  <FileDown /><span><b>Charges CSV</b><small>{data.charges.length.toLocaleString()} sessions</small></span>
+                </button>
+              </div>
+            </details>
           )}
           <button className="pi-sync-button" type="button" onClick={() => setPiSyncOpen(true)}>
             <RefreshCw />

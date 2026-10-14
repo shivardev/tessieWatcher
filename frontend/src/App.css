@@ -2732,6 +2732,15 @@ main:not(.empty) {
   .open svg {
     width: 19px;
   }
+  .export-menu summary {
+    gap: 0;
+    padding: 10px 11px;
+    font-size: 0;
+  }
+  .export-menu summary svg {
+    width: 19px;
+    height: 19px;
+  }
   .live-badge {
     display: none;
   }
@@ -2834,6 +2843,74 @@ main:not(.empty) {
 .live-badge button:hover:not(:disabled) {
   color: var(--text);
   background: var(--surface-3);
+}
+.export-menu {
+  position: relative;
+}
+.export-menu summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+.export-menu summary::-webkit-details-marker {
+  display: none;
+}
+.export-menu summary svg {
+  width: 16px;
+  height: 16px;
+}
+.export-menu[open] summary {
+  border-color: rgb(198 255 61 / 45%);
+  color: var(--accent);
+}
+.export-menu > div {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  width: 250px;
+  padding: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: #101113;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 70%);
+}
+.export-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.export-menu button:hover {
+  background: var(--accent-soft);
+}
+.export-menu button > svg {
+  width: 17px;
+  color: var(--accent);
+}
+.export-menu button span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-menu button small {
+  color: var(--muted);
 }
 .live-connect {
   margin-top: 24px;
