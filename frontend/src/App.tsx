@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { CarFront, Database, Gauge, Menu, RefreshCw, Upload, Wifi, X } from 'lucide-react'
+import { CarFront, Database, Gauge, Menu, Play, RefreshCw, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric, type SpeedBand } from './domain'
 import {
   loadSpeedHistogram,
@@ -744,6 +744,40 @@ export default function App() {
     // backend when nothing is showing yet.
     if (data === null) setRemoteBackend(null)
   }
+
+  const loadDemo = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    setRemoteBackend(null)
+    const controller = beginLoading(
+      { title: 'Opening the sample dashboard', source: 'Demo Tesla' },
+      [{ key: 'download', label: 'Load sample data' }],
+    )
+    try {
+      const response = await fetch(`${import.meta.env.BASE_URL}demo.db`, {
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`Could not load demo data (${response.status}).`)
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      if (!isCurrent(controller)) return
+      markLoaded(controller)('download')
+      const loaded = await openDatabaseBytes('demo.db', bytes.byteLength, bytes, {
+        onStep: markLoaded(controller),
+        signal: controller.signal,
+      })
+      if (!isCurrent(controller)) return
+      setData(loaded)
+      setSettings((current) => ({ ...current, timeRange: 'all' }))
+      setActive('Overview')
+      setSelectedDriveId(null)
+      setSelectedChargeId(null)
+    } catch (reason: unknown) {
+      if (!isCurrent(controller)) return
+      setError(reason instanceof Error ? reason.message : 'Could not load demo data.')
+    } finally {
+      endLoading(controller)
+    }
+  }
   // The first request to a server doubles as the reachability check, so an
   // address this machine cannot see fails in seconds rather than hanging
   // on the browser's own connect timeout.
@@ -1402,13 +1436,25 @@ export default function App() {
               Your Tesla history.<em>Clear at last.</em>
             </h1>
             <p>
-              Open a teslalog SQLite database or a TeslaMate PostgreSQL plain dump and explore every
-              drive, charge, route, and battery trend. Processing stays entirely in this browser.
+              Explore every drive, charge, route, efficiency figure, and battery trend. Try the
+              sample first, then open a teslalog database or TeslaMate PostgreSQL dump of your own.
             </p>
-            <button className="cta" type="button" onClick={choose}>
-              <Upload />
-              Open database or dump
-            </button>
+            <div className="landing-actions">
+              <button className="cta" type="button" onClick={() => void loadDemo()} disabled={busy}>
+                <Play />
+                Explore the demo
+              </button>
+              <button className="secondary-cta" type="button" onClick={choose} disabled={busy}>
+                <Upload />
+                Open database or dump
+              </button>
+            </div>
+            <div className="format-note">
+              <b>Works with both formats</b>
+              <span>teslalog SQLite · TeslaMate plain-text pg_dump</span>
+            </div>
+            <details className="connections">
+              <summary>Connect to a running teslalog</summary>
             <form
               className="live-connect"
               onSubmit={(event) => {
@@ -1477,9 +1523,10 @@ export default function App() {
               </div>
               <small>Queries the server database directly — no database download. Leave the token empty when server authentication is disabled.</small>
             </form>
+            </details>
             <small>
               <Database />
-              Your file never leaves this device
+              Your files stay in this browser and are never uploaded
             </small>
           </div>
           <section>

@@ -5,6 +5,12 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-linux%2Farm64%20%7C%20linux%2Farmv7%20%7C%20linux%2Famd64%20%7C%20windows-informational)](docs/reference.md#building)
 
+### [Open the live frontend →](https://shivardev.github.io/tessieWatcher/)
+
+The hosted viewer can open a teslalog SQLite database or a TeslaMate
+plain-text PostgreSQL dump. Processing happens locally in your browser; your
+database is not uploaded.
+
 > **A private Tesla driving and charging history that fits on a Pi Zero 2 W.**
 
 teslalog turns your Tesla's raw telemetry into a searchable history of where
@@ -16,10 +22,10 @@ app to explore 19 dashboards, routes, charges, efficiency, battery health,
 vampire drain, mileage, and more.
 
 <p align="center">
-  <img src="docs/images/portal-preview.svg" alt="teslalog live status page showing the current vehicle state, last charge, recent drives, and activity log" width="720">
+  <img src="docs/images/dashboard-overview.png" alt="teslalog dashboard overview showing live vehicle state, battery, range, mileage, efficiency, charging cost, and dashboard navigation" width="1200">
 </p>
 
-<p align="center"><em>The live Pi status page. The full viewer adds 19 interactive dashboards.</em></p>
+<p align="center"><em>The browser-powered overview: live state plus driving, charging, efficiency, and battery history.</em></p>
 
 ## What you can see
 
@@ -38,18 +44,18 @@ local web app.
 
 ## Try the dashboard with sample data
 
-You can explore the viewer without a Tesla account or a running logger:
+Open the **[hosted frontend](https://shivardev.github.io/tessieWatcher/)** and
+select **Explore the demo** to load a sample Tesla immediately. You can also
+open your own teslalog database or TeslaMate dump. To run the same demo locally:
 
 ```sh
 cd frontend
 npm install
-npm run fixture
 npm run dev
 ```
 
-Open the printed local URL, choose **Open database**, and select
-`frontend/test-data/sample.db`. The sample stays in your browser; it is not
-uploaded anywhere.
+Open the printed local URL and select **Explore the demo**. The generated
+sample stays in your browser; it is not uploaded anywhere.
 
 ### Already have TeslaMate data?
 

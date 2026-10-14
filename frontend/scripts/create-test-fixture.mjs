@@ -36,8 +36,16 @@ database.run(
 database.run(
   "INSERT INTO software_updates (vehicle_id,version,status,start_time,end_time) VALUES (1,'2026.20.6','installed','2026-08-18T01:00:00.000Z','2026-08-18T01:30:00.000Z')",
 )
+const bytes = database.export()
 const outputDirectory = resolve(frontendDirectory, 'test-data')
-await mkdir(outputDirectory, { recursive: true })
-await writeFile(resolve(outputDirectory, 'sample.db'), database.export())
+const publicDirectory = resolve(frontendDirectory, 'public')
+await Promise.all([
+  mkdir(outputDirectory, { recursive: true }),
+  mkdir(publicDirectory, { recursive: true }),
+])
+await Promise.all([
+  writeFile(resolve(outputDirectory, 'sample.db'), bytes),
+  writeFile(resolve(publicDirectory, 'demo.db'), bytes),
+])
 database.close()
-console.log('Created test-data/sample.db')
+console.log('Created test-data/sample.db and public/demo.db')

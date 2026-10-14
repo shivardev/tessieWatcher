@@ -772,9 +772,66 @@ select option {
   max-width: 560px;
 }
 .empty .cta {
-  margin-top: 28px;
   padding: 14px 20px;
   font-size: 15px;
+}
+.landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 28px;
+}
+.secondary-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.secondary-cta:hover:not(:disabled) {
+  border-color: rgb(198 255 61 / 55%);
+  color: var(--accent);
+}
+.secondary-cta svg,
+.landing-actions .cta svg {
+  width: 17px;
+  height: 17px;
+}
+.format-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 18px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.format-note span {
+  color: var(--muted);
+}
+.connections {
+  max-width: 470px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.connections summary {
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.connections[open] summary {
+  color: var(--accent);
+}
+.connections .live-connect {
+  margin-top: 18px;
 }
 .empty > div > small {
   display: flex;
