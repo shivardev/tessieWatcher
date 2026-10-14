@@ -5,26 +5,87 @@
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go)](go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-linux%2Farm64%20%7C%20linux%2Farmv7%20%7C%20linux%2Famd64%20%7C%20windows-informational)](docs/reference.md#building)
 
-> **Log every drive and charge. Never keep your Tesla awake.**
+> **A private Tesla driving and charging history that fits on a Pi Zero 2 W.**
 
-teslalog is a small, private Tesla data logger. It records your drives,
-charging sessions, battery health and trips — the same data
-[TeslaMate](https://github.com/teslamate-org/teslamate) collects — but as
-**one static binary and one SQLite file**, light enough to run on a
-Raspberry Pi Zero 2 W.
+teslalog turns your Tesla's raw telemetry into a searchable history of where
+you drove, how efficiently you drove, what it cost to charge, and how the
+battery is changing over time.
 
-No Postgres, no Grafana, no Docker, no Elixir required. Copy a file, log in
-once, and it runs.
+It runs as **one small Go process with one SQLite file**. Open the included web
+app to explore 19 dashboards, routes, charges, efficiency, battery health,
+vampire drain, mileage, and more.
+
+<p align="center">
+  <img src="docs/images/portal-preview.svg" alt="teslalog live status page showing the current vehicle state, last charge, recent drives, and activity log" width="720">
+</p>
+
+<p align="center"><em>The live Pi status page. The full viewer adds 19 interactive dashboards.</em></p>
+
+## What you can see
+
+- Every drive, including its route, speed, power, elevation, temperatures,
+  tyre pressure, energy use, and start/end battery level.
+- Every AC or DC charging session, with energy added, time, location, and real
+  cost rules for home, work, paid chargers, session fees, or free Supercharging.
+- Long-term trends such as efficiency, battery health, projected range,
+  vampire drain, mileage, visited places, and vehicle states.
+- A focused drive-details view with the route and telemetry for one trip.
+
+The Pi does not run a dashboard engine. It serves a static React app and the
+data; your browser runs the SQLite queries and renders the charts. That keeps
+CPU and memory use on the Pi low and makes the dashboard feel like a normal
+local web app.
+
+## Try the dashboard with sample data
+
+You can explore the viewer without a Tesla account or a running logger:
+
+```sh
+cd frontend
+npm install
+npm run fixture
+npm run dev
+```
+
+Open the printed local URL, choose **Open database**, and select
+`frontend/test-data/sample.db`. The sample stays in your browser; it is not
+uploaded anywhere.
+
+### Already have TeslaMate data?
+
+Open a **plain-text TeslaMate `pg_dump`** in the same viewer. It converts the
+dump to an in-memory SQLite database and builds all 19 dashboards locally in
+your browser. The file is never uploaded, and private token tables are ignored.
+
+Use PostgreSQL's plain format when creating the dump:
+
+```sh
+pg_dump --format=plain --no-owner --no-privileges teslamate > teslamate.sql
+```
+
+Then choose **Open database** and select `teslamate.sql`. Custom-format
+`PGDMP` backups need to be exported as plain SQL first.
 
 ---
 
-## Why it exists
+## Why I built it
 
-TeslaMate is excellent, but it is real infrastructure: a database server,
-a dashboard server, a web runtime and a message broker. teslalog asks a
-simpler question — _what does logging a car actually need?_ — and answers
-with three things: a Tesla login, a careful polling loop, and a file to
-write rows into.
+TeslaMate is excellent, already runs on Raspberry Pis, and can do much more
+than this project. I wanted a deliberately narrower logger that would run
+comfortably on the smaller **Raspberry Pi Zero 2 W with 512 MB of RAM**.
+
+The main difference is where the work happens. A standard TeslaMate setup
+uses PostgreSQL and Grafana alongside the logger. teslalog writes directly to
+SQLite and moves dashboard queries and chart rendering into the visitor's
+browser. The Pi is left to do the important part: carefully collect and store
+the car's data.
+
+That trade makes teslalog smaller and simpler, but it is not a drop-in
+replacement for everything TeslaMate provides. It does not currently offer
+TeslaMate's multi-car support, Home Assistant/MQTT integration, translations,
+plugin ecosystem, maturity, or large community. Choose TeslaMate when those
+matter; choose teslalog when one car, very small hardware, and minimal
+infrastructure are the priority.
 
 The project has three promises:
 
@@ -34,24 +95,93 @@ The project has three promises:
 | 🔒 | **Your data stays yours** | Everything lives in a file on your own device. No cloud account, no telemetry, no third-party upload. |
 | 🪶 | **Tiny and boring to run** | One binary with no dependencies, sized for a Pi Zero 2 W (512 MB RAM). Updates itself with one command. |
 
-## What you get
+## Everything included
 
-- **Automatic logging** of drives (with GPS route, speed, power, elevation,
-  temperatures, tyre pressure) and charging sessions (AC/DC, energy, cost).
-- **A modern dashboard viewer** — 19 dashboards covering drives, efficiency,
-  charging, battery health, projected range, vampire drain, places visited,
-  states and more. Dark, fast, and it works on your phone.
-- **Real charging costs** — set a price per kWh or per minute for each place
-  you charge (home, work, a paid charger), plus session fees and free
-  Supercharging.
-- **Readable place names** from your own named zones, with optional
-  reverse-geocoding.
-- **Nightly backups** that are safe to take while logging continues.
-- **CSV export** of drives and charges.
-- **Optional home-server sync** — mirror everything to PostgreSQL on a PC so
-  the Pi only needs to keep the last week.
-- **TeslaMate-compatible data** — the schema follows TeslaMate field for
-  field, so the numbers can be compared directly.
+**Logging and vehicle care**
+
+- Sleep-aware polling that suspends itself when the car is idle and never
+  wakes the car automatically. A wake command exists, but only for you to run.
+- Automatic drive and charging detection using the Owner API and live vehicle
+  stream.
+- GPS route, speed, power, elevation, odometer, range, battery level,
+  temperatures, climate state, tyre pressure, and software-update history.
+- Read-only operation: no climate, lock, charging, or other vehicle controls.
+
+**Dashboards and access**
+
+- A built-in, mobile-friendly viewer with 19 dashboards: Overview, Drives,
+  Drive Stats, Efficiency, Trip, Charges, Charging Stats, Charge Level,
+  Battery Health, Projected Range, Vampire Drain, Locations, Visited, States,
+  Timeline, Statistics, Mileage, Updates, and Database Information.
+- Per-drive detail pages with a route map and trip telemetry.
+- A lightweight live status page showing vehicle state, battery, range,
+  today's driving, the last charge, recent drives, and service activity.
+- One-click safe database download, plus CSV export for drives and charges.
+- Optional ready-made Grafana dashboards if you already run Grafana.
+
+**Locations and charging costs**
+
+- Named circular geofences for places such as home, work, and regular chargers.
+- Optional reverse-geocoding for addresses; it is off by default for privacy.
+- A different charging price for each location: per kWh, per minute, a flat
+  session fee, free locations, and an option for free Tesla Supercharging.
+
+**Your data and reliability**
+
+- One local SQLite file, with no hosted account or required cloud service.
+- Safe online backups while logging continues, automatic retention, on-demand
+  backups, and optional off-device copies through configured rclone targets.
+- Self-updates, Linux systemd installation, Windows support, Docker as an
+  option, and 32-bit or 64-bit Raspberry Pi builds.
+- Optional idle-only incremental sync to a home-server PostgreSQL archive. The
+  Pi keeps collecting if that server is offline and catches up later.
+- Browser-managed sync and geofence settings, including sync health and queued
+  manual sync requests.
+
+**TeslaMate interoperability**
+
+- Open a TeslaMate plain-text PostgreSQL dump directly in the web viewer. It is
+  converted and visualized entirely inside the browser without an upload.
+- Import years of history from a live TeslaMate PostgreSQL database or an old
+  dump into teslalog's SQLite database with [`teslamate-import/`](teslamate-import/).
+  Existing and imported vehicles are matched by VIN.
+- Feed teslalog data into a separate PostgreSQL database for use with
+  TeslaMate's original Grafana dashboards via [`teslamate-sync/`](teslamate-sync/).
+  It never modifies the real `teslamate` database.
+- A TeslaMate-aligned data model and polling behavior so drives, charges, and
+  calculated costs can be compared meaningfully between the two projects.
+
+## How it compares
+
+[TeslaMate](https://github.com/teslamate-org/teslamate) and
+[TeslaLogger](https://github.com/bassmaster187/TeslaLogger) are the two
+established self-hosted loggers. Both are mature and well supported; teslalog
+trades their breadth for a much smaller footprint.
+
+| | **teslalog** | **TeslaMate** | **TeslaLogger** |
+|---|---|---|---|
+| Written in | Go (one static binary) | Elixir | C# (Mono) |
+| Storage | One SQLite file (optional PostgreSQL mirror) | PostgreSQL | MariaDB |
+| Dashboards | Built-in web viewer (Grafana optional) | Grafana | Grafana + built-in web page |
+| What you run | 1 process | 4 containers: app, PostgreSQL, Grafana, MQTT broker | Logger, MariaDB, Grafana |
+| Raspberry Pi | 32- and 64-bit OS; built for small boards (512 MB, Pi Zero 2 W class) | 64-bit OS only, 1 GB RAM minimum, 2 GB recommended | Pi 3B, 3B+, 4B (ready-made image), Docker, Synology |
+| Docker needed | No (optional) | Yes for the standard install (NixOS and manual installs also documented) | No with the Pi image; yes otherwise |
+| Tesla API | Owner API + streaming (unofficial) | Owner API + streaming (unofficial) | Supports Tesla's official Fleet API |
+| Home Assistant / MQTT | No | Yes, MQTT | MQTT client |
+| Interface languages | English | 19 | 11 |
+| Imports from | TeslaMate (`pg_dump`) | TeslaFi, tesla-apiscraper | TeslaFi, TeslaMate |
+| License | MIT | AGPL-3.0 | GPL-3.0 |
+| Maturity | New, one maintainer | Years of releases, large community | Years of releases, large community |
+
+**Choose TeslaMate or TeslaLogger if** you want Home Assistant/MQTT
+integration, several cars in one install (TeslaMate), a translated
+interface, the official Fleet API (TeslaLogger), or a long track record. **Choose teslalog
+if** you want the smallest possible setup: one binary and one file on a
+small or 32-bit Raspberry Pi, with no database server, no Grafana and no
+Docker.
+
+Details for TeslaMate and TeslaLogger come from their own READMEs and
+install docs as of October 2026.
 
 ## How it fits together
 
