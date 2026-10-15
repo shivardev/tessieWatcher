@@ -25,13 +25,21 @@ export type RemoteConfig = Readonly<{
 // The active remote backend, or null to use the local sql.js path. Set by
 // the UI when the user connects to a cloud database; read by
 // database.executeQueries to decide where a query runs.
-let current: RemoteConfig | null = null
-const mutationListeners = new Set<() => void>()
+//
+// Held on globalThis rather than in a module variable: re-evaluating this
+// module (the dev server's hot reload does that whenever the file changes)
+// would otherwise reset it to null under a page that still shows server
+// data, and every dashboard then queried an empty local database ("no such
+// table: drives") while Drives and Charges, loaded earlier, looked fine.
+type BackendHolder = { current: RemoteConfig | null; listeners: Set<() => void> }
+const holder: BackendHolder = ((globalThis as { __teslalogRemoteBackend?: BackendHolder })
+  .__teslalogRemoteBackend ??= { current: null, listeners: new Set() })
+const mutationListeners = holder.listeners
 
 export const setRemoteBackend = (config: RemoteConfig | null): void => {
-  current = config
+  holder.current = config
 }
-export const getRemoteBackend = (): RemoteConfig | null => current
+export const getRemoteBackend = (): RemoteConfig | null => holder.current
 
 // Dashboard data is derived from several server queries and therefore lives
 // in React state after the initial load. Notify the app after every successful

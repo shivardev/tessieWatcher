@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { LatLngBoundsExpression, LatLngExpression } from 'leaflet'
 import { CircleMarker, MapContainer, Polyline, TileLayer, Tooltip as LeafletTooltip, useMap } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -53,7 +53,7 @@ import { dashboardCatalog } from './catalog'
 import { epochMs, nearestTimeSync } from './chartSync'
 import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
-import { distance, speed, timeBucketSql, timeRangeLabel, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
+import { distance, speed, timeBucketSql, timeRangeLabel, timeRangeSql, timestampDate, timeWindow, type LengthUnit, type ViewSettings } from './viewSettings'
 import { getRemoteBackend, runRemoteStatement } from './remoteBackend'
 import { RecordLink } from './RecordLink'
 
@@ -188,67 +188,6 @@ export function DataTable({ result }: Readonly<{ result: QueryResult | undefined
   )
 }
 
-export function LocalPlot({ points }: Readonly<{ points: readonly Point[] }>) {
-  const canvas = useRef<HTMLCanvasElement>(null)
-  useEffect(() => {
-    const element = canvas.current
-    const context = element?.getContext('2d')
-    if (!element || !context || points.length === 0) return
-    const ratio = window.devicePixelRatio || 1
-    const width = element.clientWidth
-    const height = element.clientHeight
-    element.width = width * ratio
-    element.height = height * ratio
-    context.scale(ratio, ratio)
-    let minLat = Number.POSITIVE_INFINITY
-    let maxLat = Number.NEGATIVE_INFINITY
-    let minLng = Number.POSITIVE_INFINITY
-    let maxLng = Number.NEGATIVE_INFINITY
-    for (const point of points) {
-      minLat = Math.min(minLat, point.latitude)
-      maxLat = Math.max(maxLat, point.latitude)
-      minLng = Math.min(minLng, point.longitude)
-      maxLng = Math.max(maxLng, point.longitude)
-    }
-    const x = (longitude: number): number =>
-      24 + ((longitude - minLng) / Math.max(maxLng - minLng, 0.00001)) * (width - 48)
-    const y = (latitude: number): number =>
-      height - 24 - ((latitude - minLat) / Math.max(maxLat - minLat, 0.00001)) * (height - 48)
-    context.clearRect(0, 0, width, height)
-    context.strokeStyle = 'rgba(255,255,255,0.06)'
-    context.lineWidth = 1
-    for (let line = 1; line < 5; line += 1) {
-      context.beginPath()
-      context.moveTo(0, (height * line) / 5)
-      context.lineTo(width, (height * line) / 5)
-      context.stroke()
-    }
-    context.strokeStyle = '#c6ff3d'
-    context.shadowColor = 'rgba(198,255,61,0.6)'
-    context.shadowBlur = 10
-    context.lineWidth = 2.5
-    context.lineJoin = 'round'
-    context.beginPath()
-    const sampleEvery = Math.max(1, Math.ceil(points.length / 10_000))
-    const plottedPoints = points.filter(
-      (_, index) => index % sampleEvery === 0 || index === points.length - 1,
-    )
-    plottedPoints.forEach((point, index) =>
-      index === 0
-        ? context.moveTo(x(point.longitude), y(point.latitude))
-        : context.lineTo(x(point.longitude), y(point.latitude)),
-    )
-    context.stroke()
-  }, [points])
-  return (
-    <canvas
-      className="local-plot"
-      ref={canvas}
-      aria-label="Local route plot without external map tiles"
-    />
-  )
-}
-
 function FitRoute({ points }: Readonly<{ points: readonly LatLngExpression[] }>) {
   const map = useMap()
   useEffect(() => {
@@ -341,6 +280,40 @@ function RouteMap({
         </div>
       )}
     </div>
+  )
+}
+
+// TeslaMate's Visited panel: a real map of the tracks driven in the
+// period (positions averaged per minute) - here with the most visited
+// destinations circled, sized by visits. Tracks are split wherever the
+// samples have a gap, so no straight line jumps between separate trips.
+type Place = Readonly<{ name: string; latitude: number; longitude: number; visits: number }>
+function VisitedMap({
+  tracks,
+  places,
+}: Readonly<{ tracks: readonly (readonly LatLngExpression[])[]; places: readonly Place[] }>) {
+  const bounds = useMemo<readonly LatLngExpression[]>(
+    () => [...tracks.flat(), ...places.map((place): LatLngExpression => [place.latitude, place.longitude])],
+    [tracks, places],
+  )
+  if (bounds.length === 0) return <p className="no-data">No positions recorded in this period.</p>
+  const most = Math.max(1, ...places.map((place) => place.visits))
+  return (
+    <MapContainer className="route-map visited-map" center={bounds[0] ?? [0, 0]} zoom={9} scrollWheelZoom preferCanvas>
+      <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <Polyline positions={tracks.map((track) => [...track])} pathOptions={{ color: palette.lime, weight: 3, opacity: 0.85 }} />
+      {places.map((place) => (
+        <CircleMarker
+          key={`${place.name}-${place.latitude}-${place.longitude}`}
+          center={[place.latitude, place.longitude]}
+          radius={3 + 8 * Math.sqrt(place.visits / most)}
+          pathOptions={{ color: palette.cyan, weight: 1, fillColor: palette.cyan, fillOpacity: 0.45 }}
+        >
+          <LeafletTooltip>{`${place.name} · ${place.visits} visit${place.visits === 1 ? '' : 's'}`}</LeafletTooltip>
+        </CircleMarker>
+      ))}
+      <FitRoute points={bounds} />
+    </MapContainer>
   )
 }
 
@@ -696,13 +669,41 @@ export function TripDashboard({
   )
 }
 
+const longWindow = (settings: ViewSettings): boolean => {
+  const { from, to } = timeWindow(settings)
+  return from === null || (to?.getTime() ?? Date.now()) - from.getTime() > 120 * 24 * 60 * 60 * 1000
+}
+const visitedBucket = (settings: ViewSettings): string =>
+  longWindow(settings) ? `substr(timestamp,1,15)||'0:00Z'` : `substr(timestamp,1,16)||':00Z'`
+// A gap longer than a few buckets means the car was parked or the logger
+// was offline: start a new track there instead of drawing a straight line.
+const visitedGapMinutes = (settings: ViewSettings): number => (longWindow(settings) ? 40 : 5)
+const splitTracks = (rows: readonly (readonly unknown[])[], gapMinutes: number): (readonly LatLngExpression[])[] => {
+  const tracks: LatLngExpression[][] = []
+  let previous = Number.NaN
+  for (const row of rows) {
+    const time = typeof row[0] === 'string' ? timestampDate(row[0]).getTime() : Number.NaN
+    const latitude = number(row[1] as QueryValue)
+    const longitude = number(row[2] as QueryValue)
+    if (latitude === null || longitude === null || Number.isNaN(time)) continue
+    if (tracks.length === 0 || !(time - previous <= gapMinutes * 60_000)) tracks.push([])
+    tracks[tracks.length - 1]?.push([latitude, longitude])
+    previous = time
+  }
+  return tracks.filter((track) => track.length > 1)
+}
+
 export function VisitedDashboard({
   bytes,
   settings,
 }: Readonly<{ bytes: Uint8Array; settings: ViewSettings }>) {
   const visitedQueries = useMemo(
     () => [
-      `SELECT COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) "Location", COUNT(*) "Visits", ROUND(MAX(end_lat),5) latitude, ROUND(MAX(end_lng),5) longitude, MAX(end_time) "Last visited" FROM drives WHERE status='closed' AND ${timeRangeSql(settings, 'end_time')} GROUP BY COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) ORDER BY COUNT(*) DESC`,
+      // Grouped by name and position (~100 m), not by name alone: many
+      // places share a name ("Tesla Supercharger"), and taking MAX(lat) and
+      // MAX(lng) across them separately invented a point that matched none
+      // of them - one landed in Lake Michigan.
+      `SELECT COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)) "Location", COUNT(*) "Visits", ROUND(AVG(end_lat),5) latitude, ROUND(AVG(end_lng),5) longitude, MAX(end_time) "Last visited" FROM drives WHERE status='closed' AND end_lat IS NOT NULL AND end_lng IS NOT NULL AND ${timeRangeSql(settings, 'end_time')} GROUP BY COALESCE(end_location, printf('%.4f, %.4f',end_lat,end_lng)), ROUND(end_lat,3), ROUND(end_lng,3) ORDER BY COUNT(*) DESC`,
       // Mileage from the odometer delta rather than summed drive
       // distance, matching TeslaMate: the odometer is the car's own
       // record and includes anything teslalog missed.
@@ -714,16 +715,24 @@ export function VisitedDashboard({
               COALESCE(SUM(cost),0)
        FROM charging_sessions WHERE status='closed' AND charge_energy_added_kwh > 0.01
          AND ${timeRangeSql(settings, 'start_time')}`,
+      // Driven tracks, averaged per minute like TeslaMate (10 minutes for
+      // windows longer than ~4 months, to keep the map light).
+      `SELECT ${visitedBucket(settings)} AS time, AVG(latitude) AS latitude, AVG(longitude) AS longitude
+       FROM positions WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND ${timeRangeSql(settings, 'timestamp')}
+       GROUP BY 1 ORDER BY 1`,
     ],
     [settings],
   )
   const { results, error, loading } = useResults(bytes, visitedQueries)
   if (loading && results.length === 0) return <DashboardLoading title="Visited" />
-  const points = (results[0]?.rows ?? []).flatMap((row) => {
+  const places = (results[0]?.rows ?? []).flatMap((row): Place[] => {
     const latitude = number(row[2])
     const longitude = number(row[3])
-    return latitude === null || longitude === null ? [] : [{ latitude, longitude }]
+    return latitude === null || longitude === null
+      ? []
+      : [{ name: text(row[0]), latitude, longitude, visits: number(row[1]) ?? 0 }]
   })
+  const tracks = splitTracks(results[3]?.rows ?? [], visitedGapMinutes(settings))
   return (
     <main>
       <Heading
@@ -739,8 +748,8 @@ export function VisitedDashboard({
         <StatTile label="Total charging cost" icon={Coins} tone="amber" value={(number(results[2]?.rows[0]?.[3]) ?? 0).toFixed(2)} />
       </StatGrid>
       <section className="catalog-panel route-panel">
-        <h2>Visited places</h2>
-        <LocalPlot points={points} />
+        <h2>Where you drove</h2>
+        <VisitedMap tracks={tracks} places={places} />
       </section>
       <DataTable result={results[0]} />
     </main>

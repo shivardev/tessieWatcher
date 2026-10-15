@@ -496,6 +496,17 @@ const interpolate = (sql: string, variables: QueryVariables): string => {
     .replace(relativeBound, from === null ? "datetime('0000-01-01')" : `datetime('${sqlDateTime(from)}')`)
 }
 
+// SQLite's datetime(x, 'localtime') means "in this machine's time zone".
+// The data server is PostgreSQL, which has no notion of the viewer's zone
+// (and rejected 'localtime' as an interval, breaking the Statistics page),
+// so for server queries it becomes the browser's current UTC offset - a
+// modifier both engines read the same way. It uses today's offset, so a
+// period on the other side of a daylight-saving change can be an hour out.
+export const withBrowserLocaltime = (sql: string, now: Date = new Date()): string => {
+  const minutes = -now.getTimezoneOffset()
+  return sql.replace(/'localtime'/giu, `'${minutes >= 0 ? '+' : ''}${minutes} minutes'`)
+}
+
 export const executeQueries = async (
   bytes: Uint8Array,
   queries: readonly string[],
@@ -509,8 +520,17 @@ export const executeQueries = async (
   if (remote !== null)
     return runRemoteQueries(
       remote,
-      queries.map((sql) => interpolate(sql, variables)),
+      queries.map((sql) => withBrowserLocaltime(interpolate(sql, variables))),
     )
+  // Server data is held without a local copy (empty bytes). Querying an
+  // empty in-memory database would answer "no such table", which reads as
+  // a broken dashboard rather than a dropped connection.
+  if (bytes.byteLength === 0)
+    return queries.map(() => ({
+      columns: [],
+      rows: [],
+      error: 'Not connected to the teslalog data server. Reconnect, or reload the page.',
+    }))
 
   const SQL = await initSqlJs({ locateFile: () => wasmUrl })
   const database = new SQL.Database(bytes)
