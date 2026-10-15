@@ -55,6 +55,7 @@ import { StateTimeline } from './StateTimeline'
 import type { QueryResult, QueryValue } from './domain'
 import { distance, speed, timeBucketSql, timeRangeLabel, timeRangeSql, timestampDate, type LengthUnit, type ViewSettings } from './viewSettings'
 import { getRemoteBackend, runRemoteStatement } from './remoteBackend'
+import { RecordLink } from './RecordLink'
 
 type Point = Readonly<{ latitude: number; longitude: number; timestamp?: string; speedKmh?: number }>
 
@@ -688,7 +689,7 @@ export function TripDashboard({
       </section>
       <StateTimeline spans={timeline} title="States" />
       <h2 className="telemetry-heading">Drives</h2>
-      <div className="table-panel trip-table"><table><thead><tr><th>Date</th><th>Start</th><th>Destination</th><th>Duration</th><th>Distance</th><th>% Start</th><th>% End</th><th>Ø Consumption (net)</th></tr></thead><tbody>{(results[4]?.rows ?? []).map((row)=><tr key={text(row[0])}><td><button className="table-link" type="button" onClick={()=>{const id=number(row[0]); if(id!==null) onSelectDrive?.(id)}}>{typeof row[1]==='string' ? timestampDate(row[1]).toLocaleString() : '—'}</button></td><td>{text(row[2])}</td><td>{text(row[3])}</td><td>{text(row[4])} min</td><td>{typeof row[5]==='number' ? `${distance(row[5],settings.lengthUnit).toFixed(1)} ${settings.lengthUnit}`:'—'}</td><td>{text(row[6])}%</td><td>{text(row[7])}%</td><td>{typeof row[8]==='number' ? `${(row[8]*(settings.lengthUnit==='mi'?1.60934:1)).toFixed(0)} Wh/${settings.lengthUnit}`:'—'}</td></tr>)}</tbody></table></div>
+      <div className="table-panel trip-table"><table><thead><tr><th>Date</th><th>Start</th><th>Destination</th><th>Duration</th><th>Distance</th><th>% Start</th><th>% End</th><th>Ø Consumption (net)</th></tr></thead><tbody>{(results[4]?.rows ?? []).map((row)=><tr key={text(row[0])}><td>{(()=>{const id=number(row[0]); const label=typeof row[1]==='string' ? timestampDate(row[1]).toLocaleString() : '—'; return id===null ? label : <RecordLink record={{kind:'drive',id}} onOpen={()=>onSelectDrive?.(id)}>{label}</RecordLink>})()}</td><td>{text(row[2])}</td><td>{text(row[3])}</td><td>{text(row[4])} min</td><td>{typeof row[5]==='number' ? `${distance(row[5],settings.lengthUnit).toFixed(1)} ${settings.lengthUnit}`:'—'}</td><td>{text(row[6])}%</td><td>{text(row[7])}%</td><td>{typeof row[8]==='number' ? `${(row[8]*(settings.lengthUnit==='mi'?1.60934:1)).toFixed(0)} Wh/${settings.lengthUnit}`:'—'}</td></tr>)}</tbody></table></div>
       <h2 className="telemetry-heading">Charges</h2><DataTable result={results[5]} />
       <section className="drive-detail-grid"><TelemetryChart result={results[6]} title="Battery Level & Range" /><TelemetryChart result={results[7]} title={`Elevation (${settings.lengthUnit==='mi'?'ft':'m'})`} /></section>
     </main>

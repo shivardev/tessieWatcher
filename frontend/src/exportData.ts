@@ -13,12 +13,14 @@ export const drivesCsv = (drives: readonly DriveRow[]): string =>
   csv(
     [
       'id', 'start_time', 'from', 'to', 'distance_km', 'duration_min',
+      'start_odometer_km', 'end_odometer_km',
       'start_battery_percent', 'end_battery_percent', 'max_speed_kmh', 'max_power_kw',
       'ascent_m', 'descent_m', 'outside_temp_c', 'average_speed_kmh', 'energy_kwh',
       'range_used_km', 'efficiency_kwh_per_km', 'reduced_range',
     ],
     drives.map((drive) => [
       drive.id, drive.time, drive.from, drive.to, drive.distanceKm, drive.durationMin,
+      drive.startOdometerKm, drive.endOdometerKm,
       drive.startBattery, drive.endBattery, drive.maxSpeedKmh, drive.maxPowerKw,
       drive.ascentM, drive.descentM, drive.outsideTempC, drive.averageSpeedKmh,
       drive.energyKwh, drive.rangeDiffKm, drive.carEfficiencyKwhKm, drive.hasReducedRange,

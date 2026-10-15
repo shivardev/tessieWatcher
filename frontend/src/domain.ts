@@ -20,6 +20,8 @@ export const driveRowSchema = z.object({
   to: z.string(),
   distanceKm: z.number().nullable(),
   durationMin: z.number().nullable(),
+  startOdometerKm: z.number().nullable(),
+  endOdometerKm: z.number().nullable(),
   startBattery: z.number().nullable(),
   endBattery: z.number().nullable(),
   maxSpeedKmh: z.number().nullable(),

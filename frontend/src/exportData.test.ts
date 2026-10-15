@@ -5,13 +5,16 @@ describe('data export', () => {
   it('exports drives with stable columns and escaped locations', () => {
     const output = drivesCsv([{
       id: 7, time: '2026-10-14T12:00:00Z', from: 'Home, garage', to: 'Office "A"',
-      distanceKm: 12.5, durationMin: 21, startBattery: 80, endBattery: 74,
+      distanceKm: 12.5, durationMin: 21, startOdometerKm: 9500.2, endOdometerKm: 9512.7,
+      startBattery: 80, endBattery: 74,
       maxSpeedKmh: 95, maxPowerKw: 120, ascentM: 40, descentM: 35,
       outsideTempC: 18, averageSpeedKmh: 35.7, energyKwh: 2.1, rangeDiffKm: 14,
       carEfficiencyKwhKm: 0.168, hasReducedRange: 0,
     }])
     expect(output).toContain('id,start_time,from,to,distance_km')
     expect(output).toContain('"Home, garage","Office ""A"""')
+    expect(output).toContain('duration_min,start_odometer_km,end_odometer_km,')
+    expect(output).toContain(',12.5,21,9500.2,9512.7,')
     expect(output.endsWith('\r\n')).toBe(true)
   })
 

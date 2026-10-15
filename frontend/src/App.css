@@ -1754,7 +1754,7 @@ main:not(.empty) {
 }
 .drives-table table {
   table-layout: fixed;
-  min-width: 1500px;
+  min-width: 1775px;
   font-size: 12.5px;
 }
 .drives-table th,
@@ -1786,31 +1786,40 @@ main:not(.empty) {
 .drives-table th:nth-child(5) {
   width: 82px;
 }
+/* Odometer start / end: full readings such as "10,050.1 mi". */
 .drives-table th:nth-child(6),
 .drives-table th:nth-child(7) {
+  width: 128px;
+}
+.drives-table td:nth-child(6),
+.drives-table td:nth-child(7) {
+  white-space: nowrap;
+}
+.drives-table th:nth-child(8),
+.drives-table th:nth-child(9) {
   width: 64px;
 }
-.drives-table th:nth-child(8) {
+.drives-table th:nth-child(10) {
   width: 70px;
 }
-.drives-table th:nth-child(9),
-.drives-table th:nth-child(10) {
+.drives-table th:nth-child(11),
+.drives-table th:nth-child(12) {
   width: 84px;
 }
 /* max Power, ❄ (narrow), Efficiency (bar + %), Energy, Ø Consumption */
-.drives-table th:nth-child(11) {
+.drives-table th:nth-child(13) {
   width: 88px;
 }
-.drives-table th:nth-child(12) {
+.drives-table th:nth-child(14) {
   width: 44px;
 }
-.drives-table th:nth-child(13) {
+.drives-table th:nth-child(15) {
   width: 100px;
 }
-.drives-table th:nth-child(14) {
-  width: 92px;
+.drives-table th:nth-child(16) {
+  width: 108px;
 }
-.drives-table th:nth-child(15) {
+.drives-table th:nth-child(17) {
   width: 100px;
 }
 .drives-table td:nth-child(2),
@@ -2027,6 +2036,7 @@ main:not(.empty) {
   padding: 0;
   background: transparent;
   color: var(--cyan);
+  text-decoration: none;
   cursor: pointer;
 }
 .charge-type {

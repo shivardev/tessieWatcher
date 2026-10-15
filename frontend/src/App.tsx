@@ -20,6 +20,8 @@ import {
 } from './remoteBackend'
 import { GeofenceSettings } from './GeofenceSettings'
 import { TimeRangePicker } from './TimeRangePicker'
+import { RecordLink } from './RecordLink'
+import { recordFromSearch, recordHref, type RecordRef } from './recordLinks'
 import { chargesCsv, download, drivesCsv } from './exportData'
 import {
   fetchMeta,
@@ -201,7 +203,7 @@ function Drives({
   onSelect: (driveId: number) => void
   settings: ViewSettings
 }>) {
-  type DriveSort = 'time' | 'from' | 'to' | 'durationMin' | 'distanceKm' | 'startBattery' | 'endBattery' | 'outsideTempC' | 'averageSpeedKmh' | 'maxSpeedKmh' | 'maxPowerKw' | 'reducedRange' | 'efficiency' | 'energyKwh' | 'consumption'
+  type DriveSort = 'time' | 'from' | 'to' | 'durationMin' | 'distanceKm' | 'startOdometerKm' | 'endOdometerKm' | 'startBattery' | 'endBattery' | 'outsideTempC' | 'averageSpeedKmh' | 'maxSpeedKmh' | 'maxPowerKw' | 'reducedRange' | 'efficiency' | 'energyKwh' | 'consumption'
   const [geofence, setGeofence] = useState('All')
   const [location, setLocation] = useState('')
   const [minimumDistance, setMinimumDistance] = useState('0')
@@ -297,16 +299,16 @@ function Drives({
         <table>
           <thead>
             <tr>
-              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed'],['maxPowerKw','max Power'],['reducedRange','❄'],['efficiency','Efficiency'],['energyKwh','Energy (net)'],['consumption','Ø Consum.']] as const).map(([key,label]) => <th key={key}><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></th>)}
+              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startOdometerKm','Odometer start'],['endOdometerKm','Odometer end'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed'],['maxPowerKw','max Power'],['reducedRange','❄'],['efficiency','Efficiency'],['energyKwh','Energy (net)'],['consumption','Ø Consum.']] as const).map(([key,label]) => <th key={key}><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></th>)}
             </tr>
           </thead>
           <tbody>
             {drives.map((drive) => (
               <tr key={drive.id}>
                 <td>
-                  <button className="table-link" type="button" onClick={() => onSelect(drive.id)}>
+                  <RecordLink record={{ kind: 'drive', id: drive.id }} onOpen={() => onSelect(drive.id)}>
                     {date(drive.time)}
-                  </button>
+                  </RecordLink>
                 </td>
                 <td title={drive.from}>{drive.from}</td>
                 <td title={drive.to}>{drive.to}</td>
@@ -317,6 +319,8 @@ function Drives({
                     : cell(distance(drive.distanceKm, settings.lengthUnit), 1)}{' '}
                   {settings.lengthUnit}
                 </td>
+                <td>{drive.startOdometerKm === null ? '—' : `${cell(distance(drive.startOdometerKm, settings.lengthUnit), 1)} ${settings.lengthUnit}`}</td>
+                <td>{drive.endOdometerKm === null ? '—' : `${cell(distance(drive.endOdometerKm, settings.lengthUnit), 1)} ${settings.lengthUnit}`}</td>
                 <td>{cell(drive.startBattery)}%</td>
                 <td>{cell(drive.endBattery)}%</td>
                 <td>{drive.outsideTempC === null ? '—' : `${format(temperature(drive.outsideTempC, settings.temperatureUnit), 1)} °${settings.temperatureUnit}`}</td>
@@ -551,7 +555,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
           <tbody>
             {charges.map((charge) => (
               <tr key={charge.id}>
-                <td><button className="table-link" type="button" onClick={() => onSelect(charge.id)}>{date(charge.time)}</button></td>
+                <td><RecordLink record={{ kind: 'charge', id: charge.id }} onOpen={() => onSelect(charge.id)}>{date(charge.time)}</RecordLink></td>
                 <td title={charge.location}>{charge.location}</td>
                 <td><span className={`charge-type ${charge.type.toLocaleLowerCase()}`}>{charge.type}</span></td>
                 <td>{chargeDuration(charge.durationMin)}</td>
@@ -663,6 +667,30 @@ export default function App() {
   const [menu, setMenu] = useState(false)
   const [selectedDriveId, setSelectedDriveId] = useState<number | null>(null)
   const [selectedChargeId, setSelectedChargeId] = useState<number | null>(null)
+  // showRecord opens a drive or charge (or neither) and keeps the address
+  // bar in step, so the page has a shareable URL and back/forward move
+  // between a list and the record opened from it.
+  const showRecord = (record: RecordRef, history: 'push' | 'none' = 'push'): void => {
+    setSelectedDriveId(record?.kind === 'drive' ? record.id : null)
+    setSelectedChargeId(record?.kind === 'charge' ? record.id : null)
+    if (history === 'none' || !globalThis.location) return
+    const href = recordHref(record)
+    const { pathname, search, hash } = globalThis.location
+    if (href !== `${pathname}${search}${hash}`) globalThis.history.pushState(null, '', href)
+  }
+  // After a database loads, open whatever record the address names: this is
+  // how a drive opened in a new tab arrives at its details page.
+  const openLinkedRecord = (): void =>
+    showRecord(recordFromSearch(globalThis.location?.search ?? ''), 'none')
+  useEffect(() => {
+    const onPopState = (): void => {
+      const record = recordFromSearch(globalThis.location.search)
+      setSelectedDriveId(record?.kind === 'drive' ? record.id : null)
+      setSelectedChargeId(record?.kind === 'charge' ? record.id : null)
+    }
+    globalThis.addEventListener('popstate', onPopState)
+    return () => globalThis.removeEventListener('popstate', onPopState)
+  }, [])
   const [settings, setSettings] = useState<ViewSettings>(defaultViewSettings)
   const [liveUrl, setLiveUrl] = useState(rememberedUrl)
   const [live, setLive] = useState<LiveStatus | null>(null)
@@ -770,8 +798,7 @@ export default function App() {
       setData(loaded)
       setSettings((current) => ({ ...current, timeRange: 'all' }))
       setActive('Overview')
-      setSelectedDriveId(null)
-      setSelectedChargeId(null)
+      openLinkedRecord()
     } catch (reason: unknown) {
       if (!isCurrent(controller)) return
       setError(reason instanceof Error ? reason.message : 'Could not load demo data.')
@@ -846,8 +873,7 @@ export default function App() {
       rememberUrl(baseUrl)
       setLiveCheckedAt(new Date())
       setActive('Overview')
-      setSelectedDriveId(null)
-      setSelectedChargeId(null)
+      openLinkedRecord()
     } catch (reason: unknown) {
       if (!isCurrent(controller)) return
       setLive(null)
@@ -890,8 +916,7 @@ export default function App() {
         batteryLevel: loaded.vehicle.battery,
       })
       setActive('Overview')
-      setSelectedDriveId(null)
-      setSelectedChargeId(null)
+      openLinkedRecord()
       try {
         globalThis.localStorage?.setItem('teslalog.viewer.remote', JSON.stringify(config))
       } catch {
@@ -1170,8 +1195,7 @@ export default function App() {
       if (!isCurrent(controller)) return
       setData(loaded)
       setActive('Overview')
-      setSelectedDriveId(null)
-      setSelectedChargeId(null)
+      openLinkedRecord()
     } catch (reason: unknown) {
       if (!isCurrent(controller)) return
       setError(reason instanceof Error ? reason.message : 'Could not open database.')
@@ -1203,8 +1227,7 @@ export default function App() {
           type="button"
           onClick={() => {
             setActive('Overview')
-            setSelectedDriveId(null)
-            setSelectedChargeId(null)
+            showRecord(null)
           }}
         >
           <i>T</i>
@@ -1387,8 +1410,7 @@ export default function App() {
                   className={active === item && selectedDriveId === null && selectedChargeId === null ? 'active' : ''}
                   onClick={() => {
                     setActive(item)
-                    setSelectedDriveId(null)
-                    setSelectedChargeId(null)
+                    showRecord(null)
                     setMenu(false)
                   }}
                   key={item}
@@ -1441,10 +1463,10 @@ export default function App() {
           data={data}
           selectedDriveId={selectedDriveId}
           selectedChargeId={selectedChargeId}
-          onSelectDrive={setSelectedDriveId}
-          onCloseDrive={() => setSelectedDriveId(null)}
-          onSelectCharge={setSelectedChargeId}
-          onCloseCharge={() => setSelectedChargeId(null)}
+          onSelectDrive={(id) => showRecord({ kind: 'drive', id })}
+          onCloseDrive={() => showRecord(null)}
+          onSelectCharge={(id) => showRecord({ kind: 'charge', id })}
+          onCloseCharge={() => showRecord(null)}
           settings={settings}
         />
       ) : (

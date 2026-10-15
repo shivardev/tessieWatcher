@@ -58,6 +58,8 @@ const requiredColumns: Readonly<Record<string, readonly string[]>> = {
     'end_battery_level',
     'start_range_km',
     'end_range_km',
+    'start_odometer_km',
+    'end_odometer_km',
     'max_speed_kmh',
     'ascent_m',
     'descent_m',
@@ -245,7 +247,7 @@ const metrics = async (
 const drives = async (run: Runner) =>
   (await rows(
     run,
-    `SELECT d.id, d.start_time time, COALESCE(d.start_location, printf('%.4f, %.4f', d.start_lat, d.start_lng)) "from", COALESCE(d.end_location, printf('%.4f, %.4f', d.end_lat, d.end_lng)) "to", ROUND(d.distance_km,1) distance_km, ROUND(d.duration_min,0) duration_min, d.start_battery_level start_battery, d.end_battery_level end_battery, ROUND(d.max_speed_kmh,0) max_speed_kmh, ROUND(d.max_power_kw,0) max_power_kw, ROUND(d.ascent_m,0) ascent_m, ROUND(d.descent_m,0) descent_m, d.outside_temp_avg_c, d.distance_km/NULLIF(d.duration_min/60.0,0) average_speed_kmh, (d.start_range_km-d.end_range_km)*v.efficiency_wh_km/1000.0 energy_kwh, d.start_range_km-d.end_range_km range_diff_km, v.efficiency_wh_km car_efficiency, rr.has_reduced_range
+    `SELECT d.id, d.start_time time, COALESCE(d.start_location, printf('%.4f, %.4f', d.start_lat, d.start_lng)) "from", COALESCE(d.end_location, printf('%.4f, %.4f', d.end_lat, d.end_lng)) "to", ROUND(d.distance_km,1) distance_km, ROUND(d.duration_min,0) duration_min, d.start_odometer_km start_odometer_km, d.end_odometer_km end_odometer_km, d.start_battery_level start_battery, d.end_battery_level end_battery, ROUND(d.max_speed_kmh,0) max_speed_kmh, ROUND(d.max_power_kw,0) max_power_kw, ROUND(d.ascent_m,0) ascent_m, ROUND(d.descent_m,0) descent_m, d.outside_temp_avg_c, d.distance_km/NULLIF(d.duration_min/60.0,0) average_speed_kmh, (d.start_range_km-d.end_range_km)*v.efficiency_wh_km/1000.0 energy_kwh, d.start_range_km-d.end_range_km range_diff_km, v.efficiency_wh_km car_efficiency, rr.has_reduced_range
      FROM drives d JOIN vehicles v ON v.id=d.vehicle_id
      LEFT JOIN (
        -- TeslaMate's has_reduced_range, one pass over positions rather than
@@ -268,6 +270,8 @@ const drives = async (run: Runner) =>
       to: place(r.to),
       distanceKm: nullableNum(r.distance_km, 'distance'),
       durationMin: nullableNum(r.duration_min, 'duration'),
+      startOdometerKm: nullableNum(r.start_odometer_km, 'start odometer'),
+      endOdometerKm: nullableNum(r.end_odometer_km, 'end odometer'),
       startBattery: nullableNum(r.start_battery, 'start battery'),
       endBattery: nullableNum(r.end_battery, 'end battery'),
       maxSpeedKmh: nullableNum(r.max_speed_kmh, 'speed'),
