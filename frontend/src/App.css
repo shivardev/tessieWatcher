@@ -1163,7 +1163,8 @@ main:not(.empty) {
 }
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
+  /* auto-fit: the cards share the row instead of leaving empty tracks */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
   gap: 12px;
   margin: 0 0 14px;
 }
@@ -1690,6 +1691,33 @@ main:not(.empty) {
   background: rgb(255 255 255 / 2.5%);
   color: var(--text);
 }
+.table-panel th.num,
+.table-panel td.num {
+  text-align: right;
+}
+.table-panel td.muted {
+  color: var(--muted);
+}
+/* The record link stays in view while a wide table scrolls sideways. */
+.charges-table th:first-child,
+.charges-table td:first-child,
+.drives-table th:first-child,
+.drives-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset -1px 0 0 var(--line);
+}
+.charges-table th:first-child,
+.drives-table th:first-child {
+  z-index: 2;
+  background: rgb(10 10 12);
+}
+.charges-table tbody tr:hover td:first-child,
+.drives-table tbody tr:hover td:first-child {
+  background: color-mix(in srgb, var(--surface) 96%, white);
+}
 .table-heading {
   display: flex;
   align-items: center;
@@ -1703,9 +1731,211 @@ main:not(.empty) {
   max-height: min(75vh, 850px);
   scrollbar-gutter: stable;
 }
+/* ───────────────────────── Supercharger CSV import ───────────────────────── */
+.sc-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 560px;
+}
+.sc-import-bar > span {
+  flex: 1 1 100%;
+  text-align: right;
+}
+.sc-import-button,
+.sc-import-undo,
+.sc-import-cancel,
+.sc-import-apply,
+.sc-import-close {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sc-import-button svg,
+.sc-import-undo svg,
+.sc-import-close svg {
+  width: 15px;
+  height: 15px;
+}
+.sc-import-button:hover:not(:disabled),
+.sc-import-undo:hover:not(:disabled),
+.sc-import-cancel:hover,
+.sc-import-close:hover {
+  background: var(--surface-3);
+}
+.sc-import-button:disabled,
+.sc-import-apply:disabled,
+.sc-import-undo:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.sc-import-apply {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.sc-import-close {
+  padding: 6px;
+}
+.sc-import-notice {
+  color: var(--emerald);
+  font-size: 13px;
+}
+.sc-import-error {
+  color: var(--rose);
+  font-size: 13px;
+}
+.sc-import-review {
+  display: grid;
+  gap: 14px;
+  margin: 10px 0 18px;
+  padding: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.sc-import-review > header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.sc-import-review > header b,
+.sc-import-review > header small {
+  display: block;
+}
+.sc-import-review > header small {
+  margin-top: 3px;
+  color: var(--text-2);
+}
+.sc-import-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sc-import-summary .chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.sc-import-summary .chip.new {
+  background: rgb(52 211 153 / 14%);
+  color: var(--emerald);
+}
+.sc-import-summary .chip.conflict {
+  background: rgb(251 191 36 / 14%);
+  color: var(--amber);
+}
+.sc-import-summary .chip.problem {
+  background: rgb(251 113 133 / 14%);
+  color: var(--rose);
+}
+.sc-import-details {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.sc-import-details summary {
+  cursor: pointer;
+}
+.sc-import-details ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.sc-import-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: center;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.sc-import-options label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sc-import-options small {
+  flex: 1 1 100%;
+  color: var(--muted);
+}
+.sc-import-review select {
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.sc-import-table {
+  max-height: 60vh;
+}
+.sc-import-table table {
+  min-width: 1100px;
+  font-size: 12.5px;
+}
+.sc-import-table td {
+  vertical-align: top;
+}
+.sc-import-table td small {
+  color: var(--muted);
+}
+.sc-import-table td select {
+  display: block;
+  margin-top: 6px;
+}
+.sc-import-table a {
+  color: var(--cyan);
+}
+.sc-import-table tr.sc-skipped,
+.sc-import-table tr.sc-same {
+  opacity: 0.55;
+}
+.sc-import-table tr.sc-conflict td:nth-child(7) {
+  color: var(--amber);
+}
+.sc-warning {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--amber);
+  font-size: 12px;
+}
+.sc-warning svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.sc-import-review > footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.sc-import-review > footer > span:first-child {
+  flex: 1 1 260px;
+  color: var(--text-2);
+  font-size: 13px;
+}
 .charges-table table {
   table-layout: fixed;
-  min-width: 1740px;
+  min-width: 1772px;
   font-size: 12.5px;
 }
 .charges-table th,
@@ -1730,7 +1960,7 @@ main:not(.empty) {
 }
 .charges-table th:nth-child(7),
 .charges-table th:nth-child(8) {
-  width: 100px;
+  width: 116px;
 }
 .charges-table th:nth-child(9) {
   width: 130px;

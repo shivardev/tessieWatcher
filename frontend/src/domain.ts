@@ -59,7 +59,8 @@ export const chargeRowSchema = z.object({
   odometerKm: z.number().nullable(),
 })
 export type ChargeRow = z.infer<typeof chargeRowSchema>
-export type Metric = Readonly<{ label: string; value: number; unit: string }>
+// format 'money' prints the value as an amount ($12.34) instead of value + unit.
+export type Metric = Readonly<{ label: string; value: number; unit: string; format?: 'money' }>
 export type Destination = Readonly<{ name: string; visits: number }>
 // One bar of the speed histogram: how long the car spent in a 10 km/h
 // band. Weighted by elapsed time between position samples, not by sample

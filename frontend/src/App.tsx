@@ -21,6 +21,7 @@ import {
 import { GeofenceSettings } from './GeofenceSettings'
 import { TimeRangePicker } from './TimeRangePicker'
 import { RecordLink } from './RecordLink'
+import { useSuperchargerImport } from './useSuperchargerImport'
 import { recordFromSearch, recordHref, type RecordRef } from './recordLinks'
 import { chargesCsv, download, drivesCsv } from './exportData'
 import {
@@ -110,16 +111,22 @@ const date = (value: string): string =>
   )
 const chargeDuration = (minutes: number | null): string => {
   if (minutes === null) return '—'
-  if (minutes < 60) return `${minutes.toFixed(1)} min`
-  const hours = minutes / 60
-  return `${hours.toFixed(hours < 10 ? 1 : 1)} ${Math.abs(hours - 1) < 0.05 ? 'hour' : 'hours'}`
+  if (minutes < 1) return '<1 min'
+  if (minutes < 60) return `${Math.round(minutes)} min`
+  const whole = Math.round(minutes)
+  return `${Math.floor(whole / 60)}h ${String(whole % 60).padStart(2, '0')}m`
 }
+// Money as an amount with cents. teslalog has no currency setting; the
+// dollar sign matches the charge details page and the Supercharger import.
+const money = (value: number | null, digits = 2): string =>
+  value === null ? '—' : `$${value.toFixed(digits)}`
 
 function Page({
   title,
   eyebrow,
+  actions,
   children,
-}: Readonly<{ title: string; eyebrow: string; children: ReactNode }>) {
+}: Readonly<{ title: string; eyebrow: string; actions?: ReactNode; children: ReactNode }>) {
   return (
     <main>
       <header className="page-head">
@@ -127,6 +134,7 @@ function Page({
           <span className="eyebrow">{eyebrow}</span>
           <h1>{title}</h1>
         </div>
+        {actions && <div className="page-head-aside">{actions}</div>}
       </header>
       {children}
     </main>
@@ -186,7 +194,7 @@ function MetricCards({ metrics }: Readonly<{ metrics: readonly Metric[] }>) {
         <article key={metric.label}>
           <Gauge />
           <span>{metric.label}</span>
-          <strong>{format(metric.value, 1)}</strong>
+          <strong>{metric.format === 'money' ? money(metric.value) : format(metric.value, 1)}</strong>
           <small>{metric.unit}</small>
         </article>
       ))}
@@ -485,6 +493,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
   const [location, setLocation] = useState('')
   const [minimumCost, setMinimumCost] = useState('')
   const [minimumDuration, setMinimumDuration] = useState('0')
+  const supercharger = useSuperchargerImport(data.charges)
   const geofences = [...new Set(data.charges.map((charge) => charge.location))].sort()
   const charges = data.charges.filter((charge) =>
     withinTimeWindow(charge.time, settings) &&
@@ -493,6 +502,13 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     charge.location.toLocaleLowerCase().includes(location.trim().toLocaleLowerCase()) &&
     (minimumCost === '' || (charge.cost ?? 0) >= Number(minimumCost)) &&
     (minimumDuration === '' || (charge.durationMin ?? 0) >= Number(minimumDuration)),
+  )
+  // Average price only over sessions that have a cost, so unpriced ones
+  // do not drag it towards zero.
+  const priced = charges.filter((charge) => charge.cost !== null)
+  const pricedEnergy = priced.reduce(
+    (sum, charge) => sum + Math.max(charge.energyUsedKwh ?? 0, charge.energyAddedKwh ?? 0),
+    0,
   )
   const chargeMetrics: readonly Metric[] = [
     {
@@ -504,9 +520,14 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     {
       label: 'Total charging cost',
       value: charges.reduce((sum, charge) => sum + (charge.cost ?? 0), 0),
-      // No unit: teslalog has no currency setting, and every other money
-      // figure in the viewer is printed bare. "3.4 cost" read as a bug.
-      unit: '',
+      unit: `${priced.length} of ${charges.length} sessions priced`,
+      format: 'money',
+    },
+    {
+      label: 'Ø cost per kWh',
+      value: pricedEnergy > 0 ? priced.reduce((sum, charge) => sum + (charge.cost ?? 0), 0) / pricedEnergy : 0,
+      unit: 'per kWh used',
+      format: 'money',
     },
     {
       label: 'Total charging time',
@@ -520,7 +541,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     },
   ]
   return (
-    <Page title="Charges" eyebrow={timeRangeLabel(settings)}>
+    <Page title="Charges" eyebrow={timeRangeLabel(settings)} actions={supercharger.control}>
       <section className="charge-filters" aria-label="Charge filters">
         <label>Geofence<select value={geofence} onChange={(event) => setGeofence(event.target.value)}><option>All</option>{geofences.map((name) => <option key={name}>{name}</option>)}</select></label>
         <label>Location<input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="Enter value" /></label>
@@ -528,6 +549,7 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
         <label>Cost ≥<input type="number" min="0" step="0.01" value={minimumCost} onChange={(event) => setMinimumCost(event.target.value)} placeholder="Enter value" /></label>
         <label>Duration (minutes) ≥<input type="number" min="0" value={minimumDuration} onChange={(event) => setMinimumDuration(event.target.value)} /></label>
       </section>
+      {supercharger.review}
       <MetricCards metrics={chargeMetrics} />
       <h2 className="table-heading">Charger type: {type}</h2>
       <div className="table-panel charges-table">
@@ -537,19 +559,19 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
               <th>When</th>
               <th>Location</th>
               <th>Type</th>
-              <th>Duration</th>
-              <th>Cost</th>
-              <th>Cost / kWh</th>
-              <th>Energy added</th>
-              <th>Energy used</th>
+              <th className="num">Duration</th>
+              <th className="num">Cost</th>
+              <th className="num">Cost / kWh</th>
+              <th className="num">Energy added</th>
+              <th className="num">Energy used</th>
               <th>Efficiency</th>
-              <th>Temp</th>
-              <th>Max power</th>
-              <th>Charge rate</th>
-              <th>Range gained</th>
-              <th>% Start</th>
-              <th>% End</th>
-              <th>Odometer</th>
+              <th className="num">Temp</th>
+              <th className="num">Max power</th>
+              <th className="num">Charge rate</th>
+              <th className="num">Range gained</th>
+              <th className="num">% Start</th>
+              <th className="num">% End</th>
+              <th className="num">Odometer</th>
             </tr>
           </thead>
           <tbody>
@@ -558,19 +580,19 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
                 <td><RecordLink record={{ kind: 'charge', id: charge.id }} onOpen={() => onSelect(charge.id)}>{date(charge.time)}</RecordLink></td>
                 <td title={charge.location}>{charge.location}</td>
                 <td><span className={`charge-type ${charge.type.toLocaleLowerCase()}`}>{charge.type}</span></td>
-                <td>{chargeDuration(charge.durationMin)}</td>
-                <td>{cell(charge.cost, 2)}</td>
-                <td>{cell(charge.cost === null || charge.energyUsedKwh === null || charge.energyUsedKwh === 0 ? null : charge.cost / charge.energyUsedKwh, 2)}</td>
-                <td>{cell(charge.energyAddedKwh, 2)} kWh</td>
-                <td>{cell(charge.energyUsedKwh, 2)} kWh</td>
+                <td className="num">{chargeDuration(charge.durationMin)}</td>
+                <td className={`num${charge.cost === null ? ' muted' : ''}`}>{money(charge.cost)}</td>
+                <td className="num">{money(charge.cost === null || charge.energyUsedKwh === null || charge.energyUsedKwh === 0 ? null : charge.cost / charge.energyUsedKwh)}</td>
+                <td className="num">{cell(charge.energyAddedKwh, 2)} kWh</td>
+                <td className="num">{cell(charge.energyUsedKwh, 2)} kWh</td>
                 <td><span className="efficiency"><i style={{ width: `${Math.min(100, charge.efficiencyPercent ?? 0)}%` }} /> <b>{cell(charge.efficiencyPercent)}%</b></span></td>
-                <td>{charge.outsideTempC === null ? '—' : `${format(temperature(charge.outsideTempC, settings.temperatureUnit), 1)} °${settings.temperatureUnit}`}</td>
-                <td>{charge.maxPowerKw === null ? '—' : `${cell(charge.maxPowerKw, 1)} kW`}</td>
-                <td>{charge.ratedRangeAddedKm === null || charge.durationMin === null || charge.durationMin <= 0 ? '—' : `${cell(speed(charge.ratedRangeAddedKm / (charge.durationMin / 60), settings.lengthUnit))} ${settings.lengthUnit}/h`}</td>
-                <td>{charge.ratedRangeAddedKm === null ? '—' : `${cell(distance(charge.ratedRangeAddedKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
-                <td>{charge.startBattery === null ? '—' : `${cell(charge.startBattery)}%`}</td>
-                <td>{charge.endBattery === null ? '—' : `${cell(charge.endBattery)}%`}</td>
-                <td>{charge.odometerKm === null ? '—' : `${cell(distance(charge.odometerKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
+                <td className="num">{charge.outsideTempC === null ? '—' : `${format(temperature(charge.outsideTempC, settings.temperatureUnit), 1)} °${settings.temperatureUnit}`}</td>
+                <td className="num">{charge.maxPowerKw === null ? '—' : `${cell(charge.maxPowerKw, 1)} kW`}</td>
+                <td className="num">{charge.ratedRangeAddedKm === null || charge.durationMin === null || charge.durationMin <= 0 ? '—' : `${cell(speed(charge.ratedRangeAddedKm / (charge.durationMin / 60), settings.lengthUnit))} ${settings.lengthUnit}/h`}</td>
+                <td className="num">{charge.ratedRangeAddedKm === null ? '—' : `${cell(distance(charge.ratedRangeAddedKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
+                <td className="num">{charge.startBattery === null ? '—' : `${cell(charge.startBattery)}%`}</td>
+                <td className="num">{charge.endBattery === null ? '—' : `${cell(charge.endBattery)}%`}</td>
+                <td className="num">{charge.odometerKm === null ? '—' : `${cell(distance(charge.odometerKm, settings.lengthUnit))} ${settings.lengthUnit}`}</td>
               </tr>
             ))}
           </tbody>
