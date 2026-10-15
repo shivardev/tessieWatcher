@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
-import { CarFront, Database, Download, FileDown, Gauge, Menu, Play, RefreshCw, Upload, Wifi, X } from 'lucide-react'
+import { CarFront, Database, Download, FileDown, Menu, Play, RefreshCw, Upload, Wifi, X } from 'lucide-react'
 import { groups, type Dashboard, type DriveRow, type IncompleteRow, type LoadedDatabase, type Metric, type SpeedBand } from './domain'
 import {
   loadSpeedHistogram,
@@ -22,6 +22,8 @@ import { GeofenceSettings } from './GeofenceSettings'
 import { TimeRangePicker } from './TimeRangePicker'
 import { RecordLink } from './RecordLink'
 import { useSuperchargerImport } from './useSuperchargerImport'
+import { useRowSelection } from './useRowSelection'
+import { RowCheckbox, SelectAllCheckbox, SelectionBanner, type SelectionStat } from './SelectionBanner'
 import { recordFromSearch, recordHref, type RecordRef } from './recordLinks'
 import { chargesCsv, download, drivesCsv } from './exportData'
 import {
@@ -192,10 +194,13 @@ function MetricCards({ metrics }: Readonly<{ metrics: readonly Metric[] }>) {
     <section className="cards">
       {metrics.map((metric) => (
         <article key={metric.label}>
-          <Gauge />
           <span>{metric.label}</span>
-          <strong>{metric.format === 'money' ? money(metric.value) : format(metric.value, 1)}</strong>
-          <small>{metric.unit}</small>
+          {/* Units sit beside the value; a money card's text is a note below. */}
+          <strong>
+            {metric.format === 'money' ? money(metric.value) : format(metric.value, 1)}
+            {metric.format !== 'money' && metric.unit && <small className="unit">{metric.unit}</small>}
+          </strong>
+          {metric.format === 'money' && metric.unit && <small>{metric.unit}</small>}
         </article>
       ))}
     </section>
@@ -274,6 +279,29 @@ function Drives({
       const comparison = typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b))
       return descending ? -comparison : comparison
     })
+  const selection = useRowSelection(drives.map((drive) => drive.id))
+  const selectedDrives = drives.filter((drive) => selection.isSelected(drive.id))
+  const selectionStats = ((): readonly SelectionStat[] => {
+    const km = selectedDrives.reduce((sum, drive) => sum + (drive.distanceKm ?? 0), 0)
+    const minutes = selectedDrives.reduce((sum, drive) => sum + (drive.durationMin ?? 0), 0)
+    const kwh = selectedDrives.reduce((sum, drive) => sum + (drive.energyKwh ?? 0), 0)
+    const shown = distance(km, settings.lengthUnit)
+    const maxSpeed = Math.max(0, ...selectedDrives.map((drive) => drive.maxSpeedKmh ?? 0))
+    const batteryUsed = selectedDrives.reduce(
+      (sum, drive) =>
+        sum + (drive.startBattery === null || drive.endBattery === null ? 0 : Math.max(0, drive.startBattery - drive.endBattery)),
+      0,
+    )
+    return [
+      { label: 'Distance', value: format(shown, 1), unit: settings.lengthUnit },
+      { label: 'Time', value: chargeDuration(minutes), note: 'Total driving time' },
+      { label: 'Energy', value: energyCell(kwh), note: 'Net energy used, from range lost' },
+      { label: 'Ø use', value: shown > 0 ? format((kwh * 1000) / shown, 0) : '—', unit: `Wh/${settings.lengthUnit}`, note: 'Average net consumption' },
+      { label: 'Ø speed', value: minutes > 0 ? format(shown / (minutes / 60), 0) : '—', unit: `${settings.lengthUnit}/h` },
+      { label: 'Max speed', value: format(speed(maxSpeed, settings.lengthUnit), 0), unit: `${settings.lengthUnit}/h` },
+      { label: 'Battery used', value: `${format(batteryUsed, 0)}%`, note: 'Sum of each drive’s start minus end battery level' },
+    ]
+  })()
   const totalDistance = drives.reduce((sum, drive) => sum + (drive.distanceKm ?? 0), 0)
   const totalDuration = drives.reduce((sum, drive) => sum + (drive.durationMin ?? 0), 0)
   const totalEnergy = drives.reduce((sum, drive) => sum + (drive.energyKwh ?? 0), 0)
@@ -303,20 +331,34 @@ function Drives({
       </section>
       <MetricCards metrics={driveMetrics} />
       <h2 className="table-heading">Drive</h2>
+      <SelectionBanner
+        count={selection.visibleSelected.length}
+        noun={['drive', 'drives']}
+        hiddenCount={selection.hiddenCount}
+        stats={selectionStats}
+        onClear={selection.clear}
+      />
       <div className="table-panel drives-table">
         <table>
           <thead>
             <tr>
-              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startOdometerKm','Odometer start'],['endOdometerKm','Odometer end'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed'],['maxPowerKw','max Power'],['reducedRange','❄'],['efficiency','Efficiency'],['energyKwh','Energy (net)'],['consumption','Ø Consum.']] as const).map(([key,label]) => <th key={key}><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></th>)}
+              {([['time','Date'],['from','Start'],['to','Destination'],['durationMin','Duration'],['distanceKm','Distance'],['startOdometerKm','Odometer start'],['endOdometerKm','Odometer end'],['startBattery','% Start'],['endBattery','% End'],['outsideTempC','Temp'],['averageSpeedKmh','Ø Speed'],['maxSpeedKmh','max Speed'],['maxPowerKw','max Power'],['reducedRange','❄'],['efficiency','Efficiency'],['energyKwh','Energy (net)'],['consumption','Ø Consum.']] as const).map(([key,label]) => <th key={key}>{key === 'time' ? <span className="select-cell"><SelectAllCheckbox state={selection.allState} label="Select all drives shown" onToggle={selection.toggleAll} /><button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button></span> : <button type="button" onClick={() => toggleSort(key)}>{label}{sort === key ? (descending ? ' ↓' : ' ↑') : ''}</button>}</th>)}
             </tr>
           </thead>
           <tbody>
             {drives.map((drive) => (
-              <tr key={drive.id}>
+              <tr key={drive.id} className={selection.isSelected(drive.id) ? 'selected' : undefined}>
                 <td>
-                  <RecordLink record={{ kind: 'drive', id: drive.id }} onOpen={() => onSelect(drive.id)}>
-                    {date(drive.time)}
-                  </RecordLink>
+                  <span className="select-cell">
+                    <RowCheckbox
+                      checked={selection.isSelected(drive.id)}
+                      label={`Select drive of ${date(drive.time)}`}
+                      onToggle={(extend) => selection.toggle(drive.id, extend)}
+                    />
+                    <RecordLink record={{ kind: 'drive', id: drive.id }} onOpen={() => onSelect(drive.id)}>
+                      {date(drive.time)}
+                    </RecordLink>
+                  </span>
                 </td>
                 <td title={drive.from}>{drive.from}</td>
                 <td title={drive.to}>{drive.to}</td>
@@ -503,6 +545,30 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
     (minimumCost === '' || (charge.cost ?? 0) >= Number(minimumCost)) &&
     (minimumDuration === '' || (charge.durationMin ?? 0) >= Number(minimumDuration)),
   )
+  const selection = useRowSelection(charges.map((charge) => charge.id))
+  const selectedCharges = charges.filter((charge) => selection.isSelected(charge.id))
+  const selectionStats = ((): readonly SelectionStat[] => {
+    const added = selectedCharges.reduce((sum, charge) => sum + (charge.energyAddedKwh ?? 0), 0)
+    const used = selectedCharges.reduce((sum, charge) => sum + (charge.energyUsedKwh ?? 0), 0)
+    const pricedRows = selectedCharges.filter((charge) => charge.cost !== null)
+    const cost = pricedRows.reduce((sum, charge) => sum + (charge.cost ?? 0), 0)
+    const pricedKwh = pricedRows.reduce(
+      (sum, charge) => sum + Math.max(charge.energyUsedKwh ?? 0, charge.energyAddedKwh ?? 0),
+      0,
+    )
+    const minutes = selectedCharges.reduce((sum, charge) => sum + (charge.durationMin ?? 0), 0)
+    const rangeKm = selectedCharges.reduce((sum, charge) => sum + (charge.ratedRangeAddedKm ?? 0), 0)
+    return [
+      { label: 'Added', value: format(added, 1), unit: 'kWh', note: 'Energy added to the battery' },
+      { label: 'Used', value: format(used, 1), unit: 'kWh', note: 'Energy drawn from the charger' },
+      { label: 'Cost', value: money(cost), unit: pricedRows.length === selectedCharges.length ? undefined : `${pricedRows.length}/${selectedCharges.length} priced`, note: `${pricedRows.length} of ${selectedCharges.length} selected charges have a cost` },
+      { label: 'Ø $/kWh', value: pricedKwh > 0 ? money(cost / pricedKwh) : '—', note: 'Cost ÷ kWh billed, over priced charges only' },
+      { label: 'Time', value: chargeDuration(minutes), note: 'Total charging time' },
+      { label: 'Ø power', value: minutes > 0 ? format(added / (minutes / 60), 1) : '—', unit: 'kW' },
+      { label: 'Efficiency', value: used > 0 ? `${format((added / used) * 100, 0)}%` : '—', note: 'Energy added ÷ energy used' },
+      { label: 'Range', value: format(distance(rangeKm, settings.lengthUnit), 0), unit: settings.lengthUnit, note: 'Rated range gained' },
+    ]
+  })()
   // Average price only over sessions that have a cost, so unpriced ones
   // do not drag it towards zero.
   const priced = charges.filter((charge) => charge.cost !== null)
@@ -552,11 +618,18 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
       {supercharger.review}
       <MetricCards metrics={chargeMetrics} />
       <h2 className="table-heading">Charger type: {type}</h2>
+      <SelectionBanner
+        count={selection.visibleSelected.length}
+        noun={['charge', 'charges']}
+        hiddenCount={selection.hiddenCount}
+        stats={selectionStats}
+        onClear={selection.clear}
+      />
       <div className="table-panel charges-table">
         <table>
           <thead>
             <tr>
-              <th>When</th>
+              <th><span className="select-cell"><SelectAllCheckbox state={selection.allState} label="Select all charges shown" onToggle={selection.toggleAll} />When</span></th>
               <th>Location</th>
               <th>Type</th>
               <th className="num">Duration</th>
@@ -576,8 +649,17 @@ function Charges({ data, settings, onSelect }: Readonly<{ data: LoadedDatabase; 
           </thead>
           <tbody>
             {charges.map((charge) => (
-              <tr key={charge.id}>
-                <td><RecordLink record={{ kind: 'charge', id: charge.id }} onOpen={() => onSelect(charge.id)}>{date(charge.time)}</RecordLink></td>
+              <tr key={charge.id} className={selection.isSelected(charge.id) ? 'selected' : undefined}>
+                <td>
+                  <span className="select-cell">
+                    <RowCheckbox
+                      checked={selection.isSelected(charge.id)}
+                      label={`Select charge of ${date(charge.time)}`}
+                      onToggle={(extend) => selection.toggle(charge.id, extend)}
+                    />
+                    <RecordLink record={{ kind: 'charge', id: charge.id }} onOpen={() => onSelect(charge.id)}>{date(charge.time)}</RecordLink>
+                  </span>
+                </td>
                 <td title={charge.location}>{charge.location}</td>
                 <td><span className={`charge-type ${charge.type.toLocaleLowerCase()}`}>{charge.type}</span></td>
                 <td className="num">{chargeDuration(charge.durationMin)}</td>

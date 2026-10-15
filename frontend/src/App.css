@@ -1172,6 +1172,36 @@ main:not(.empty) {
   width: 18px;
   color: var(--muted);
 }
+/* Compact summary cards: label, then value with its unit inline, about
+   half the height of the dashboard tiles they share base styles with. */
+.cards {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px;
+}
+.cards article {
+  min-height: 0;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: 12px;
+}
+.cards span {
+  font-size: 11.5px;
+}
+.cards strong {
+  margin-top: 0;
+  padding-top: 2px;
+  font-size: clamp(18px, 1.45vw, 22px);
+}
+.cards strong .unit {
+  margin-left: 5px;
+  color: var(--muted);
+  font: 500 12px/1 var(--display);
+  letter-spacing: 0;
+}
+.cards small {
+  font-size: 11px;
+  line-height: 1.3;
+}
 .cards span,
 .cards small {
   color: var(--text-2);
@@ -1935,7 +1965,7 @@ main:not(.empty) {
 }
 .charges-table table {
   table-layout: fixed;
-  min-width: 1772px;
+  min-width: 1803px;
   font-size: 12.5px;
 }
 .charges-table th,
@@ -1943,7 +1973,7 @@ main:not(.empty) {
   padding: 11px 12px;
 }
 .charges-table th:nth-child(1) {
-  width: 165px;
+  width: 196px;
 }
 .charges-table th:nth-child(2) {
   width: 210px;
@@ -1984,7 +2014,7 @@ main:not(.empty) {
 }
 .drives-table table {
   table-layout: fixed;
-  min-width: 1775px;
+  min-width: 1806px;
   font-size: 12.5px;
 }
 .drives-table th,
@@ -2006,7 +2036,7 @@ main:not(.empty) {
   color: var(--text);
 }
 .drives-table th:nth-child(1) {
-  width: 165px;
+  width: 196px;
 }
 .drives-table th:nth-child(2),
 .drives-table th:nth-child(3) {
@@ -3018,7 +3048,6 @@ main:not(.empty) {
     gap: 10px;
   }
   .stat-tile,
-  .cards article,
   .overview-stat-grid article,
   .charging-stat-grid article {
     min-height: 104px;
@@ -3582,5 +3611,160 @@ main:not(.empty) {
   }
   .live-badge {
     padding: 6px 6px 6px 10px;
+  }
+}
+
+/* ───────────────────────── Row selection ───────────────────────── */
+.select-cell {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+.row-check {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.table-panel tbody tr.selected td {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  color: var(--text);
+}
+.charges-table tbody tr.selected td:first-child,
+.drives-table tbody tr.selected td:first-child {
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent), inset -1px 0 0 var(--line);
+}
+.selection-strip {
+  position: sticky;
+  top: calc(var(--topbar) + 10px);
+  z-index: 15;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin: 0 0 10px;
+  padding: 7px 8px 7px 14px;
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+    rgb(12 13 10 / 94%);
+  backdrop-filter: blur(12px);
+  /* the first shadow fills the gap under the top bar, so rows scrolling
+     past do not show through above the strip */
+  box-shadow:
+    0 -12px 0 2px var(--bg),
+    0 0 22px color-mix(in srgb, var(--accent) 14%, transparent),
+    0 10px 26px rgb(0 0 0 / 55%);
+  scrollbar-width: none;
+  animation: selection-in 180ms var(--ease) both;
+}
+.selection-strip::-webkit-scrollbar {
+  display: none;
+}
+.selection-count {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  align-items: center;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.selection-count svg {
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+}
+.selection-strip dl {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 18px;
+  margin: 0;
+  padding-left: 14px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.selection-strip dl > div {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 1px;
+}
+.selection-strip dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.selection-strip dd {
+  margin: 0;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.selection-strip dd small {
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+.selection-hidden {
+  flex: 0 0 auto;
+  color: var(--amber);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.selection-strip button {
+  /* stays reachable at the right edge when the figures scroll sideways */
+  position: sticky;
+  right: 0;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  align-items: center;
+  margin-left: auto;
+  box-shadow: -14px 0 14px rgb(12 13 10 / 94%);
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 8px;
+  background: rgb(14 16 10);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.selection-strip button:hover {
+  background: var(--accent-soft);
+}
+.selection-strip button svg {
+  width: 13px;
+  height: 13px;
+}
+@keyframes selection-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@media (max-width: 1100px) {
+  /* below the top bar and the pinned settings bar */
+  .selection-strip {
+    top: calc(var(--topbar) + 56px);
+  }
+}
+@media (max-width: 640px) {
+  .selection-strip button span {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .selection-strip {
+    animation: none;
   }
 }
